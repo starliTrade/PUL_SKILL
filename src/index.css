@@ -1,0 +1,297 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    --font-fa: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-ar: 'Noto Sans Arabic', 'Vazirmatn', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-zh: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #000000;
+    color: #ededed;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    user-select: none;
+    -webkit-user-select: none;
+    overflow-x: hidden;
+    letter-spacing: -0.015em;
+  }
+
+  /* Comprehensive native typography for Persian (Vazirmatn) */
+  html[lang="fa"],
+  html[lang="fa"] body,
+  html[lang="fa"] #root,
+  html[lang="fa"] input,
+  html[lang="fa"] select,
+  html[lang="fa"] textarea,
+  html[lang="fa"] button:not([data-brand-logo]):not(.brand-logo-unit),
+  html[lang="fa"] p,
+  html[lang="fa"] span:not([data-brand-logo]):not(.brand-logo-text),
+  html[lang="fa"] h1,
+  html[lang="fa"] h2,
+  html[lang="fa"] h3,
+  html[lang="fa"] h4,
+  html[lang="fa"] h5,
+  html[lang="fa"] h6,
+  html[lang="fa"] div:not([data-brand-logo]):not(.brand-lock),
+  html[lang="fa"] label,
+  html[lang="fa"] a,
+  html[lang="fa"] li {
+    font-family: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+    letter-spacing: 0 !important;
+  }
+
+  html[lang="fa"] h1,
+  html[lang="fa"] h2,
+  html[lang="fa"] h3 {
+    line-height: 1.35 !important;
+  }
+
+  html[lang="fa"] p {
+    line-height: 1.65 !important;
+  }
+
+  /* Comprehensive native typography for Arabic (Noto Sans Arabic) */
+  html[lang="ar"],
+  html[lang="ar"] body,
+  html[lang="ar"] #root,
+  html[lang="ar"] input,
+  html[lang="ar"] select,
+  html[lang="ar"] textarea,
+  html[lang="ar"] button:not([data-brand-logo]):not(.brand-logo-unit),
+  html[lang="ar"] p,
+  html[lang="ar"] span:not([data-brand-logo]):not(.brand-logo-text),
+  html[lang="ar"] h1,
+  html[lang="ar"] h2,
+  html[lang="ar"] h3,
+  html[lang="ar"] h4,
+  html[lang="ar"] h5,
+  html[lang="ar"] h6,
+  html[lang="ar"] div:not([data-brand-logo]):not(.brand-lock),
+  html[lang="ar"] label,
+  html[lang="ar"] a,
+  html[lang="ar"] li {
+    font-family: 'Noto Sans Arabic', 'Vazirmatn', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    letter-spacing: 0 !important;
+  }
+
+  html[lang="ar"] h1,
+  html[lang="ar"] h2,
+  html[lang="ar"] h3 {
+    line-height: 1.35 !important;
+  }
+
+  html[lang="ar"] p {
+    line-height: 1.65 !important;
+  }
+
+  /* Comprehensive native typography for Chinese (Noto Sans SC) */
+  html[lang="zh"],
+  html[lang="zh"] body,
+  html[lang="zh"] #root,
+  html[lang="zh"] input,
+  html[lang="zh"] button:not([data-brand-logo]):not(.brand-logo-unit),
+  html[lang="zh"] p,
+  html[lang="zh"] span:not([data-brand-logo]):not(.brand-logo-text),
+  html[lang="zh"] h1,
+  html[lang="zh"] h2,
+  html[lang="zh"] h3,
+  html[lang="zh"] div:not([data-brand-logo]):not(.brand-lock) {
+    font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif !important;
+    letter-spacing: 0 !important;
+  }
+
+  /* IMMUTABLE BRAND LOGO & TITLE: Absolute protection against any language font overrides & shifts */
+  html .brand-logo-text,
+  html [data-brand-logo],
+  html .brand-logo-unit,
+  .brand-logo-text,
+  .brand-logo-text *,
+  [data-brand-logo],
+  [data-brand-logo] * {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif !important;
+    letter-spacing: -0.02em !important;
+    direction: ltr !important;
+    unicode-bidi: isolate !important;
+    line-height: 1 !important;
+    font-size: 14px !important;
+    font-weight: 800 !important;
+    vertical-align: middle !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    transform: none !important;
+  }
+
+  /* Protected Monospace Numbers, Hashes, Currency & Speeds across all languages */
+  html[lang="fa"] .font-mono,
+  html[lang="fa"] [class*="font-mono"] {
+    font-family: 'JetBrains Mono', 'Vazirmatn', -apple-system, monospace !important;
+    letter-spacing: 0 !important;
+  }
+
+  html[lang="ar"] .font-mono,
+  html[lang="ar"] [class*="font-mono"] {
+    font-family: 'JetBrains Mono', 'Noto Sans Arabic', -apple-system, monospace !important;
+    letter-spacing: 0 !important;
+  }
+
+  html[lang="zh"] .font-mono,
+  html[lang="zh"] [class*="font-mono"] {
+    font-family: 'JetBrains Mono', 'Noto Sans SC', monospace !important;
+    letter-spacing: 0 !important;
+  }
+
+  html:not([lang="fa"]):not([lang="ar"]):not([lang="zh"]) .font-mono,
+  html:not([lang="fa"]):not([lang="ar"]):not([lang="zh"]) [class*="font-mono"],
+  code,
+  pre {
+    font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace !important;
+    letter-spacing: 0 !important;
+  }
+}
+
+/* Linear & Vercel Ultra-Craft Surface System - Razor-thin & Weightless */
+.linear-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 14px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.linear-card:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.07);
+}
+
+.linear-card-elevated {
+  background: rgba(16, 16, 20, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  box-shadow: 0 16px 36px -8px rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+/* Linear Top Spotlighting and Background Grid */
+.bg-linear-spotlight {
+  background: 
+    radial-gradient(700px circle at 50% -15%, rgba(255, 255, 255, 0.035), transparent 75%),
+    #000000;
+}
+
+.bg-grid-subtle {
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+  background-size: 24px 24px;
+  mask-image: radial-gradient(ellipse 65% 55% at 50% 25%, #000 20%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 65% 55% at 50% 25%, #000 20%, transparent 100%);
+}
+
+/* Tactile Vercel & Linear Button System */
+.btn-primary {
+  background-color: #ffffff;
+  color: #000000;
+  font-weight: 500;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+  border-radius: 10px;
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.btn-primary:hover {
+  background-color: #f0f0f0;
+  box-shadow: 0 2px 8px rgba(255, 255, 255, 0.12);
+}
+
+.btn-primary:active {
+  transform: scale(0.985);
+  background-color: #e4e4e4;
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.03);
+  color: #a1a1aa;
+  font-weight: 500;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.btn-secondary:active {
+  transform: scale(0.985);
+}
+
+/* Polar Badge Pill */
+.badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.safe-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+/* Header & Bottom Nav Strict Left-To-Right Enforcement and Height Locks */
+header,
+.header-strict-ltr {
+  direction: ltr !important;
+  text-align: left !important;
+  height: 3.5rem !important;
+  min-height: 3.5rem !important;
+  max-height: 3.5rem !important;
+  box-sizing: border-box !important;
+}
+
+nav,
+.navbar-strict-ltr {
+  direction: ltr !important;
+  text-align: left !important;
+}
+
+/* Hide scrollbars across all browsers while retaining touch & trackpad scrolling */
+* {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+}
+
+*::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+  width: 0;
+  height: 0;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}

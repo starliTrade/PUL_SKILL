@@ -1,0 +1,58 @@
+{
+  "entities": {
+    "users": {
+      "title": "Player User Profiles",
+      "description": "Cross-device user statistics and non-custodial vault information keyed by EVM wallet address.",
+      "type": "object",
+      "properties": {
+        "address": { "type": "string" },
+        "playerId": { "type": "string" },
+        "vaultBalance": { "type": "number" },
+        "wins": { "type": "number" },
+        "losses": { "type": "number" },
+        "voids": { "type": "number" },
+        "totalMatches": { "type": "number" },
+        "bestReactionMs": { "type": "number" },
+        "avgReactionMs": { "type": "number" },
+        "xp": { "type": "number" },
+        "level": { "type": "number" },
+        "savedFriends": { "type": "array" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["address", "vaultBalance", "wins", "losses", "totalMatches"]
+    },
+    "matches": {
+      "title": "Matches and Duels Ledger",
+      "description": "Global audited record of skill battle duels with reaction timings and EIP-712 oracle settlement verifications.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "playerAddress": { "type": "string" },
+        "opponentAddress": { "type": "string" },
+        "game": { "type": "string" },
+        "result": { "type": "string", "enum": ["win", "loss", "void"] },
+        "entryFee": { "type": "number" },
+        "prize": { "type": "number" },
+        "yourTime": { "type": "number" },
+        "opponentTime": { "type": "number" },
+        "timestamp": { "type": "number" },
+        "oracleSignature": { "type": "string" }
+      },
+      "required": ["id", "playerAddress", "game", "result", "entryFee", "timestamp"]
+    },
+    "leaderboard": {
+      "title": "Global Leaderboard",
+      "description": "Ranked speed and victory benchmark data for high-reflex players.",
+      "type": "object",
+      "properties": {
+        "address": { "type": "string" },
+        "wins": { "type": "number" },
+        "totalMatches": { "type": "number" },
+        "bestReactionMs": { "type": "number" },
+        "totalEarnedUSDT": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["address", "wins", "bestReactionMs"]
+    }
+  }
+}
