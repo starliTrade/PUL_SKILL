@@ -197,15 +197,8 @@ class RealWeb3Manager {
 
   constructor() {
     if (typeof window !== 'undefined') {
-      // Auto-restore previous connected session if available
-      try {
-        const savedAddr = localStorage.getItem('pulsar_active_address');
-        const savedProvider = localStorage.getItem('pulsar_active_provider') || 'MetaMask';
-        if (savedAddr && savedAddr.startsWith('0x')) {
-          this.setConnectedAddress(savedAddr, savedProvider, 137);
-        }
-      } catch {}
-
+      // A stored address is not proof of a live wallet session. Never restore a wallet
+      // from localStorage; the wallet must authorize this browser on every fresh session.
       if ((window as any).ethereum) {
         const ethereum = (window as any).ethereum;
 
@@ -640,53 +633,49 @@ class RealWeb3Manager {
             if (chainIdHex) chainId = parseInt(chainIdHex, 16);
           } catch {}
 
-          // Optional chain switch to Polygon Mainnet (137) if on different chain
           if (chainId !== 137) {
             try {
               await injected.request({
                 method: 'wallet_switchEthereumChain',
-                params: [{ chainId: '0x89' }], // 137 in hex
+                params: [{ chainId: '0x89' }],
               });
               chainId = 137;
             } catch (switchError: any) {
-              // If chain not added to wallet, try to add Polygon Mainnet
               if (switchError.code === 4902) {
-                try {
-                  await injected.request({
-                    method: 'wallet_addEthereumChain',
-                    params: [
-                      {
-                        chainId: '0x89',
-                        chainName: 'Polygon Mainnet',
-                        nativeCurrency: { name: 'POL', symbol: 'POL', decimals: 18 },
-                        rpcUrls: ['https://polygon-rpc.com'],
-                        blockExplorerUrls: ['https://polygonscan.com'],
-                      },
-                    ],
-                  });
-                  chainId = 137;
-                } catch {}
+                await injected.request({
+                  method: 'wallet_addEthereumChain',
+                  params: [{
+                    chainId: '0x89',
+                    chainName: 'Polygon Mainnet',
+                    nativeCurrency: { name: 'POL', symbol: 'POL', decimals: 18 },
+                    rpcUrls: ['https://polygon-rpc.com'],
+                    blockExplorerUrls: ['https://polygonscan.com'],
+                  }],
+                });
+                chainId = 137;
+              } else {
+                throw new Error('Please approve the Polygon network switch in your wallet.');
               }
             }
           }
 
           return await this.setConnectedAddress(accounts[0], provider, chainId);
-        } else {
-          throw new Error('No accounts selected in your wallet.');
         }
+        throw new Error('No wallet account was selected.');
       } catch (err: any) {
         if (err?.code === 4001 || err?.message?.includes('User rejected') || err?.message?.includes('cancelled')) {
           throw new Error('Connection request was cancelled in your wallet.');
         }
         if (err?.code === -32002) {
-          throw new Error('Wallet is waiting for your confirmation. Please check your wallet popup.');
+          throw new Error('Wallet is waiting for your confirmation. Please check your wallet app.');
         }
-        console.warn('Injected wallet call was not completed, trying mobile handoff:', err);
+        // Do not silently fall back to a fake/local session after a real wallet error.
+        if (err instanceof Error) throw err;
+        throw new Error('The wallet did not complete the connection request.');
       }
     }
 
-    // When extension is not injected in this window (e.g. mobile Safari/Chrome or desktop without extension),
-    // we seamlessly connect via WalletConnect targeted deep link directly into MetaMask / Trust Wallet!
+    // On mobile browsers, WalletConnect is the only real-wallet handoff available.
     return await this.connectWalletConnectTargeted(provider, onUri);
   }
 

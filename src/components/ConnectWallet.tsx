@@ -308,23 +308,14 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
       return;
     }
 
-    // 2. Instant 1-Click Guest Duelist
-    if (walletId === 'InstantGuest') {
-      setConnectingWalletId(walletId);
-      try {
-        await connectInstantGuestWallet();
-        sounds.playWin();
-        setIsOpen(false);
-      } catch (err: any) {
-        sounds.playLoss();
-        setErrorMessage(err?.message || 'Failed to initialize instant guest wallet.');
-      } finally {
-        setConnectingWalletId(null);
-      }
+    // Every successful session must be authorized by a real wallet. Guest/local
+    // wallets are intentionally not offered by this connector.
+    if (walletId === 'InstantGuest' || walletId === 'DirectAddress') {
+      setErrorMessage('Please connect a real wallet and approve the request.');
       return;
     }
 
-    // 3. WalletConnect generic modal
+    // WalletConnect generic modal
     if (walletId === 'WalletConnect') {
       setConnectingWalletId(walletId);
       try {
@@ -461,30 +452,6 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
       id: 'Rainbow',
       name: 'Rainbow',
       logo: <RainbowLogo />,
-    },
-    {
-      id: 'DirectAddress',
-      name: 'Connect Real Wallet Address',
-      subtitle: 'Paste any EVM / Polygon address (0x...)',
-      badge: 'Real Address',
-      badgeType: 'instant',
-      logo: (
-        <div className="w-full h-full rounded-xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400 font-bold text-sm shadow-inner">
-          <Key className="w-4 h-4 text-sky-400" />
-        </div>
-      ),
-    },
-    {
-      id: 'InstantGuest',
-      name: 'Instant Web3 Duelist',
-      subtitle: 'Play instantly without extension or app',
-      badge: 'Instant 1-Click',
-      badgeType: 'instant',
-      logo: (
-        <div className="w-full h-full rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold text-sm shadow-inner">
-          ⚡
-        </div>
-      ),
     },
   ];
 
