@@ -13,6 +13,7 @@
   "dependencies": {
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
+    "@tanstack/react-query": "^5.102.8",
     "@vitejs/plugin-react": "^5.0.4",
     "@walletconnect/ethereum-provider": "^2.24.0",
     "@walletconnect/modal": "^2.7.0",
@@ -31,7 +32,9 @@
     "tailwind-merge": "^3.6.0",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "viem": "^2.56.3",
+    "vite": "^6.2.3",
+    "wagmi": "^3.7.7"
   },
   "devDependencies": {
     "@types/canvas-confetti": "^1.9.0",

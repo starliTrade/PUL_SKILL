@@ -3,64 +3,70 @@ import {createRoot} from 'react-dom/client';
 import { EventEmitter } from 'events';
 import App from './App.tsx';
 import { LanguageProvider } from './i18n/LanguageContext';
+import { Web3Provider } from './hooks/useWeb3';
 import './index.css';
 
 // Safety polyfills and error interceptors for Web3 libraries in browser and preview environments
 if (typeof window !== 'undefined') {
-  // Prevent unhandled WalletConnect EventEmitter error crashes when relay closes with code 3000 (origin not allowed)
+  const isIgnorableBackgroundError = (raw: any): boolean => {
+    const msg = String(
+      typeof raw === 'string'
+        ? raw
+        : raw?.message || raw?.error?.message || raw?.reason?.message || raw?.reason || ''
+    ).toLowerCase();
+
+    return (
+      msg.includes('3000') ||
+      msg.includes('403') ||
+      msg.includes('http status code') ||
+      msg.includes('forbidden') ||
+      msg.includes('origin not allowed') ||
+      msg.includes('websocket connection closed') ||
+      msg.includes('failed to connect to websocket') ||
+      msg.includes('unauthorized') ||
+      msg.includes('walletconnect') ||
+      msg.includes('relay.walletconnect')
+    );
+  };
+
+  // Prevent unhandled WalletConnect EventEmitter error crashes when relay closes or rejects
   try {
     const origEmit = EventEmitter.prototype.emit;
     EventEmitter.prototype.emit = function (type: string, ...args: any[]) {
-      if (type === 'error') {
-        const err = args[0];
-        const msg = String(typeof err === 'string' ? err : (err?.message || '')).toLowerCase();
-        if (
-          msg.includes('3000') ||
-          msg.includes('origin not allowed') ||
-          msg.includes('websocket connection closed') ||
-          msg.includes('unauthorized')
-        ) {
-          console.warn('[Pulsar Web3] Safely caught WalletConnect relay WebSocket origin error:', err?.message || err);
-          return false;
-        }
+      if (type === 'error' && isIgnorableBackgroundError(args[0])) {
+        console.warn('[Pulsar Web3] Handled background relay event:', args[0]?.message || args[0]);
+        return false;
       }
       return origEmit.apply(this, [type, ...args] as any);
     };
   } catch {}
 
-  // Intercept window uncaught errors from background WebSockets
-  window.addEventListener('error', (event: ErrorEvent) => {
-    const rawMsg = event?.message || (event?.error && event.error.message) || '';
-    const msg = String(rawMsg).toLowerCase();
-    if (
-      msg.includes('3000') ||
-      msg.includes('origin not allowed') ||
-      msg.includes('websocket connection closed') ||
-      msg.includes('unauthorized')
-    ) {
-      console.warn('[Pulsar Web3] Intercepted background WebSocket origin error:', rawMsg);
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      return true;
-    }
-  }, true);
+  // Intercept window uncaught errors from background WebSockets / Relay
+  window.addEventListener(
+    'error',
+    (event: ErrorEvent) => {
+      if (isIgnorableBackgroundError(event)) {
+        console.warn('[Pulsar Web3] Intercepted background network error:', event.message);
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return true;
+      }
+    },
+    true
+  );
 
-  // Intercept window unhandled promise rejections from background WebSockets
-  window.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
-    const reason = event?.reason;
-    const rawMsg = typeof reason === 'string' ? reason : (reason?.message || '');
-    const msg = String(rawMsg).toLowerCase();
-    if (
-      msg.includes('3000') ||
-      msg.includes('origin not allowed') ||
-      msg.includes('websocket connection closed') ||
-      msg.includes('unauthorized')
-    ) {
-      console.warn('[Pulsar Web3] Intercepted background WebSocket unhandled rejection:', rawMsg);
-      event.preventDefault();
-      event.stopImmediatePropagation();
-    }
-  }, true);
+  // Intercept window unhandled promise rejections from background WebSockets / Relay
+  window.addEventListener(
+    'unhandledrejection',
+    (event: PromiseRejectionEvent) => {
+      if (isIgnorableBackgroundError(event.reason)) {
+        console.warn('[Pulsar Web3] Intercepted background unhandled rejection:', event.reason);
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    },
+    true
+  );
 
   try {
     if (typeof (window as any).global === 'undefined') {
@@ -94,9 +100,11 @@ if (typeof window !== 'undefined') {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <LanguageProvider>
-      <App />
-    </LanguageProvider>
+    <Web3Provider>
+      <LanguageProvider>
+        <App />
+      </LanguageProvider>
+    </Web3Provider>
   </StrictMode>,
 );
 

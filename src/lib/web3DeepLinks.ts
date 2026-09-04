@@ -1,6 +1,7 @@
 /**
- * Web3 Mobile Deep Linking & Environment Detection
- * Provides OpenSea/Uniswap-grade seamless mobile wallet connectivity via WalletConnect.
+ * Web3 Mobile Deep Linking & Native Wallet Session Authorization
+ * Pure WalletConnect session approval: opens the native wallet ONLY to prompt for
+ * session connection/signing permission, keeping the dApp running entirely in this browser.
  */
 
 export const isMobileDevice = (): boolean => {
@@ -32,11 +33,45 @@ export const isIframeOrSandboxed = (): boolean => {
 };
 
 /**
- * Universal Links for WalletConnect: opens native wallet directly to issue permission/sign.
- * Does NOT open the in-app browser; directly prompts for connection approval.
+ * Direct Native Application URL Schemes:
+ * Directly invokes the wallet app's native activity/view for session permission approval.
+ * Bypasses intermediate web redirectors (like Branch.io) that can drop URI parameters on Android.
+ */
+export const getNativeSchemeUri = (walletId: string, wcUri: string): string => {
+  if (!wcUri || wcUri.trim().length === 0) return '';
+  const encodedUri = encodeURIComponent(wcUri.trim());
+  const id = walletId.toLowerCase();
+  switch (id) {
+    case 'metamask':
+      return `metamask://wc?uri=${encodedUri}`;
+    case 'trust':
+    case 'trustwallet':
+      return `trust://wc?uri=${encodedUri}`;
+    case 'rainbow':
+      return `rainbow://wc?uri=${encodedUri}`;
+    case 'coinbase':
+    case 'coinbasewallet':
+      return `cbwallet://wc?uri=${encodedUri}`;
+    case 'phantom':
+      return `phantom://ul/v1/connect?uri=${encodedUri}`;
+    case 'okx':
+      return `okx://wallet/wc?uri=${encodedUri}`;
+    case 'bitget':
+      return `bitkeep://wc?uri=${encodedUri}`;
+    case 'zerion':
+      return `zerion://wc?uri=${encodedUri}`;
+    default:
+      return `wc:${encodedUri}`;
+  }
+};
+
+/**
+ * Universal Links for WalletConnect:
+ * Fallback HTTPS links that instruct the OS to open the installed app for permission confirmation.
  */
 export const getWalletConnectDeepLink = (walletId: string, wcUri: string): string => {
-  const encodedUri = encodeURIComponent(wcUri);
+  if (!wcUri || wcUri.trim().length === 0) return '';
+  const encodedUri = encodeURIComponent(wcUri.trim());
   const id = walletId.toLowerCase();
 
   switch (id) {
@@ -64,86 +99,47 @@ export const getWalletConnectDeepLink = (walletId: string, wcUri: string): strin
 };
 
 /**
- * Direct DApp Browser Links:
- * Opens the current website DIRECTLY inside the mobile wallet's native in-app Web3 browser.
- * Inside the native wallet browser, window.ethereum is already present and connects instantly with 1 tap.
+ * Trigger native mobile wallet session handoff:
+ * Direct navigation via window.location.href opens the native wallet app directly to the
+ * connection confirmation screen without opening empty browser tabs or unloading the dApp.
  */
-export const getDAppBrowserDeepLink = (walletId: string, targetUrl?: string): string => {
-  const fullUrl =
-    targetUrl ||
-    (typeof window !== 'undefined'
-      ? window.location.origin + window.location.pathname
-      : 'https://pulsar.arena');
-
-  const cleanWithoutProtocol = fullUrl.replace(/^https?:\/\//i, '');
-  const encodedFullUrl = encodeURIComponent(fullUrl);
-  const id = walletId.toLowerCase();
-
-  switch (id) {
-    case 'metamask':
-      // MetaMask expects URL without https://
-      return `https://metamask.app.link/dapp/${cleanWithoutProtocol}`;
-    case 'trust':
-    case 'trustwallet':
-      return `https://link.trustwallet.com/open_url?coin_id=60&url=${encodedFullUrl}`;
-    case 'coinbase':
-    case 'coinbasewallet':
-      return `https://go.cb-w.com/dapp?cb_url=${encodedFullUrl}`;
-    case 'phantom':
-      return `https://phantom.app/ul/browse/${encodedFullUrl}?ref=${encodedFullUrl}`;
-    case 'okx':
-      return `okx://wallet/dapp/url?dappUrl=${encodedFullUrl}`;
-    case 'rainbow':
-      return `https://rainbow.me/dapp?url=${encodedFullUrl}`;
-    case 'bitget':
-      return `https://bkcode.vip?action=dapp&url=${encodedFullUrl}`;
-    default:
-      return `https://metamask.app.link/dapp/${cleanWithoutProtocol}`;
-  }
-};
-
-/**
- * Native Custom URL Schemes as fallback for specific mobile apps
- */
-export const getNativeSchemeUri = (walletId: string, wcUri: string): string => {
-  const encodedUri = encodeURIComponent(wcUri);
-  const id = walletId.toLowerCase();
-  switch (id) {
-    case 'metamask':
-      return `metamask://wc?uri=${encodedUri}`;
-    case 'trust':
-    case 'trustwallet':
-      return `trust://wc?uri=${encodedUri}`;
-    case 'rainbow':
-      return `rainbow://wc?uri=${encodedUri}`;
-    case 'coinbase':
-    case 'coinbasewallet':
-      return `cbwallet://wc?uri=${encodedUri}`;
-    case 'phantom':
-      return `phantom://wc?uri=${encodedUri}`;
-    default:
-      return `wc:${encodedUri}`;
-  }
-};
-
-/**
- * Trigger native mobile wallet handoff
- */
-export const triggerMobileWalletHandoff = (deepLink: string): void => {
+export const triggerMobileWalletHandoff = (nativeScheme?: string, universalLink?: string): void => {
   if (typeof window === 'undefined') return;
-  try {
-    let topAttempted = false;
-    try {
-      if (window.top && window.top !== window.self) {
-        window.top.location.href = deepLink;
-        topAttempted = true;
-      }
-    } catch {}
 
-    if (!topAttempted) {
-      window.location.href = deepLink;
+  // Prefer direct native scheme (e.g. metamask://wc?uri=... or trust://wc?uri=...)
+  // because native schemes deliver the URI directly to the wallet's permission prompt.
+  const target =
+    nativeScheme && nativeScheme.trim().length > 0 && nativeScheme !== '#'
+      ? nativeScheme.trim()
+      : universalLink && universalLink.trim().length > 0 && universalLink !== '#'
+      ? universalLink.trim()
+      : '';
+
+  if (!target) {
+    console.warn('[Pulsar Web3] Cannot trigger handoff: target is empty');
+    return;
+  }
+
+  // Guard: NEVER trigger wallet with an empty uri parameter
+  if (
+    target.endsWith('wc?uri=') ||
+    target.endsWith('wc?uri') ||
+    target.endsWith('connect?uri=') ||
+    target.endsWith('connect?uri')
+  ) {
+    console.warn('[Pulsar Web3] Aborted handoff: WalletConnect URI parameter is empty');
+    return;
+  }
+
+  try {
+    // Calling window.location.href with custom scheme lets mobile OS open the wallet app directly
+    // and keeps the current browser window active in the background.
+    window.location.href = target;
+  } catch {
+    try {
+      window.location.assign(target);
+    } catch (err) {
+      console.warn('[Pulsar Web3] Native handoff error:', err);
     }
-  } catch (err) {
-    console.warn('Handoff error:', err);
   }
 };

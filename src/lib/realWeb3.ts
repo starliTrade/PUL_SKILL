@@ -353,10 +353,13 @@ class RealWeb3Manager {
       }
       if (
         err?.message?.includes('3000') ||
+        err?.message?.includes('403') ||
+        err?.message?.includes('forbidden') ||
+        err?.message?.includes('HTTP status code') ||
         err?.message?.includes('origin not allowed') ||
         err?.message?.includes('WebSocket connection closed')
       ) {
-        throw new Error('WalletConnect relay origin constraint on this domain. Please connect using an installed browser wallet extension or the 1-Click Instant Guest Duelist.');
+        throw new Error('WalletConnect relay access restricted on this preview domain. Please connect using your mobile wallet browser (MetaMask / Trust), an installed browser extension, or enter your wallet address directly.');
       }
       throw err;
     }
@@ -476,11 +479,11 @@ class RealWeb3Manager {
 
   public async connectWalletConnectTargeted(
     providerName: string = 'MetaMask',
-    onUri?: (uri: string, deepLink: string) => void
+    onUri?: (uri: string, deepLink: string, nativeScheme?: string) => void
   ): Promise<ConnectedAccountState> {
     try {
       const EthereumProviderClass = await getEthereumProviderClass();
-      const { getWalletConnectDeepLink, triggerMobileWalletHandoff, isMobileDevice } = await import('./web3DeepLinks');
+      const { getWalletConnectDeepLink, getNativeSchemeUri, triggerMobileWalletHandoff, isMobileDevice } = await import('./web3DeepLinks');
       const projectId = getWalletConnectProjectId();
 
       if (this.wcProvider) {
@@ -522,14 +525,15 @@ class RealWeb3Manager {
       this.wcProvider.on('display_uri', (uri: string) => {
         this.lastWcUri = uri;
         const deepLink = getWalletConnectDeepLink(providerName, uri);
+        const nativeScheme = getNativeSchemeUri(providerName, uri);
         if (onUri) {
-          onUri(uri, deepLink);
+          onUri(uri, deepLink, nativeScheme);
         }
         this.wcUriListeners.forEach((cb) => cb(uri));
 
-        // On mobile devices, immediately handoff to the native wallet app
+        // On mobile devices, immediately handoff to the native wallet app for session authorization
         if (isMobile) {
-          triggerMobileWalletHandoff(deepLink);
+          triggerMobileWalletHandoff(nativeScheme, deepLink);
         }
       });
 
@@ -545,17 +549,17 @@ class RealWeb3Manager {
         this.disconnect();
       });
 
-      // Safety timeout of 14 seconds so mobile UI never gets stuck in a permanent spinner
+      // Generous timeout (180s) so mobile users have time for FaceID / app switching
       const targetedConnectPromise = this.wcProvider.connect();
       const targetedTimeoutPromise = new Promise((_, reject) =>
         setTimeout(
           () =>
             reject(
               new Error(
-                `Connection request to ${providerName} timed out. Please tap "Open in ${providerName} App" or connect with your wallet address.`
+                `Connection request to ${providerName} timed out. Please tap "Open ${providerName} App" or try again.`
               )
             ),
-          14000
+          180000
         )
       );
       await Promise.race([targetedConnectPromise, targetedTimeoutPromise]);
@@ -572,10 +576,13 @@ class RealWeb3Manager {
       }
       if (
         err?.message?.includes('3000') ||
+        err?.message?.includes('403') ||
+        err?.message?.includes('forbidden') ||
+        err?.message?.includes('HTTP status code') ||
         err?.message?.includes('origin not allowed') ||
         err?.message?.includes('WebSocket connection closed')
       ) {
-        throw new Error(`WalletConnect relay origin constraint on this domain. Please connect using an installed browser wallet extension or the 1-Click Instant Guest Duelist.`);
+        throw new Error(`WalletConnect relay access restricted on this preview domain. Please open directly in your mobile ${providerName} app, an installed browser extension, or enter your wallet address.`);
       }
       throw err;
     }
@@ -601,9 +608,19 @@ class RealWeb3Manager {
     }
   }
 
+  public cancelPendingConnect(): void {
+    if (this.wcProvider) {
+      try {
+        if (!this.wcProvider.connected) {
+          this.wcProvider.disconnect().catch(() => {});
+        }
+      } catch {}
+    }
+  }
+
   public async connect(
     provider: string = 'MetaMask',
-    onUri?: (uri: string, deepLink: string) => void
+    onUri?: (uri: string, deepLink: string, nativeScheme?: string) => void
   ): Promise<ConnectedAccountState> {
     let injected = this.getInjectedProvider(provider);
 

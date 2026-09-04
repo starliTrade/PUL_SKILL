@@ -70,7 +70,7 @@ export function usePulsarStore() {
 
   const connectWallet = async (
     provider: string = 'MetaMask',
-    onUri?: (uri: string, deepLink: string) => void
+    onUri?: (uri: string, deepLink: string, nativeScheme?: string) => void
   ) => {
     try {
       const acc = await realWeb3Manager.connect(provider, onUri);
@@ -84,6 +84,10 @@ export function usePulsarStore() {
     } catch (err) {
       throw err;
     }
+  };
+
+  const cancelPendingConnect = () => {
+    realWeb3Manager.cancelPendingConnect();
   };
 
   const connectEIP6963 = async (providerDetail: EIP6963ProviderDetail) => {
@@ -249,6 +253,7 @@ export function usePulsarStore() {
     connectWalletConnect,
     connectDirectWallet,
     connectInstantGuestWallet,
+    cancelPendingConnect,
     disconnectWallet,
     recordMatch,
     depositFunds,
