@@ -38,7 +38,7 @@ export function usePulsarStore() {
   });
 
   useEffect(() => {
-    // Initial fetch of cloud leaderboard
+    realWeb3Manager.restoreWalletConnectSession().catch(() => {});
     realWeb3Manager.fetchGlobalLeaderboard().then(setLeaderboard);
 
     const unsubscribe = realWeb3Manager.subscribe(() => {

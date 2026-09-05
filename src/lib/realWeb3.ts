@@ -16,7 +16,13 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
-import { isMobileDevice, isInAppBrowser, getWalletConnectDeepLink, triggerMobileWalletHandoff } from './web3DeepLinks';
+import {
+  isMobileDevice,
+  isWalletInAppBrowser,
+  getWalletConnectDeepLink,
+  getNativeSchemeUri,
+  openWalletConnectInNativeApp,
+} from './web3DeepLinks';
 
 export const getWalletConnectProjectId = (): string => {
   const envId = typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_WALLETCONNECT_PROJECT_ID;
@@ -197,8 +203,8 @@ class RealWeb3Manager {
 
   constructor() {
     if (typeof window !== 'undefined') {
-      // A stored address is not proof of a live wallet session. Never restore a wallet
-      // from localStorage; the wallet must authorize this browser on every fresh session.
+      this.attachForegroundResume();
+
       if ((window as any).ethereum) {
         const ethereum = (window as any).ethereum;
 
@@ -252,8 +258,14 @@ class RealWeb3Manager {
   }
 
   private wcProvider: any = null;
+  private wcInitPromise: Promise<any> | null = null;
+  private wcConnectPromise: Promise<ConnectedAccountState> | null = null;
+  private wcEventsBound = false;
+  private wcForegroundBound = false;
+  private pendingWalletName = 'WalletConnect';
   private wcUriListeners: Array<(uri: string) => void> = [];
   public lastWcUri: string | null = null;
+  public lastHandoff: { uri: string; deepLink: string; nativeScheme: string } | null = null;
 
   public onWcUri(callback: (uri: string) => void): () => void {
     this.wcUriListeners.push(callback);
@@ -269,100 +281,265 @@ class RealWeb3Manager {
     return eip6963Manager.getProviders();
   }
 
-  public async connectWalletConnect(onUriGenerated?: (uri: string) => void): Promise<ConnectedAccountState> {
-    try {
-      const EthereumProviderClass = await getEthereumProviderClass();
-      const projectId = getWalletConnectProjectId();
+  private wcMetadata() {
+    return {
+      name: 'PULSAR Arena',
+      description: 'PULSAR Ultra-Reaction Arena',
+      url: typeof window !== 'undefined' ? window.location.origin : 'https://pulsar.arena',
+      icons: ['https://avatars.githubusercontent.com/u/37784886'],
+    };
+  }
 
-      if (this.wcProvider) {
-        try {
-          if (this.wcProvider.connected) {
-            await this.wcProvider.disconnect();
-          }
-        } catch {}
+  private emitWcUri(uri: string, walletName: string = this.pendingWalletName): void {
+    this.lastWcUri = uri;
+    const deepLink = getWalletConnectDeepLink(walletName, uri);
+    const nativeScheme = getNativeSchemeUri(walletName, uri);
+    this.lastHandoff = { uri, deepLink, nativeScheme };
+    this.wcUriListeners.forEach((cb) => cb(uri));
+  }
+
+  private bindWcProviderEvents(provider: any): void {
+    if (!provider || this.wcEventsBound) return;
+    this.wcEventsBound = true;
+
+    try {
+      provider.on('error', (err: any) => {
+        console.warn('[Pulsar Web3] WalletConnect provider error:', err);
+      });
+      const innerProvider = provider?.signer?.client?.core?.relayer?.provider;
+      if (innerProvider && typeof innerProvider.on === 'function') {
+        innerProvider.on('error', (err: any) => {
+          console.warn('[Pulsar Web3] WalletConnect relay error:', err);
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+
+    provider.on('display_uri', (uri: string) => {
+      this.emitWcUri(uri, this.pendingWalletName);
+    });
+
+    provider.on('accountsChanged', (accounts: string[]) => {
+      if (!accounts || accounts.length === 0) {
+        this.disconnect();
+      } else {
+        this.setConnectedAddress(accounts[0], this.pendingWalletName || 'WalletConnect', 137);
+      }
+    });
+
+    provider.on('disconnect', () => {
+      if (this.currentAccount.connected) {
+        this.disconnect();
+      }
+    });
+  }
+
+  private attachForegroundResume(): void {
+    if (this.wcForegroundBound || typeof document === 'undefined') return;
+    this.wcForegroundBound = true;
+
+    const resume = async () => {
+      if (!this.wcProvider) return;
+      try {
+        const relayer = this.wcProvider?.signer?.client?.core?.relayer;
+        if (relayer && typeof relayer.transportOpen === 'function' && !relayer.connected) {
+          await relayer.transportOpen();
+        }
+      } catch {
+        /* ignore */
       }
 
-      this.wcProvider = await EthereumProviderClass.init({
+      const accounts = this.wcProvider?.accounts;
+      if (accounts && accounts.length > 0 && !this.currentAccount.connected) {
+        await this.setConnectedAddress(
+          accounts[0],
+          this.pendingWalletName || 'WalletConnect',
+          this.wcProvider.chainId || 137
+        );
+      }
+    };
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        void resume();
+      }
+    });
+    window.addEventListener('pageshow', () => {
+      void resume();
+    });
+    window.addEventListener('focus', () => {
+      void resume();
+    });
+  }
+
+  private async ensureWcProvider(): Promise<any> {
+    if (this.wcProvider) return this.wcProvider;
+    if (this.wcInitPromise) return this.wcInitPromise;
+
+    this.wcInitPromise = (async () => {
+      const EthereumProviderClass = await getEthereumProviderClass();
+      const projectId = getWalletConnectProjectId();
+      const provider = await EthereumProviderClass.init({
         projectId,
         chains: [137],
         optionalChains: [1, 56, 42161],
-        showQrModal: true,
-        metadata: {
-          name: 'PULSAR Arena',
-          description: 'PULSAR Ultra-Reaction Arena',
-          url: typeof window !== 'undefined' ? window.location.origin : 'https://pulsar.arena',
-          icons: ['https://avatars.githubusercontent.com/u/37784886'],
-        },
+        showQrModal: false,
+        metadata: this.wcMetadata(),
       });
+      this.wcProvider = provider;
+      this.bindWcProviderEvents(provider);
+      return provider;
+    })();
 
-      // Attach error listeners to prevent unhandled EventEmitter crashes
-      try {
-        this.wcProvider.on('error', (err: any) => {
-          console.warn('[Pulsar Web3] Handled WalletConnect provider error event:', err);
-        });
-        const innerProvider = (this.wcProvider as any)?.signer?.client?.core?.relayer?.provider;
-        if (innerProvider && typeof innerProvider.on === 'function') {
-          innerProvider.on('error', (err: any) => {
-            console.warn('[Pulsar Web3] Handled WalletConnect internal relay provider error event:', err);
-          });
-        }
-      } catch {}
-
-      this.wcProvider.on('display_uri', (uri: string) => {
-        this.lastWcUri = uri;
-        if (onUriGenerated) onUriGenerated(uri);
-        this.wcUriListeners.forEach((cb) => cb(uri));
-      });
-
-      this.wcProvider.on('accountsChanged', (accounts: string[]) => {
-        if (!accounts || accounts.length === 0) {
-          this.disconnect();
-        } else {
-          this.setConnectedAddress(accounts[0], 'WalletConnect', 137);
-        }
-      });
-
-      this.wcProvider.on('disconnect', () => {
-        this.disconnect();
-      });
-
-      // Safety timeout of 14 seconds so mobile UI never gets stuck in a permanent spinner
-      const connectPromise = this.wcProvider.connect();
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(
-          () =>
-            reject(
-              new Error(
-                'WalletConnect session timed out. Tap "Open in Wallet App" to launch your wallet directly, or connect by address.'
-              )
-            ),
-          14000
-        )
-      );
-      await Promise.race([connectPromise, timeoutPromise]);
-      const accounts = this.wcProvider.accounts;
-      if (accounts && accounts.length > 0) {
-        const chainId = this.wcProvider.chainId || 137;
-        return await this.setConnectedAddress(accounts[0], 'WalletConnect', chainId);
-      } else {
-        throw new Error('No accounts selected in your wallet.');
-      }
-    } catch (err: any) {
-      if (err?.message?.includes('User closed') || err?.message?.includes('Modal closed') || err?.message?.includes('User rejected')) {
-        throw new Error('Connection request was cancelled.');
-      }
-      if (
-        err?.message?.includes('3000') ||
-        err?.message?.includes('403') ||
-        err?.message?.includes('forbidden') ||
-        err?.message?.includes('HTTP status code') ||
-        err?.message?.includes('origin not allowed') ||
-        err?.message?.includes('WebSocket connection closed')
-      ) {
-        throw new Error('WalletConnect relay access restricted on this preview domain. Please connect using your mobile wallet browser (MetaMask / Trust), an installed browser extension, or enter your wallet address directly.');
-      }
+    try {
+      return await this.wcInitPromise;
+    } catch (err) {
+      this.wcInitPromise = null;
+      this.wcProvider = null;
+      this.wcEventsBound = false;
       throw err;
     }
+  }
+
+  private mapWcError(err: any, providerName: string): Error {
+    const msg = String(err?.message || err || '');
+    if (
+      msg.includes('User closed') ||
+      msg.includes('Modal closed') ||
+      msg.includes('User rejected') ||
+      msg.includes('cancelled')
+    ) {
+      return new Error('Connection request was cancelled.');
+    }
+    if (
+      msg.includes('3000') ||
+      msg.includes('403') ||
+      msg.includes('forbidden') ||
+      msg.includes('HTTP status code') ||
+      msg.includes('origin not allowed') ||
+      msg.includes('WebSocket connection closed')
+    ) {
+      return new Error(
+        `WalletConnect relay blocked this origin. Add this domain in the Reown/WalletConnect Cloud project, then tap ${providerName} again.`
+      );
+    }
+    if (err instanceof Error) return err;
+    return new Error(msg || `Failed to connect ${providerName}`);
+  }
+
+  public async restoreWalletConnectSession(): Promise<ConnectedAccountState | null> {
+    try {
+      const provider = await this.ensureWcProvider();
+      const accounts = provider?.accounts;
+      if (provider?.session && accounts && accounts.length > 0) {
+        this.pendingWalletName = 'WalletConnect';
+        return await this.setConnectedAddress(accounts[0], 'WalletConnect', provider.chainId || 137);
+      }
+    } catch (err) {
+      console.warn('[Pulsar Web3] No persisted WalletConnect session:', err);
+    }
+    return null;
+  }
+
+  public prepareWalletConnect(): void {
+    if (typeof window === 'undefined') return;
+    if (this.currentAccount.connected) return;
+    if (this.wcConnectPromise) return;
+    void this.startWalletConnectPairing('WalletConnect');
+  }
+
+  public openPreparedWallet(walletId: string): boolean {
+    const uri = this.lastWcUri;
+    if (!uri) return false;
+    this.pendingWalletName = walletId;
+    this.emitWcUri(uri, walletId);
+    return openWalletConnectInNativeApp(walletId, uri);
+  }
+
+  private startWalletConnectPairing(
+    providerName: string,
+    onUri?: (uri: string, deepLink: string, nativeScheme?: string) => void
+  ): Promise<ConnectedAccountState> {
+    this.pendingWalletName = providerName;
+
+    if (this.wcConnectPromise) {
+      if (this.lastWcUri && onUri) {
+        onUri(
+          this.lastWcUri,
+          getWalletConnectDeepLink(providerName, this.lastWcUri),
+          getNativeSchemeUri(providerName, this.lastWcUri)
+        );
+      }
+      return this.wcConnectPromise;
+    }
+
+    this.wcConnectPromise = (async () => {
+      try {
+        const provider = await this.ensureWcProvider();
+
+        if (provider.session && provider.accounts?.length) {
+          return await this.setConnectedAddress(
+            provider.accounts[0],
+            providerName,
+            provider.chainId || 137
+          );
+        }
+
+        const uriUnsub = this.onWcUri((uri) => {
+          if (onUri) {
+            onUri(uri, getWalletConnectDeepLink(providerName, uri), getNativeSchemeUri(providerName, uri));
+          }
+        });
+
+        const connectPromise = provider.connect();
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `Connection to ${providerName} timed out. Return to this browser after approving in the wallet.`
+                )
+              ),
+            300000
+          )
+        );
+
+        try {
+          await Promise.race([connectPromise, timeoutPromise]);
+        } finally {
+          uriUnsub();
+        }
+
+        const accounts = provider.accounts;
+        if (accounts && accounts.length > 0) {
+          const chainId = provider.chainId || 137;
+          return await this.setConnectedAddress(accounts[0], providerName, chainId);
+        }
+        throw new Error('No accounts selected in your wallet.');
+      } catch (err: any) {
+        this.wcConnectPromise = null;
+        throw this.mapWcError(err, providerName);
+      }
+    })();
+
+    this.wcConnectPromise.then(
+      () => {
+        this.wcConnectPromise = null;
+        this.lastWcUri = null;
+      },
+      () => {
+        this.wcConnectPromise = null;
+      }
+    );
+
+    return this.wcConnectPromise;
+  }
+
+  public async connectWalletConnect(onUriGenerated?: (uri: string) => void): Promise<ConnectedAccountState> {
+    return this.startWalletConnectPairing('WalletConnect', (uri) => {
+      onUriGenerated?.(uri);
+    });
   }
 
   public getInjectedProvider(providerName: string = 'MetaMask'): any {
@@ -481,111 +658,7 @@ class RealWeb3Manager {
     providerName: string = 'MetaMask',
     onUri?: (uri: string, deepLink: string, nativeScheme?: string) => void
   ): Promise<ConnectedAccountState> {
-    try {
-      const EthereumProviderClass = await getEthereumProviderClass();
-      const { getWalletConnectDeepLink, getNativeSchemeUri, triggerMobileWalletHandoff, isMobileDevice } = await import('./web3DeepLinks');
-      const projectId = getWalletConnectProjectId();
-
-      if (this.wcProvider) {
-        try {
-          if (this.wcProvider.connected) {
-            await this.wcProvider.disconnect();
-          }
-        } catch {}
-      }
-
-      const isMobile = isMobileDevice();
-
-      this.wcProvider = await EthereumProviderClass.init({
-        projectId,
-        chains: [137],
-        optionalChains: [1, 56, 42161],
-        showQrModal: false, // Clean targeted direct handoff without generic blocking modal
-        metadata: {
-          name: 'PULSAR Arena',
-          description: 'PULSAR Ultra-Reaction Arena',
-          url: typeof window !== 'undefined' ? window.location.origin : 'https://pulsar.arena',
-          icons: ['https://avatars.githubusercontent.com/u/37784886'],
-        },
-      });
-
-      // Attach error listeners to prevent unhandled EventEmitter crashes
-      try {
-        this.wcProvider.on('error', (err: any) => {
-          console.warn('[Pulsar Web3] Handled WalletConnect provider error event:', err);
-        });
-        const innerProvider = (this.wcProvider as any)?.signer?.client?.core?.relayer?.provider;
-        if (innerProvider && typeof innerProvider.on === 'function') {
-          innerProvider.on('error', (err: any) => {
-            console.warn('[Pulsar Web3] Handled WalletConnect internal relay provider error event:', err);
-          });
-        }
-      } catch {}
-
-      this.wcProvider.on('display_uri', (uri: string) => {
-        this.lastWcUri = uri;
-        const deepLink = getWalletConnectDeepLink(providerName, uri);
-        const nativeScheme = getNativeSchemeUri(providerName, uri);
-        if (onUri) {
-          onUri(uri, deepLink, nativeScheme);
-        }
-        this.wcUriListeners.forEach((cb) => cb(uri));
-
-        // On mobile devices, immediately handoff to the native wallet app for session authorization
-        if (isMobile) {
-          triggerMobileWalletHandoff(nativeScheme, deepLink);
-        }
-      });
-
-      this.wcProvider.on('accountsChanged', (accounts: string[]) => {
-        if (!accounts || accounts.length === 0) {
-          this.disconnect();
-        } else {
-          this.setConnectedAddress(accounts[0], providerName, 137);
-        }
-      });
-
-      this.wcProvider.on('disconnect', () => {
-        this.disconnect();
-      });
-
-      // Generous timeout (180s) so mobile users have time for FaceID / app switching
-      const targetedConnectPromise = this.wcProvider.connect();
-      const targetedTimeoutPromise = new Promise((_, reject) =>
-        setTimeout(
-          () =>
-            reject(
-              new Error(
-                `Connection request to ${providerName} timed out. Please tap "Open ${providerName} App" or try again.`
-              )
-            ),
-          180000
-        )
-      );
-      await Promise.race([targetedConnectPromise, targetedTimeoutPromise]);
-      const accounts = this.wcProvider.accounts;
-      if (accounts && accounts.length > 0) {
-        const chainId = this.wcProvider.chainId || 137;
-        return await this.setConnectedAddress(accounts[0], providerName, chainId);
-      } else {
-        throw new Error('No accounts selected in your wallet.');
-      }
-    } catch (err: any) {
-      if (err?.message?.includes('User closed') || err?.message?.includes('Modal closed') || err?.message?.includes('User rejected')) {
-        throw new Error('Connection request was cancelled.');
-      }
-      if (
-        err?.message?.includes('3000') ||
-        err?.message?.includes('403') ||
-        err?.message?.includes('forbidden') ||
-        err?.message?.includes('HTTP status code') ||
-        err?.message?.includes('origin not allowed') ||
-        err?.message?.includes('WebSocket connection closed')
-      ) {
-        throw new Error(`WalletConnect relay access restricted on this preview domain. Please open directly in your mobile ${providerName} app, an installed browser extension, or enter your wallet address.`);
-      }
-      throw err;
-    }
+    return this.startWalletConnectPairing(providerName, onUri);
   }
 
   public async connectInstantGuestWallet(): Promise<ConnectedAccountState> {
@@ -609,12 +682,20 @@ class RealWeb3Manager {
   }
 
   public cancelPendingConnect(): void {
+    this.wcConnectPromise = null;
+    this.lastWcUri = null;
+    this.lastHandoff = null;
     if (this.wcProvider) {
       try {
         if (!this.wcProvider.connected) {
           this.wcProvider.disconnect().catch(() => {});
         }
-      } catch {}
+      } catch {
+        /* ignore */
+      }
+      this.wcProvider = null;
+      this.wcInitPromise = null;
+      this.wcEventsBound = false;
     }
   }
 
@@ -622,10 +703,15 @@ class RealWeb3Manager {
     provider: string = 'MetaMask',
     onUri?: (uri: string, deepLink: string, nativeScheme?: string) => void
   ): Promise<ConnectedAccountState> {
+    const mobileSafariOrChrome = isMobileDevice() && !isWalletInAppBrowser();
+
+    // System browsers (iOS Safari / Chrome) have no injected wallet. Use WalletConnect only.
+    if (mobileSafariOrChrome) {
+      return await this.connectWalletConnectTargeted(provider, onUri);
+    }
+
     let injected = this.getInjectedProvider(provider);
 
-    // If specific provider was not found, fallback to any available injected EVM provider
-    // (Supports in-app mobile browsers like MetaMask Mobile, Trust Mobile, Rabby, etc.)
     if (!injected && typeof window !== 'undefined') {
       const anyEth =
         (window as any).ethereum ||
@@ -686,13 +772,14 @@ class RealWeb3Manager {
         if (err?.code === -32002) {
           throw new Error('Wallet is waiting for your confirmation. Please check your wallet app.');
         }
-        // Do not silently fall back to a fake/local session after a real wallet error.
+        if (isMobileDevice()) {
+          return await this.connectWalletConnectTargeted(provider, onUri);
+        }
         if (err instanceof Error) throw err;
         throw new Error('The wallet did not complete the connection request.');
       }
     }
 
-    // On mobile browsers, WalletConnect is the only real-wallet handoff available.
     return await this.connectWalletConnectTargeted(provider, onUri);
   }
 
@@ -709,6 +796,16 @@ class RealWeb3Manager {
   }
 
   public disconnect(): void {
+    try {
+      if (this.wcProvider?.connected) {
+        this.wcProvider.disconnect().catch(() => {});
+      }
+    } catch {
+      /* ignore */
+    }
+    this.wcConnectPromise = null;
+    this.lastWcUri = null;
+    this.lastHandoff = null;
     try {
       localStorage.removeItem('pulsar_active_address');
       localStorage.removeItem('pulsar_active_provider');

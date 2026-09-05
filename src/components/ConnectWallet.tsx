@@ -14,11 +14,8 @@ import {
   LogOut,
   ArrowDownLeft,
   Sparkles,
-  Zap,
   HelpCircle,
   QrCode,
-  ArrowLeft,
-  Key,
   ShieldCheck,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
@@ -27,13 +24,14 @@ import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
 import { eip6963Manager, EIP6963ProviderDetail } from '../lib/eip6963';
+import { realWeb3Manager } from '../lib/realWeb3';
 import {
   isMobileDevice,
   isIframeOrSandboxed,
-  isInAppBrowser,
-  triggerMobileWalletHandoff,
+  isWalletInAppBrowser,
   getNativeSchemeUri,
   getWalletConnectDeepLink,
+  openWalletConnectInNativeApp,
 } from '../lib/web3DeepLinks';
 
 // -------------------------------------------------------------
@@ -162,10 +160,6 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
   const [showHandoffQr, setShowHandoffQr] = useState(false);
   const [copiedUri, setCopiedUri] = useState(false);
 
-  const [showAddressConnect, setShowAddressConnect] = useState(false);
-  const [manualAddressInput, setManualAddressInput] = useState('');
-  const [isConnectingDirect, setIsConnectingDirect] = useState(false);
-
   const dropdownRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
@@ -174,41 +168,35 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
     stats,
     connectWallet,
     connectEIP6963,
-    connectWalletConnect,
-    connectDirectWallet,
-    connectInstantGuestWallet,
     cancelPendingConnect,
     disconnectWallet,
     depositFunds,
   } = usePulsarStore();
 
+  const wcUriRef = useRef('');
+
   useEffect(() => {
     setMounted(true);
-    // Subscribe to browser-injected wallets (EIP-6963)
-    const unsub = eip6963Manager.subscribe((providers) => {
+    const unsubProviders = eip6963Manager.subscribe((providers) => {
       setEip6963Providers([...providers]);
     });
-    return () => unsub();
+    const unsubUri = realWeb3Manager.onWcUri((uri) => {
+      wcUriRef.current = uri;
+    });
+    return () => {
+      unsubProviders();
+      unsubUri();
+    };
   }, []);
 
-  // Auto-connect when launched inside MetaMask / Trust Wallet in-app browser with ?connect=1
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const searchParams = new URLSearchParams(window.location.search);
-    if (searchParams.get('connect') === '1' || searchParams.get('autologin') === '1') {
-      const hasEth = Boolean((window as any).ethereum || (window as any).trustwallet);
-      if (hasEth && !wallet.connected) {
-        const timer = setTimeout(() => {
-          handleConnectWalletItem('MetaMask', 'In-App Web3 Wallet');
-          try {
-            const cleanUrl = window.location.pathname;
-            window.history.replaceState({}, document.title, cleanUrl);
-          } catch {}
-        }, 350);
-        return () => clearTimeout(timer);
-      }
+    if (!isOpen || wallet.connected) {
+      return;
     }
-  }, [wallet.connected]);
+    if (isMobileDevice() && !isWalletInAppBrowser()) {
+      realWeb3Manager.prepareWalletConnect();
+    }
+  }, [isOpen, wallet.connected]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -246,81 +234,23 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
     cancelPendingConnect();
     setConnectingWalletId(null);
     setActiveHandoff(null);
-    setShowAddressConnect(false);
     setErrorMessage(null);
     setIsOpen(false);
-  };
-
-  const handleConnectDirectAddress = async (providerName: string = 'Polygon Wallet') => {
-    const addr = manualAddressInput.trim();
-    if (!addr) {
-      setErrorMessage('Please enter or paste a valid Ethereum/Polygon address (0x...)');
-      return;
-    }
-    setErrorMessage(null);
-    setIsConnectingDirect(true);
-    sounds.playClick();
-
-    try {
-      await connectDirectWallet(addr, providerName);
-      sounds.playWin();
-      setManualAddressInput('');
-      setShowAddressConnect(false);
-      setIsOpen(false);
-    } catch (err: any) {
-      sounds.playLoss();
-      setErrorMessage(err?.message || 'Invalid wallet address. Address must be 42 characters starting with 0x.');
-    } finally {
-      setIsConnectingDirect(false);
-    }
-  };
-
-  const handlePasteAddress = async () => {
-    try {
-      sounds.playClick();
-      const text = await navigator.clipboard.readText();
-      if (text) {
-        setManualAddressInput(text.trim());
-      }
-    } catch {
-      // Browser permission prompt or fallback
-    }
   };
 
   const handleConnectWalletItem = async (walletId: string, walletName: string) => {
     setErrorMessage(null);
     sounds.playClick();
 
-    // 1. Direct Address Input Option
-    if (walletId === 'DirectAddress') {
-      setShowAddressConnect(true);
-      return;
-    }
+    const mobileBrowser = isMobileDevice() && !isWalletInAppBrowser();
 
-    // 2. Instant 1-Click Guest Duelist
-    if (walletId === 'InstantGuest') {
-      setConnectingWalletId(walletId);
-      try {
-        await connectInstantGuestWallet();
-        sounds.playWin();
-        setIsOpen(false);
-      } catch (err: any) {
-        sounds.playLoss();
-        setErrorMessage(err?.message || 'Failed to initialize instant guest wallet.');
-      } finally {
-        setConnectingWalletId(null);
-      }
-      return;
-    }
-
-    // 3. EIP-6963 detected wallets (Desktop extensions like Rabby, MetaMask, Coinbase)
     const matchedEip = eip6963Providers.find(
       (p) =>
         p.info.name.toLowerCase().includes(walletName.toLowerCase()) ||
         p.info.rdns.toLowerCase().includes(walletId.toLowerCase())
     );
 
-    if (matchedEip) {
+    if (matchedEip && !mobileBrowser) {
       setConnectingWalletId(matchedEip.info.rdns);
       try {
         await connectEIP6963(matchedEip);
@@ -335,9 +265,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
       }
     }
 
-    // 4. Injected EVM Provider (if inside MetaMask / Trust Wallet in-app browser or desktop extension)
-    const hasInjectedEth = typeof window !== 'undefined' && Boolean((window as any).ethereum || (window as any).trustwallet);
-    if (hasInjectedEth) {
+    if (isWalletInAppBrowser()) {
       setConnectingWalletId(walletId);
       try {
         await connectWallet(walletId);
@@ -351,31 +279,40 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
           setConnectingWalletId(null);
           return;
         }
-        // If injected wasn't ready for this specific wallet, fallback to standard mobile handoff
       }
     }
 
-    // 5. Standard Web3 Mobile Handoff & WalletConnect Flow (Universal)
-    // Instantly initializes pairing session and triggers native app handoff to issue permission!
+    const existingUri = wcUriRef.current || realWeb3Manager.lastWcUri || '';
+    const nativeScheme = existingUri ? getNativeSchemeUri(walletId, existingUri) : '';
+    const deepLink = existingUri ? getWalletConnectDeepLink(walletId, existingUri) : '';
+
     setConnectingWalletId(walletId);
     setActiveHandoff({
       walletId,
       walletName,
-      deepLink: '',
-      nativeScheme: '',
-      uri: '',
+      deepLink,
+      nativeScheme,
+      uri: existingUri,
     });
-    setShowHandoffQr(false);
+    setShowHandoffQr(!isMobileDevice());
+
+    if (mobileBrowser && existingUri) {
+      openWalletConnectInNativeApp(walletId, existingUri);
+    }
 
     try {
-      await connectWallet(walletId, (uri, deepLink, nativeScheme) => {
+      await connectWallet(walletId, (uri, nextDeepLink, nextNativeScheme) => {
+        wcUriRef.current = uri;
         setActiveHandoff({
           walletId,
           walletName,
-          deepLink,
-          nativeScheme,
+          deepLink: nextDeepLink,
+          nativeScheme: nextNativeScheme || getNativeSchemeUri(walletId, uri),
           uri,
         });
+        if (mobileBrowser && !existingUri) {
+          openWalletConnectInNativeApp(walletId, uri);
+        }
       });
       sounds.playWin();
       setActiveHandoff(null);
@@ -465,30 +402,6 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
       id: 'Rainbow',
       name: 'Rainbow',
       logo: <RainbowLogo />,
-    },
-    {
-      id: 'DirectAddress',
-      name: 'Connect Real Wallet Address',
-      subtitle: 'Paste any EVM / Polygon address (0x...)',
-      badge: 'Real Address',
-      badgeType: 'instant',
-      logo: (
-        <div className="w-full h-full rounded-xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400 font-bold text-sm shadow-inner">
-          <Key className="w-4 h-4 text-sky-400" />
-        </div>
-      ),
-    },
-    {
-      id: 'InstantGuest',
-      name: 'Instant Web3 Duelist',
-      subtitle: 'Play instantly without extension or app',
-      badge: 'Instant 1-Click',
-      badgeType: 'instant',
-      logo: (
-        <div className="w-full h-full rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold text-sm shadow-inner">
-          ⚡
-        </div>
-      ),
     },
   ];
 
@@ -817,16 +730,12 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                       <h3 className="text-base sm:text-lg font-bold text-white tracking-tight">
                         {activeHandoff || connectingWalletId
                           ? `Connecting ${activeHandoff?.walletName || connectingWalletId}`
-                          : showAddressConnect
-                          ? 'Connect 0x Address'
                           : 'Connect a Wallet'}
                       </h3>
                       <p className="text-xs text-zinc-400 mt-0.5 leading-normal">
                         {activeHandoff || connectingWalletId
-                          ? 'Approve the connection request in your wallet app'
-                          : showAddressConnect
-                          ? 'Paste your Polygon public address to play directly'
-                          : 'Select your preferred wallet to connect & play on Polygon.'}
+                          ? 'Approve in your wallet app, then return to this browser'
+                          : 'Tap a wallet. It opens only to approve the session — this site stays in Safari/Chrome.'}
                       </p>
                     </div>
 
@@ -881,14 +790,6 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                         <div className="mt-2.5 flex items-center gap-2 flex-wrap">
                           <button
                             type="button"
-                            onClick={() => handleConnectWalletItem('InstantGuest', 'Instant Duelist')}
-                            className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-semibold text-[11px] border border-emerald-500/40 transition-colors cursor-pointer flex items-center gap-1.5"
-                          >
-                            <Zap className="w-3 h-3 text-emerald-400" />
-                            <span>Play with Instant Guest Wallet ($100)</span>
-                          </button>
-                          <button
-                            type="button"
                             onClick={() => setErrorMessage(null)}
                             className="px-2.5 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-zinc-300 text-[11px] transition-colors cursor-pointer"
                           >
@@ -899,82 +800,8 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                     </motion.div>
                   )}
 
-                  {/* VIEW 1: CONNECT REAL WALLET ADDRESS */}
-                  {showAddressConnect ? (
-                    /* VIEW 2: CONNECT REAL WALLET ADDRESS */
-                    <motion.div
-                      key="address-connect"
-                      initial={{ opacity: 0, x: 15 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -15 }}
-                      className="mt-3.5 space-y-3.5 flex-1 overflow-y-auto pr-0.5 no-scrollbar text-left"
-                    >
-                      <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            sounds.playClick();
-                            setShowAddressConnect(false);
-                          }}
-                          className="text-xs font-semibold text-zinc-400 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer py-1"
-                        >
-                          <ArrowLeft className="w-4 h-4" />
-                          <span>All Wallets</span>
-                        </button>
-                        <span className="text-xs font-bold text-sky-400">Direct Address</span>
-                      </div>
-
-                      <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/[0.08] space-y-3">
-                        <div>
-                          <h4 className="text-sm font-bold text-white flex items-center gap-1.5">
-                            <Key className="w-4 h-4 text-sky-400" />
-                            <span>Connect Any Real Polygon / EVM Wallet</span>
-                          </h4>
-                          <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
-                            Paste your public Ethereum / Polygon address (0x...) from MetaMask, Trust Wallet, Coinbase, or Ledger to connect in this browser directly without app popups.
-                          </p>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="text"
-                            placeholder="0x71C... or polygon address"
-                            value={manualAddressInput}
-                            onChange={(e) => setManualAddressInput(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') handleConnectDirectAddress('Polygon Web3 Wallet');
-                            }}
-                            className="flex-1 bg-black/50 border border-white/15 rounded-xl px-3 py-2.5 text-xs font-mono text-white placeholder-zinc-500 focus:outline-none focus:border-sky-400 transition-colors"
-                          />
-                          <button
-                            type="button"
-                            onClick={handlePasteAddress}
-                            className="px-3.5 py-2.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-zinc-200 text-xs font-medium cursor-pointer transition-colors shrink-0"
-                          >
-                            Paste
-                          </button>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => handleConnectDirectAddress('Polygon Web3 Wallet')}
-                          disabled={!manualAddressInput.trim() || isConnectingDirect}
-                          className="w-full py-3 px-4 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:pointer-events-none text-zinc-950 font-bold text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-sky-500/20"
-                        >
-                          {isConnectingDirect ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <CheckCircle2 className="w-4 h-4" />
-                          )}
-                          <span>Connect Wallet Address</span>
-                        </button>
-                      </div>
-                    </motion.div>
-                  ) : (
-                    /* VIEW 3: STANDARD WALLET LIST & IN-APP BROWSER DETECTOR */
-                    <div className="flex flex-col flex-1 min-h-0">
-                      {/* Detected In-App Browser Banner */}
-                      {isInAppBrowser() && (
+                  <div className="flex flex-col flex-1 min-h-0">
+                      {isWalletInAppBrowser() && (
                         <div className="mt-3 p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between gap-2.5 shrink-0 text-left">
                           <div className="min-w-0">
                             <div className="text-xs font-bold text-white flex items-center gap-1.5">
@@ -1037,40 +864,31 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
 
                           {/* PRIMARY ACTION: DIRECT SESSION APPROVAL IN NATIVE WALLET */}
                           <div className="space-y-2">
-                            <button
-                              type="button"
-                              disabled={!activeHandoff.uri}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                sounds.playClick();
-                                if (!activeHandoff.uri) return;
-                                const nativeScheme = getNativeSchemeUri(activeHandoff.walletId, activeHandoff.uri);
-                                const universalLink = getWalletConnectDeepLink(activeHandoff.walletId, activeHandoff.uri);
-                                triggerMobileWalletHandoff(nativeScheme, universalLink);
-                              }}
-                              className={cn(
-                                'w-full py-3 px-4 rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg',
-                                activeHandoff.uri
-                                  ? 'bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 hover:brightness-110 text-zinc-950 shadow-emerald-500/25 active:scale-[0.98]'
-                                  : 'bg-white/5 text-zinc-500 border border-white/5 cursor-not-allowed'
-                              )}
-                            >
-                              {activeHandoff.uri ? (
-                                <>
-                                  <ShieldCheck className="w-4 h-4 text-zinc-950 shrink-0" />
-                                  <span>Approve in {activeHandoff.walletName} App</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Loader2 className="w-4 h-4 animate-spin text-zinc-400 shrink-0" />
-                                  <span>Preparing session...</span>
-                                </>
-                              )}
-                            </button>
+                            {activeHandoff.uri ? (
+                              <a
+                                href={getNativeSchemeUri(activeHandoff.walletId, activeHandoff.uri)}
+                                onClick={() => {
+                                  sounds.playClick();
+                                  openWalletConnectInNativeApp(activeHandoff.walletId, activeHandoff.uri);
+                                }}
+                                className="w-full py-3 px-4 rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 hover:brightness-110 text-zinc-950 shadow-emerald-500/25 active:scale-[0.98]"
+                              >
+                                <ShieldCheck className="w-4 h-4 text-zinc-950 shrink-0" />
+                                <span>Open {activeHandoff.walletName} to Approve</span>
+                              </a>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled
+                                className="w-full py-3 px-4 rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-2 bg-white/5 text-zinc-500 border border-white/5 cursor-not-allowed"
+                              >
+                                <Loader2 className="w-4 h-4 animate-spin text-zinc-400 shrink-0" />
+                                <span>Preparing session...</span>
+                              </button>
+                            )}
 
                             <p className="text-[10px] text-zinc-400 leading-tight text-center">
-                              Opens {activeHandoff.walletName} only to grant connection permission. You will continue playing right here in this browser.
+                              {activeHandoff.walletName} opens only to approve. After you confirm, iOS returns you to this Safari/Chrome tab — already connected.
                             </p>
                           </div>
 
@@ -1086,8 +904,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                                   e.stopPropagation();
                                   sounds.playClick();
                                   if (!activeHandoff.uri) return;
-                                  const universalLink = getWalletConnectDeepLink(activeHandoff.walletId, activeHandoff.uri);
-                                  triggerMobileWalletHandoff(universalLink);
+                                  openWalletConnectInNativeApp(activeHandoff.walletId, activeHandoff.uri);
                                 }}
                                 className={cn(
                                   'py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer',
@@ -1097,7 +914,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                                 )}
                               >
                                 <ExternalLink className="w-3.5 h-3.5" />
-                                <span>Universal Link</span>
+                                <span>Open again</span>
                               </button>
 
                               {/* Copy Code button */}
@@ -1140,8 +957,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                               </p>
                             )}
 
-                            {/* QR Code and Paste 0x address controls */}
-                            <div className="pt-1 flex items-center justify-between text-[11px]">
+                            <div className="pt-1 flex items-center justify-center text-[11px]">
                               <button
                                 type="button"
                                 disabled={!activeHandoff.uri}
@@ -1156,20 +972,6 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                               >
                                 <QrCode className="w-3.5 h-3.5 text-teal-400" />
                                 <span>{showHandoffQr ? 'Hide QR Code' : 'Scan QR Code'}</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  sounds.playClick();
-                                  cancelPendingConnect();
-                                  setActiveHandoff(null);
-                                  setShowAddressConnect(true);
-                                }}
-                                className="text-amber-400 hover:text-amber-300 transition-colors flex items-center gap-1 cursor-pointer font-medium"
-                              >
-                                <Key className="w-3 h-3" />
-                                <span>Paste 0x Address</span>
                               </button>
                             </div>
 
@@ -1329,7 +1131,6 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                         })}
                       </div>
                     </div>
-                  )}
 
                   {/* OpenSea-Style Accordion Help */}
                   <AnimatePresence>
