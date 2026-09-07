@@ -24,12 +24,36 @@ import {
   openWalletConnectInNativeApp,
 } from './web3DeepLinks';
 
+const DEFAULT_REOWN_PROJECT_ID = '34c47f30708c637d30c239a5b1cdb65f';
+
 export const getWalletConnectProjectId = (): string => {
+  if (typeof window !== 'undefined') {
+    const userStored = localStorage.getItem('pulsar_reown_project_id') || localStorage.getItem('pulsar_wc_project_id');
+    if (userStored && userStored.trim().length > 0) {
+      return userStored.trim();
+    }
+  }
   const envId = typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_WALLETCONNECT_PROJECT_ID;
   if (envId && typeof envId === 'string' && envId.trim().length > 0) {
     return envId.trim();
   }
-  return '5f4e967f02cf92c8db957c56e877e149';
+  return DEFAULT_REOWN_PROJECT_ID;
+};
+
+export const setWalletConnectProjectId = (id: string): void => {
+  if (typeof window === 'undefined') return;
+  const clean = id.trim();
+  if (clean) {
+    localStorage.setItem('pulsar_reown_project_id', clean);
+  } else {
+    localStorage.removeItem('pulsar_reown_project_id');
+  }
+  realWeb3Manager.cancelPendingConnect();
+};
+
+export const hasValidWalletConnectProjectId = (): boolean => {
+  const id = getWalletConnectProjectId();
+  return Boolean(id && id.length >= 16);
 };
 
 /**
@@ -61,6 +85,7 @@ export interface ConnectedAccountState {
   chainId: number;
   networkName: string;
   balanceUSDT: number;
+  balancePOL?: number;
   connected: boolean;
   providerName: string;
 }
@@ -218,6 +243,10 @@ class RealWeb3Manager {
 
         ethereum.on?.('chainChanged', () => {
           window.location.reload();
+        });
+
+        ethereum.on?.('disconnect', () => {
+          this.disconnect();
         });
       }
     }
@@ -380,13 +409,33 @@ class RealWeb3Manager {
     this.wcInitPromise = (async () => {
       const EthereumProviderClass = await getEthereumProviderClass();
       const projectId = getWalletConnectProjectId();
-      const provider = await EthereumProviderClass.init({
+      if (!projectId || projectId.length < 10) {
+        throw new Error(
+          'REOWN_PROJECT_ID_REQUIRED: A valid Reown Cloud Project ID is required for mobile wallet connections. Get a free ID at cloud.reown.com or use Guest Duelist.'
+        );
+      }
+
+      const initTask = EthereumProviderClass.init({
         projectId,
         chains: [137],
         optionalChains: [1, 56, 42161],
         showQrModal: false,
         metadata: this.wcMetadata(),
       });
+
+      const initTimeout = new Promise<never>((_, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                'REOWN_INIT_TIMEOUT: Connection to Reown/WalletConnect relay timed out. Check your Project ID or internet connection.'
+              )
+            ),
+          12000
+        )
+      );
+
+      const provider = await Promise.race([initTask, initTimeout]);
       this.wcProvider = provider;
       this.bindWcProviderEvents(provider);
       return provider;
@@ -404,13 +453,28 @@ class RealWeb3Manager {
 
   private mapWcError(err: any, providerName: string): Error {
     const msg = String(err?.message || err || '');
+    if (msg.includes('REOWN_PROJECT_ID_REQUIRED')) {
+      return new Error(
+        'Reown (WalletConnect) Project ID is required for mobile wallet apps. Please enter your free Project ID in Settings or play instantly with Guest Duelist.'
+      );
+    }
+    if (msg.includes('401') || msg.includes('Unauthorized')) {
+      return new Error(
+        'Reown Project ID is invalid or unauthorized (401). Please create a free project at cloud.reown.com and update the Project ID.'
+      );
+    }
+    if (msg.includes('REOWN_INIT_TIMEOUT') || msg.includes('REOWN_URI_TIMEOUT')) {
+      return new Error(
+        'Connection to wallet relay timed out. Check your internet connection or try again.'
+      );
+    }
     if (
       msg.includes('User closed') ||
       msg.includes('Modal closed') ||
       msg.includes('User rejected') ||
       msg.includes('cancelled')
     ) {
-      return new Error('Connection request was cancelled.');
+      return new Error('Connection request was cancelled in your wallet.');
     }
     if (
       msg.includes('3000') ||
@@ -421,25 +485,76 @@ class RealWeb3Manager {
       msg.includes('WebSocket connection closed')
     ) {
       return new Error(
-        `WalletConnect relay blocked this origin. Add this domain in the Reown/WalletConnect Cloud project, then tap ${providerName} again.`
+        `WalletConnect relay blocked this request (403). Ensure Domain Allowlist is empty in cloud.reown.com, then tap ${providerName} again.`
       );
     }
     if (err instanceof Error) return err;
     return new Error(msg || `Failed to connect ${providerName}`);
   }
 
-  public async restoreWalletConnectSession(): Promise<ConnectedAccountState | null> {
-    try {
-      const provider = await this.ensureWcProvider();
-      const accounts = provider?.accounts;
-      if (provider?.session && accounts && accounts.length > 0) {
-        this.pendingWalletName = 'WalletConnect';
-        return await this.setConnectedAddress(accounts[0], 'WalletConnect', provider.chainId || 137);
+  public async restoreSession(): Promise<ConnectedAccountState | null> {
+    if (typeof window === 'undefined') return null;
+
+    const savedAddr = localStorage.getItem('pulsar_active_address');
+    const savedProvider = localStorage.getItem('pulsar_active_provider');
+    if (!savedAddr) return null;
+
+    // 1. If provider was WalletConnect
+    if (savedProvider === 'WalletConnect' || savedProvider?.toLowerCase().includes('walletconnect')) {
+      try {
+        const provider = await this.ensureWcProvider();
+        const accounts = provider?.accounts;
+        const session = provider?.session;
+        if (session && accounts && accounts.length > 0) {
+          const nowSec = Math.floor(Date.now() / 1000);
+          // Standard Web3 session expiration check
+          if (session.expiry && session.expiry < nowSec) {
+            console.log('[Pulsar Web3] WalletConnect session expired according to standard. Disconnecting.');
+            this.disconnect();
+            return null;
+          }
+          this.pendingWalletName = savedProvider || 'WalletConnect';
+          return await this.setConnectedAddress(accounts[0], savedProvider || 'WalletConnect', provider.chainId || 137);
+        } else {
+          this.disconnect();
+          return null;
+        }
+      } catch (err) {
+        console.warn('[Pulsar Web3] No persisted WalletConnect session:', err);
+        this.disconnect();
+        return null;
       }
-    } catch (err) {
-      console.warn('[Pulsar Web3] No persisted WalletConnect session:', err);
     }
+
+    // 2. Injected Wallet (MetaMask, Trust, Phantom, Coinbase)
+    const injected = this.getInjectedProvider(savedProvider || 'MetaMask');
+    if (injected) {
+      try {
+        // Silent accounts query - returns [] if user locked wallet or revoked permission
+        const accounts: string[] = await injected.request({ method: 'eth_accounts' });
+        if (accounts && accounts.length > 0 && accounts[0].toLowerCase() === savedAddr.toLowerCase()) {
+          let chainId = 137;
+          try {
+            const chainHex = await injected.request({ method: 'eth_chainId' });
+            if (chainHex) chainId = parseInt(chainHex, 16);
+          } catch {}
+          return await this.setConnectedAddress(accounts[0], savedProvider || 'MetaMask', chainId);
+        } else {
+          // Wallet is locked or permission revoked
+          this.disconnect();
+          return null;
+        }
+      } catch {
+        this.disconnect();
+        return null;
+      }
+    }
+
     return null;
+  }
+
+  public async restoreWalletConnectSession(): Promise<ConnectedAccountState | null> {
+    return this.restoreSession();
   }
 
   public prepareWalletConnect(): void {
@@ -644,11 +759,17 @@ class RealWeb3Manager {
         throw new Error('No accounts selected in your wallet.');
       }
     } catch (err: any) {
-      if (err?.code === 4001) {
+      if (err?.code === 4001 || err?.message?.includes('User rejected') || err?.message?.includes('cancelled')) {
         throw new Error('Connection request was cancelled in your wallet.');
       }
       if (err?.code === -32002) {
         throw new Error('Wallet is already waiting for your confirmation. Please check your wallet extension or app.');
+      }
+      const inIframe = typeof window !== 'undefined' && window.self !== window.top;
+      if (inIframe) {
+        throw new Error(
+          `Could not connect to ${providerDetail.info.name} inside the preview iframe. Please use WalletConnect QR, Instant Guest Duelist, or open in a new tab.`
+        );
       }
       throw new Error(err?.message || `Failed to connect to ${providerDetail.info.name}`);
     }
@@ -659,26 +780,6 @@ class RealWeb3Manager {
     onUri?: (uri: string, deepLink: string, nativeScheme?: string) => void
   ): Promise<ConnectedAccountState> {
     return this.startWalletConnectPairing(providerName, onUri);
-  }
-
-  public async connectInstantGuestWallet(): Promise<ConnectedAccountState> {
-    try {
-      const { ethers } = await import('ethers');
-      let existingKey = typeof localStorage !== 'undefined' ? localStorage.getItem('pulsar_guest_wallet_pk') : null;
-      let wallet: any;
-      if (existingKey) {
-        wallet = new ethers.Wallet(existingKey);
-      } else {
-        wallet = ethers.Wallet.createRandom();
-        if (typeof localStorage !== 'undefined') {
-          localStorage.setItem('pulsar_guest_wallet_pk', wallet.privateKey);
-        }
-      }
-      return await this.setConnectedAddress(wallet.address, 'Instant Duelist', 137);
-    } catch (e: any) {
-      console.error('Instant guest wallet error:', e);
-      throw e;
-    }
   }
 
   public cancelPendingConnect(): void {
@@ -772,6 +873,10 @@ class RealWeb3Manager {
         if (err?.code === -32002) {
           throw new Error('Wallet is waiting for your confirmation. Please check your wallet app.');
         }
+        const inIframe = typeof window !== 'undefined' && window.self !== window.top;
+        if (inIframe) {
+          return await this.connectWalletConnectTargeted(provider, onUri);
+        }
         if (isMobileDevice()) {
           return await this.connectWalletConnectTargeted(provider, onUri);
         }
@@ -824,6 +929,52 @@ class RealWeb3Manager {
     this.notify();
   }
 
+  public async fetchLiveOnChainBalances(address: string): Promise<{ usdt: number; pol: number }> {
+    if (!address || !address.startsWith('0x') || address.length !== 42) {
+      return { usdt: 0, pol: 0 };
+    }
+    const rpcs = [
+      'https://polygon-bor-rpc.publicnode.com',
+      'https://1rpc.io/matic',
+    ];
+    for (const rpc of rpcs) {
+      try {
+        const { ethers } = await import('ethers');
+        const provider = new ethers.JsonRpcProvider(rpc, 137, { staticNetwork: true });
+
+        const polWei = await provider.getBalance(address);
+        const pol = parseFloat(ethers.formatEther(polWei));
+
+        const usdtContract = new ethers.Contract(
+          '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
+          ['function balanceOf(address) view returns (uint256)'],
+          provider
+        );
+        const usdtRaw = await usdtContract.balanceOf(address);
+        const usdt = parseFloat(ethers.formatUnits(usdtRaw, 6));
+
+        return {
+          usdt: isNaN(usdt) ? 0 : Math.round(usdt * 100) / 100,
+          pol: isNaN(pol) ? 0 : Math.round(pol * 10000) / 10000,
+        };
+      } catch (err) {
+        console.warn(`[Pulsar Web3] Balance check failed on ${rpc}:`, err);
+      }
+    }
+    return { usdt: 0, pol: 0 };
+  }
+
+  public async refreshBalances(): Promise<{ usdt: number; pol: number }> {
+    if (!this.currentAccount.connected || !this.currentAccount.address) {
+      return { usdt: 0, pol: 0 };
+    }
+    const balances = await this.fetchLiveOnChainBalances(this.currentAccount.address);
+    this.currentAccount.balanceUSDT = balances.usdt;
+    this.currentAccount.balancePOL = balances.pol;
+    this.notify();
+    return balances;
+  }
+
   private async setConnectedAddress(
     address: string,
     providerName: string,
@@ -845,12 +996,22 @@ class RealWeb3Manager {
       shortAddress: short,
       chainId,
       networkName: chainId === 137 ? 'Polygon Mainnet' : chainId === 1 ? 'Ethereum Mainnet' : chainId === 56 ? 'BNB Chain' : 'EVM Network',
-      balanceUSDT: userData.vaultBalance,
+      balanceUSDT: userData.vaultBalance || 0,
+      balancePOL: 0,
       connected: true,
       providerName,
     };
-
     this.notify();
+
+    // Query live real on-chain balances from Polygon Mainnet without blocking initial UI
+    void this.fetchLiveOnChainBalances(formatted).then((live) => {
+      if (this.currentAccount.address === formatted && this.currentAccount.connected) {
+        this.currentAccount.balanceUSDT = live.usdt;
+        this.currentAccount.balancePOL = live.pol;
+        this.notify();
+      }
+    });
+
     return this.currentAccount;
   }
 
@@ -882,7 +1043,7 @@ class RealWeb3Manager {
       const userDocRef = doc(db, 'users', cleanAddr);
       const snapPromise = getDoc(userDocRef);
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Firestore timeout')), 2500)
+        setTimeout(() => reject(new Error('Firestore timeout')), 8000)
       );
       const snap = await Promise.race([snapPromise, timeoutPromise]);
       if (snap && snap.exists()) {
@@ -1097,7 +1258,7 @@ class RealWeb3Manager {
       const q = query(lbCol, orderBy('wins', 'desc'), limit(20));
       const getPromise = getDocs(q);
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Leaderboard query timeout')), 3000)
+        setTimeout(() => reject(new Error('Leaderboard query timeout')), 8000)
       );
       const querySnapshot = await Promise.race([getPromise, timeoutPromise]);
       

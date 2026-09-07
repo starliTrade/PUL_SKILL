@@ -10,7 +10,7 @@ import {
   useChainId,
   useSwitchChain,
   useConnections,
-  Connector,
+  type Connector,
 } from 'wagmi';
 import { polygon, polygonAmoy, arbitrumSepolia, baseSepolia } from 'wagmi/chains';
 import { injected, walletConnect, coinbaseWallet } from 'wagmi/connectors';

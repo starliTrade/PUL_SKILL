@@ -1,6 +1,5 @@
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
-import { EventEmitter } from 'events';
 import App from './App.tsx';
 import { LanguageProvider } from './i18n/LanguageContext';
 import { Web3Provider } from './hooks/useWeb3';
@@ -25,21 +24,12 @@ if (typeof window !== 'undefined') {
       msg.includes('failed to connect to websocket') ||
       msg.includes('unauthorized') ||
       msg.includes('walletconnect') ||
-      msg.includes('relay.walletconnect')
+      msg.includes('relay.walletconnect') ||
+      msg.includes('attempted to assign to readonly property') ||
+      msg.includes('which has only a getter') ||
+      msg.includes('cannot assign to read only property')
     );
   };
-
-  // Prevent unhandled WalletConnect EventEmitter error crashes when relay closes or rejects
-  try {
-    const origEmit = EventEmitter.prototype.emit;
-    EventEmitter.prototype.emit = function (type: string, ...args: any[]) {
-      if (type === 'error' && isIgnorableBackgroundError(args[0])) {
-        console.warn('[Pulsar Web3] Handled background relay event:', args[0]?.message || args[0]);
-        return false;
-      }
-      return origEmit.apply(this, [type, ...args] as any);
-    };
-  } catch {}
 
   // Intercept window uncaught errors from background WebSockets / Relay
   window.addEventListener(
@@ -84,16 +74,6 @@ if (typeof window !== 'undefined') {
         writable: true,
         configurable: true,
       });
-    }
-  } catch {}
-  try {
-    if (typeof window.fetch === 'function' && !Object.isExtensible(window.fetch)) {
-      const origFetch = window.fetch;
-      const extensibleFetch = function (this: any, ...args: any[]) {
-        return origFetch.apply(this === extensibleFetch ? window : this, args as any);
-      };
-      Object.setPrototypeOf(extensibleFetch, origFetch);
-      window.fetch = extensibleFetch as any;
     }
   } catch {}
 }

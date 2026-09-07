@@ -38,7 +38,7 @@ export function usePulsarStore() {
   });
 
   useEffect(() => {
-    realWeb3Manager.restoreWalletConnectSession().catch(() => {});
+    realWeb3Manager.restoreSession().catch(() => {});
     realWeb3Manager.fetchGlobalLeaderboard().then(setLeaderboard);
 
     const unsubscribe = realWeb3Manager.subscribe(() => {
@@ -131,15 +131,8 @@ export function usePulsarStore() {
     }
   };
 
-  const connectInstantGuestWallet = async () => {
-    const acc = await realWeb3Manager.connectInstantGuestWallet();
-    if (acc) {
-      setAccount({ ...acc });
-      const data = await realWeb3Manager.loadUserDataAsync(acc.address);
-      setUserData(data);
-      realWeb3Manager.fetchGlobalLeaderboard().then(setLeaderboard);
-      return acc;
-    }
+  const refreshBalance = async () => {
+    return await realWeb3Manager.refreshBalances();
   };
 
   const disconnectWallet = () => {
@@ -201,12 +194,9 @@ export function usePulsarStore() {
     return xpCalc;
   };
 
-  const depositFunds = async (amount: number) => {
-    if (!account.connected || !account.address) return;
-    const data = await realWeb3Manager.loadUserDataAsync(account.address);
-    data.vaultBalance = parseFloat((data.vaultBalance + amount).toFixed(2));
-    await realWeb3Manager.saveUserDataAsync(data);
-    setUserData({ ...data });
+  const depositFunds = async (_amount?: number) => {
+    // Refresh live onchain balance without injecting fake dollars
+    await realWeb3Manager.refreshBalances();
   };
 
   const withdrawFunds = async (amount: number) => {
@@ -219,17 +209,23 @@ export function usePulsarStore() {
     }
   };
 
+  const currentUsdtBalance =
+    account.balanceUSDT !== undefined && !isNaN(account.balanceUSDT)
+      ? account.balanceUSDT
+      : userData.vaultBalance || 0;
+
   const walletState: WalletState = {
     connected: account.connected,
     provider: account.providerName || null,
     address: account.shortAddress || account.address,
     fullAddress: account.address,
     playerId: userData.playerId || (account.address ? RealWeb3Manager.getPlayerTagForAddress(account.address) : undefined),
-    balance: userData.vaultBalance,
+    balance: currentUsdtBalance,
+    balancePOL: account.balancePOL || 0,
   };
 
   const statsState: UserStats = {
-    balance: userData.vaultBalance,
+    balance: currentUsdtBalance,
     wins: userData.wins,
     losses: userData.losses,
     voids: userData.voids,
@@ -252,9 +248,9 @@ export function usePulsarStore() {
     connectEIP6963,
     connectWalletConnect,
     connectDirectWallet,
-    connectInstantGuestWallet,
     cancelPendingConnect,
     disconnectWallet,
+    refreshBalance,
     recordMatch,
     depositFunds,
     withdrawFunds,

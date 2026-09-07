@@ -5,6 +5,7 @@ export interface WalletState {
   fullAddress?: string;
   playerId?: string;
   balance: number;
+  balancePOL?: number;
 }
 
 export interface UserStats {

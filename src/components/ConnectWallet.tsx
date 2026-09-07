@@ -17,6 +17,7 @@ import {
   HelpCircle,
   QrCode,
   ShieldCheck,
+  RefreshCw,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { usePulsarStore } from '../store/usePulsarStore';
@@ -24,7 +25,10 @@ import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
 import { eip6963Manager, EIP6963ProviderDetail } from '../lib/eip6963';
-import { realWeb3Manager } from '../lib/realWeb3';
+import {
+  realWeb3Manager,
+  getWalletConnectProjectId,
+} from '../lib/realWeb3';
 import {
   isMobileDevice,
   isIframeOrSandboxed,
@@ -170,8 +174,10 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
     connectEIP6963,
     cancelPendingConnect,
     disconnectWallet,
-    depositFunds,
+    refreshBalance,
   } = usePulsarStore();
+
+  const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
 
   const wcUriRef = useRef('');
 
@@ -244,6 +250,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
 
     const mobileBrowser = isMobileDevice() && !isWalletInAppBrowser();
 
+    // 1. Desktop Browser Extensions (EIP-6963): Connect directly with 0 external relays!
     const matchedEip = eip6963Providers.find(
       (p) =>
         p.info.name.toLowerCase().includes(walletName.toLowerCase()) ||
@@ -259,12 +266,21 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
         return;
       } catch (err: any) {
         sounds.playLoss();
-        setErrorMessage(err?.message || 'Injected wallet connection failed.');
-        setConnectingWalletId(null);
-        return;
+        const inIframe = typeof window !== 'undefined' && window.self !== window.top;
+        if (inIframe) {
+          console.warn('[ConnectWallet] Extension restricted in iframe, falling back to WalletConnect:', err);
+          setErrorMessage(
+            err?.message || 'Injected extension is restricted in preview iframes. Generating WalletConnect pairing...'
+          );
+        } else {
+          setErrorMessage(err?.message || 'Injected wallet connection failed.');
+          setConnectingWalletId(null);
+          return;
+        }
       }
     }
 
+    // 2. In-App Mobile Browser (e.g. running inside MetaMask / Trust Wallet internal browser):
     if (isWalletInAppBrowser()) {
       setConnectingWalletId(walletId);
       try {
@@ -280,6 +296,17 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
           return;
         }
       }
+    }
+
+    // 3. Mobile System Browser (Safari / Chrome) or Desktop fallback without extension:
+    const activePid = getWalletConnectProjectId();
+    if (!activePid || activePid.length < 16) {
+      sounds.playLoss();
+      setErrorMessage(
+        'WalletConnect service is initializing. Please try connecting again.'
+      );
+      setConnectingWalletId(null);
+      return;
     }
 
     const existingUri = wcUriRef.current || realWeb3Manager.lastWcUri || '';
@@ -300,8 +327,22 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
       openWalletConnectInNativeApp(walletId, existingUri);
     }
 
+    // Fail-safe timer: NEVER leave the user spinning indefinitely on preparing!
+    let uriEmitted = Boolean(existingUri);
+    const pairingTimeout = setTimeout(() => {
+      if (!uriEmitted && !wcUriRef.current) {
+        setErrorMessage(
+          'Wallet connection request timed out. Please check your wallet app and try again.'
+        );
+        setActiveHandoff(null);
+        setConnectingWalletId(null);
+      }
+    }, 12000);
+
     try {
       await connectWallet(walletId, (uri, nextDeepLink, nextNativeScheme) => {
+        uriEmitted = true;
+        clearTimeout(pairingTimeout);
         wcUriRef.current = uri;
         setActiveHandoff({
           walletId,
@@ -310,14 +351,16 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
           nativeScheme: nextNativeScheme || getNativeSchemeUri(walletId, uri),
           uri,
         });
-        if (mobileBrowser && !existingUri) {
+        if (mobileBrowser) {
           openWalletConnectInNativeApp(walletId, uri);
         }
       });
+      clearTimeout(pairingTimeout);
       sounds.playWin();
       setActiveHandoff(null);
       setIsOpen(false);
     } catch (err: any) {
+      clearTimeout(pairingTimeout);
       sounds.playLoss();
       const msg = err?.message || 'Connection failed';
       if (msg.includes('cancelled') || msg.includes('rejected')) {
@@ -327,21 +370,26 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
       }
       setActiveHandoff(null);
     } finally {
+      clearTimeout(pairingTimeout);
       setConnectingWalletId(null);
     }
   };
 
   const handleConfirmDeposit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const amt = parseFloat(depositAmountInput);
-    if (isNaN(amt) || amt <= 0) return;
-    sounds.playWin();
-    await depositFunds(amt);
-    setDepositStatusMsg(`+${amt.toFixed(2)} USDT credited to Vault`);
-    setTimeout(() => {
-      setDepositStatusMsg(null);
-      setShowDepositModal(false);
-    }, 1800);
+    sounds.playClick();
+    setIsRefreshingBalance(true);
+    try {
+      await refreshBalance();
+      setDepositStatusMsg('Balance updated from Polygon RPC');
+    } catch {
+      setDepositStatusMsg('Could not fetch balance. Check connection.');
+    } finally {
+      setIsRefreshingBalance(false);
+      setTimeout(() => {
+        setDepositStatusMsg(null);
+      }, 2500);
+    }
   };
 
   // Check which wallets are detected in the current window
@@ -406,17 +454,19 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
   ];
 
   // -------------------------------------------------------------
-  // CONNECTED STATE: Sleek Profile Dropdown with Vault Escrow
+  // CONNECTED STATE: Sleek Profile Dropdown with Real On-Chain Vault
   // -------------------------------------------------------------
   if (wallet.connected) {
     const fullAddr = wallet.fullAddress || wallet.address || '';
     const shortDisplay =
       wallet.address && wallet.address.length > 10
-        ? `${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`
+        ? `${wallet.address.slice(0, 4)}...${wallet.address.slice(-3)}`
         : wallet.address || 'Connected';
+    const userLabel = wallet.playerId ? wallet.playerId.split('#')[0] : shortDisplay;
 
     return (
       <div className="relative inline-block text-left" dir="ltr" style={{ direction: 'ltr' }}>
+        {/* Compact User Chip in Navbar (Prevents clutter and mobile overflow) */}
         <button
           ref={triggerRef}
           type="button"
@@ -425,23 +475,19 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
             setDropdownOpen(!dropdownOpen);
           }}
           className={cn(
-            'flex items-center gap-1.5 h-8 px-2.5 rounded-full border transition-all cursor-pointer select-none text-left',
-            'border-emerald-500/25 bg-emerald-500/10 hover:bg-emerald-500/20 active:scale-95',
-            dropdownOpen && 'ring-1 ring-emerald-400 bg-emerald-500/20'
+            'flex items-center gap-1.5 h-7.5 px-2.5 rounded-full border transition-all cursor-pointer select-none text-left',
+            'border-emerald-500/30 bg-zinc-900/80 hover:bg-zinc-800/90 active:scale-95 text-xs',
+            dropdownOpen && 'ring-1 ring-emerald-400 bg-zinc-800'
           )}
           title={fullAddr}
         >
-          <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-          <span className="font-semibold text-white tracking-tight text-xs leading-none max-w-[100px] sm:max-w-[130px] truncate">
-            {shortDisplay}
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 shadow-[0_0_6px_#34d399]" />
+          <span className="font-mono font-medium text-zinc-200 tracking-tight text-[11px] leading-none max-w-[70px] sm:max-w-[95px] truncate">
+            {userLabel}
           </span>
-          <div className="flex items-center gap-1 pl-1 border-l border-white/10 font-mono text-xs font-bold text-emerald-400 leading-none">
-            <span>${wallet.balance.toFixed(2)}</span>
-            <span className="text-[9.5px] text-emerald-400/70 font-sans">USDT</span>
-          </div>
           <ChevronDown
             className={cn(
-              'w-3 h-3 text-zinc-400 transition-transform duration-200 shrink-0 ml-0.5',
+              'w-3 h-3 text-zinc-400 transition-transform duration-200 shrink-0 -ml-0.5',
               dropdownOpen && 'transform rotate-180 text-white'
             )}
           />
@@ -484,16 +530,39 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                 </span>
               </div>
 
-              {/* USDT Balance Card */}
+              {/* Real Live On-Chain Balance Card */}
               <div className="my-2.5 p-3 rounded-xl bg-gradient-to-br from-emerald-500/10 via-zinc-900/60 to-zinc-950 border border-emerald-500/20">
                 <div className="flex items-center justify-between text-[10.5px] text-zinc-400 mb-1">
-                  <span>Vault Available Balance</span>
-                  <span className="text-emerald-400 font-mono font-semibold">Instant Escrow</span>
+                  <span>Polygon On-Chain Balance</span>
+                  <button
+                    type="button"
+                    disabled={isRefreshingBalance}
+                    onClick={async () => {
+                      sounds.playClick();
+                      setIsRefreshingBalance(true);
+                      try {
+                        await refreshBalance();
+                      } finally {
+                        setTimeout(() => setIsRefreshingBalance(false), 500);
+                      }
+                    }}
+                    className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1 text-[10px] font-mono cursor-pointer disabled:opacity-50"
+                    title="Refresh live on-chain balance"
+                  >
+                    <RefreshCw className={cn('w-3 h-3', isRefreshingBalance && 'animate-spin')} />
+                    <span>{isRefreshingBalance ? 'Updating...' : 'Refresh'}</span>
+                  </button>
                 </div>
-                <div className="flex items-baseline justify-between">
-                  <div className="text-xl font-bold font-mono text-emerald-300">
-                    ${wallet.balance.toFixed(2)}{' '}
-                    <span className="text-xs font-sans text-emerald-400 font-normal">USDT</span>
+                <div className="flex items-baseline justify-between mt-1">
+                  <div>
+                    <div className="text-xl font-bold font-mono text-emerald-300">
+                      ${wallet.balance.toFixed(2)}{' '}
+                      <span className="text-xs font-sans text-emerald-400 font-normal">USDT</span>
+                    </div>
+                    <div className="text-[10px] font-medium text-zinc-400 mt-0.5 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                      <span>Polygon PoS • Gasless USDT</span>
+                    </div>
                   </div>
                   <button
                     type="button"
@@ -501,10 +570,10 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                       sounds.playClick();
                       setShowDepositModal(true);
                     }}
-                    className="text-[10.5px] font-semibold text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 px-2 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1 active:scale-95"
+                    className="text-[10.5px] font-semibold text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1 active:scale-95"
                   >
                     <ArrowDownLeft className="w-3 h-3 text-emerald-400" />
-                    <span>Deposit USDT</span>
+                    <span>Receive USDT</span>
                   </button>
                 </div>
               </div>
@@ -576,7 +645,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
           )}
         </AnimatePresence>
 
-        {/* Deposit USDT Vault Modal */}
+        {/* Receive / Deposit USDT On-Chain Modal */}
         {showDepositModal &&
           mounted &&
           createPortal(
@@ -589,7 +658,8 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
-                className="relative z-10 w-full max-w-sm rounded-2xl bg-zinc-950 border border-emerald-500/30 p-5 shadow-2xl space-y-4"
+                className="relative z-10 w-full max-w-sm rounded-2xl bg-zinc-950 border border-emerald-500/30 p-5 shadow-2xl space-y-4 text-left"
+                dir="ltr"
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -597,8 +667,8 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                       <ArrowDownLeft className="w-4 h-4" />
                     </div>
                     <div>
-                      <h4 className="text-sm font-bold text-white">Deposit to Vault</h4>
-                      <p className="text-[11px] text-zinc-400">Polygon USDT Non-Custodial Escrow</p>
+                      <h4 className="text-sm font-bold text-white">Receive Polygon USDT</h4>
+                      <p className="text-[11px] text-zinc-400">Non-Custodial Polygon (137) Deposit</p>
                     </div>
                   </div>
                   <button
@@ -609,60 +679,63 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                   </button>
                 </div>
 
-                <form onSubmit={handleConfirmDeposit} className="space-y-3">
-                  <div>
-                    <label className="text-xs text-zinc-400 block mb-1">Deposit Amount (USDT)</label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={depositAmountInput}
-                        onChange={(e) => setDepositAmountInput(e.target.value)}
-                        className="flex-1 bg-zinc-900 border border-white/[0.1] rounded-xl px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-emerald-500"
-                        placeholder="10"
-                      />
-                      <span className="text-xs font-bold text-zinc-400 font-mono px-2">USDT</span>
-                    </div>
-                  </div>
+                {/* QR Code */}
+                <div className="flex flex-col items-center justify-center p-3 bg-white rounded-xl shadow-inner mx-auto w-fit">
+                  <QRCodeSVG value={fullAddr} size={150} />
+                </div>
 
-                  <div className="flex gap-1.5">
-                    {['5', '10', '25', '50'].map((amt) => (
-                      <button
-                        key={amt}
-                        type="button"
-                        onClick={() => setDepositAmountInput(amt)}
-                        className={cn(
-                          'flex-1 py-1 rounded-lg text-xs font-mono font-semibold border transition-colors cursor-pointer',
-                          depositAmountInput === amt
-                            ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-                            : 'bg-white/[0.04] border-white/[0.06] text-zinc-400 hover:text-white'
-                        )}
-                      >
-                        ${amt}
-                      </button>
-                    ))}
-                  </div>
-
-                  {depositStatusMsg ? (
-                    <div className="p-2 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center justify-center gap-1.5">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                      <span>{depositStatusMsg}</span>
-                    </div>
-                  ) : (
+                {/* Address Box */}
+                <div>
+                  <label className="text-[11px] text-zinc-400 block mb-1">Your Polygon Address</label>
+                  <div className="p-2.5 rounded-xl bg-zinc-900 border border-white/[0.08] flex items-center justify-between gap-2">
+                    <span className="font-mono text-xs text-zinc-200 truncate select-all">{fullAddr}</span>
                     <button
-                      type="submit"
-                      className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs tracking-tight transition-all cursor-pointer shadow-lg shadow-emerald-500/20 active:scale-95"
+                      type="button"
+                      onClick={handleCopyAddress}
+                      className={cn(
+                        'px-2 py-1 rounded-lg border transition-all text-[10.5px] font-mono shrink-0 flex items-center gap-1',
+                        copiedAddr
+                          ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                          : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/[0.08] text-white'
+                      )}
                     >
-                      Confirm Deposit
+                      {copiedAddr ? <CheckCircle2 className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedAddr ? 'Copied' : 'Copy'}</span>
                     </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 text-[11px] text-zinc-400 bg-white/[0.02] p-2.5 rounded-xl border border-white/[0.05]">
+                  <div className="flex justify-between">
+                    <span>Network</span>
+                    <span className="text-emerald-400 font-semibold font-mono">Polygon Mainnet (Chain 137)</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Token</span>
+                    <span className="text-zinc-200 font-mono">USDT (Tether USD)</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Token Contract</span>
+                    <span className="text-zinc-400 font-mono text-[10px]">0xc213...91bc</span>
+                  </div>
+                </div>
+
+                <form onSubmit={handleConfirmDeposit} className="space-y-2">
+                  <button
+                    type="submit"
+                    disabled={isRefreshingBalance}
+                    className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-black font-bold text-xs tracking-tight transition-all cursor-pointer shadow-lg shadow-emerald-500/20 active:scale-95 flex items-center justify-center gap-1.5"
+                  >
+                    <RefreshCw className={cn('w-3.5 h-3.5', isRefreshingBalance && 'animate-spin')} />
+                    <span>{isRefreshingBalance ? 'Checking RPC...' : 'Check / Refresh On-Chain Balance'}</span>
+                  </button>
+
+                  {depositStatusMsg && (
+                    <div className="p-2 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-semibold text-center">
+                      {depositStatusMsg}
+                    </div>
                   )}
                 </form>
-
-                <div className="pt-2 border-t border-white/[0.04] text-[9.5px] text-zinc-500 flex items-center justify-between font-mono">
-                  <span>Contract: 0xc213...91bc (USDT)</span>
-                  <span className="text-emerald-400">Non-Custodial</span>
-                </div>
               </motion.div>
             </div>,
             document.body
@@ -788,6 +861,16 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                       <div className="flex-1">
                         <span className="text-xs leading-relaxed block">{errorMessage}</span>
                         <div className="mt-2.5 flex items-center gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              window.open(window.location.href, '_blank');
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-white/[0.08] hover:bg-white/[0.14] text-white text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1 active:scale-95"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            <span>Open in Dedicated Tab</span>
+                          </button>
                           <button
                             type="button"
                             onClick={() => setErrorMessage(null)}

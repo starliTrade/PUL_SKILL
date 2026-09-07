@@ -45,7 +45,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
   onStartDuelWithOpponent,
 }) => {
   const { t } = useLanguage();
-  const { wallet, stats, depositFunds, history } = usePulsarStore();
+  const { wallet, stats, refreshBalance, history } = usePulsarStore();
   const [gameMode, setGameMode] = useState<'real' | 'practice'>('real');
   const [selectedStake, setSelectedStake] = useState<number>(1);
   const [isMatchmaking, setIsMatchmaking] = useState(false);
@@ -54,6 +54,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
   const [mounted, setMounted] = useState(false);
   const [showWalletAlert, setShowWalletAlert] = useState(false);
   const [showFriendModal, setShowFriendModal] = useState(false);
+  const [isRefreshingOnChain, setIsRefreshingOnChain] = useState(false);
 
   const [liveCloudMatches, setLiveCloudMatches] = useState<MatchRecord[]>([]);
 
@@ -114,10 +115,14 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
     setSearchStep(0);
   };
 
-  const handleQuickDeposit = () => {
-    sounds.playWin();
-    depositFunds(100);
-    setShowWalletAlert(false);
+  const handleRefreshLiveBalances = async () => {
+    sounds.playClick();
+    setIsRefreshingOnChain(true);
+    try {
+      await refreshBalance();
+      sounds.playWin();
+    } catch {}
+    setIsRefreshingOnChain(false);
   };
 
   return (
@@ -541,11 +546,12 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                 </div>
               ) : (
                 <button
-                  onClick={handleQuickDeposit}
-                  className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-500/20"
+                  disabled={isRefreshingOnChain}
+                  onClick={handleRefreshLiveBalances}
+                  className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-black text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-500/20"
                 >
-                  <Coins className="w-4 h-4" />
-                  <span>{t('deposit100Btn')}</span>
+                  <Coins className={cn('w-4 h-4', isRefreshingOnChain && 'animate-spin')} />
+                  <span>{isRefreshingOnChain ? 'Checking Chain...' : t('deposit100Btn')}</span>
                 </button>
               )}
               

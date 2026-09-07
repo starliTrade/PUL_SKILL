@@ -11,7 +11,16 @@ const nativeHeaders = g.Headers || class {};
 const nativeRequest = g.Request || class {};
 const nativeResponse = g.Response || class {};
 
-export default nativeFetch;
-export { nativeFetch as fetch, nativeHeaders as Headers, nativeRequest as Request, nativeResponse as Response };
+const safeFetch: any = (...args: any[]) => nativeFetch(...args);
+try {
+  safeFetch.default = safeFetch;
+  safeFetch.fetch = safeFetch;
+  safeFetch.Headers = nativeHeaders;
+  safeFetch.Request = nativeRequest;
+  safeFetch.Response = nativeResponse;
+} catch {}
+
+export default safeFetch;
+export { safeFetch as fetch, nativeHeaders as Headers, nativeRequest as Request, nativeResponse as Response };
 
 

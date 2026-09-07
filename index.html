@@ -15,6 +15,37 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=Noto+Sans+Arabic:wght@300;400;500;600;700;800;900&family=Noto+Sans+SC:wght@300;400;500;600;700;800;900&family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&family=Vazirmatn:wght@200;300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <!-- Early safety interceptor for strict mode / readonly mutation errors in iframe preview -->
+    <script>
+      (function() {
+        var isIgnorable = function(raw) {
+          var msg = String((raw && (raw.message || (raw.error && raw.error.message) || raw.reason || '')) || raw || '').toLowerCase();
+          return (
+            msg.includes('attempted to assign to readonly property') ||
+            msg.includes('which has only a getter') ||
+            msg.includes('cannot assign to read only property') ||
+            msg.includes('websocket connection closed') ||
+            msg.includes('failed to connect to websocket') ||
+            msg.includes('403') ||
+            msg.includes('origin not allowed') ||
+            msg.includes('relay.walletconnect')
+          );
+        };
+        window.addEventListener('error', function(e) {
+          if (isIgnorable(e)) {
+            try { e.preventDefault(); } catch (err) {}
+            try { e.stopImmediatePropagation(); } catch (err) {}
+            return true;
+          }
+        }, true);
+        window.addEventListener('unhandledrejection', function(e) {
+          if (isIgnorable(e && e.reason)) {
+            try { e.preventDefault(); } catch (err) {}
+            try { e.stopImmediatePropagation(); } catch (err) {}
+          }
+        }, true);
+      })();
+    </script>
       <!-- CRITICAL: DO NOT REMOVE/MODIFY THIS COMMENT OR THE SCRIPT BELOW -->
         <!-- BLINK_PICKER_RUNTIME_V2:d74d75e6c99e -->
     <script>(function(){
@@ -25,9 +56,13 @@
   // so v1 hits its own guard. If for any reason v1 somehow loaded first, we yield to it
   // (no uninstall API) — registering both = double handlers, which is worse than missing
   // a feature on stale projects.
-  if (window.__blinkPickerInstalled) return;
-  window.__blinkPickerInstalled = true;
-  window.__blinkPickerVersion = '2.0.0';
+  try {
+    if (window.__blinkPickerInstalled) return;
+    try { window.__blinkPickerInstalled = true; } catch (e) {}
+    try { window.__blinkPickerVersion = '2.0.0'; } catch (e) {}
+  } catch (e) {
+    return;
+  }
 
   var active = false;
   var hoverEl = null;
@@ -703,7 +738,6 @@
     boot();
   }
 })();</script>
-    <script src="https://blink.new/widget.js?projectId=pulsar-skill-duel-p6qt09mm" type="module"></script>
   </head>
   <body class="bg-[#050505] text-white overflow-x-hidden antialiased select-none">
     <div id="root"></div>

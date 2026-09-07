@@ -7,16 +7,19 @@ export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
     resolve: {
-      alias: {
-        '@': path.resolve(__dirname, '.'),
-        'cross-fetch': path.resolve(__dirname, 'src/shims/cross-fetch.ts'),
-      },
+      alias: [
+        { find: '@', replacement: path.resolve(__dirname, '.') },
+        { find: /^cross-fetch(\/.*)?$/, replacement: path.resolve(__dirname, 'src/shims/cross-fetch.ts') },
+      ],
     },
-      server: {
-    port: 3000,
-    strictPort: true,
-    host: true,
-    allowedHosts: true,
-  },
+    optimizeDeps: {
+      exclude: ['cross-fetch'],
+    },
+    server: {
+        port: 3000,
+        strictPort: true,
+        host: '0.0.0.0',
+        allowedHosts: true as const,
+      },
   };
 });
