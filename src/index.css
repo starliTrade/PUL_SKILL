@@ -25,19 +25,19 @@
   html[lang="fa"],
   html[lang="fa"] body,
   html[lang="fa"] #root,
-  html[lang="fa"] input,
+  html[lang="fa"] input:not([data-user-badge]):not(.user-tag-input),
   html[lang="fa"] select,
   html[lang="fa"] textarea,
-  html[lang="fa"] button:not([data-brand-logo]):not(.brand-logo-unit),
+  html[lang="fa"] button:not([data-brand-logo]):not(.brand-logo-unit):not([data-user-badge]):not(.user-badge-chip):not(.user-badge-btn),
   html[lang="fa"] p,
-  html[lang="fa"] span:not([data-brand-logo]):not(.brand-logo-text),
+  html[lang="fa"] span:not([data-brand-logo]):not(.brand-logo-text):not([data-user-badge]):not(.user-badge-text):not(.font-mono),
   html[lang="fa"] h1,
-  html[lang="fa"] h2,
+  html[lang="fa"] h2:not([data-user-badge]):not(.user-tag-protect),
   html[lang="fa"] h3,
   html[lang="fa"] h4,
   html[lang="fa"] h5,
   html[lang="fa"] h6,
-  html[lang="fa"] div:not([data-brand-logo]):not(.brand-lock),
+  html[lang="fa"] div:not([data-brand-logo]):not(.brand-lock):not([data-user-badge]):not(.user-badge-chip),
   html[lang="fa"] label,
   html[lang="fa"] a,
   html[lang="fa"] li {
@@ -46,7 +46,7 @@
   }
 
   html[lang="fa"] h1,
-  html[lang="fa"] h2,
+  html[lang="fa"] h2:not([data-user-badge]):not(.user-tag-protect),
   html[lang="fa"] h3 {
     line-height: 1.35 !important;
   }
@@ -59,19 +59,19 @@
   html[lang="ar"],
   html[lang="ar"] body,
   html[lang="ar"] #root,
-  html[lang="ar"] input,
+  html[lang="ar"] input:not([data-user-badge]):not(.user-tag-input),
   html[lang="ar"] select,
   html[lang="ar"] textarea,
-  html[lang="ar"] button:not([data-brand-logo]):not(.brand-logo-unit),
+  html[lang="ar"] button:not([data-brand-logo]):not(.brand-logo-unit):not([data-user-badge]):not(.user-badge-chip):not(.user-badge-btn),
   html[lang="ar"] p,
-  html[lang="ar"] span:not([data-brand-logo]):not(.brand-logo-text),
+  html[lang="ar"] span:not([data-brand-logo]):not(.brand-logo-text):not([data-user-badge]):not(.user-badge-text):not(.font-mono),
   html[lang="ar"] h1,
-  html[lang="ar"] h2,
+  html[lang="ar"] h2:not([data-user-badge]):not(.user-tag-protect),
   html[lang="ar"] h3,
   html[lang="ar"] h4,
   html[lang="ar"] h5,
   html[lang="ar"] h6,
-  html[lang="ar"] div:not([data-brand-logo]):not(.brand-lock),
+  html[lang="ar"] div:not([data-brand-logo]):not(.brand-lock):not([data-user-badge]):not(.user-badge-chip),
   html[lang="ar"] label,
   html[lang="ar"] a,
   html[lang="ar"] li {
@@ -80,7 +80,7 @@
   }
 
   html[lang="ar"] h1,
-  html[lang="ar"] h2,
+  html[lang="ar"] h2:not([data-user-badge]):not(.user-tag-protect),
   html[lang="ar"] h3 {
     line-height: 1.35 !important;
   }
@@ -94,13 +94,13 @@
   html[lang="zh"] body,
   html[lang="zh"] #root,
   html[lang="zh"] input,
-  html[lang="zh"] button:not([data-brand-logo]):not(.brand-logo-unit),
+  html[lang="zh"] button:not([data-brand-logo]):not(.brand-logo-unit):not([data-user-badge]):not(.user-badge-chip),
   html[lang="zh"] p,
-  html[lang="zh"] span:not([data-brand-logo]):not(.brand-logo-text),
+  html[lang="zh"] span:not([data-brand-logo]):not(.brand-logo-text):not([data-user-badge]):not(.user-badge-text):not(.font-mono),
   html[lang="zh"] h1,
-  html[lang="zh"] h2,
+  html[lang="zh"] h2:not([data-user-badge]):not(.user-tag-protect),
   html[lang="zh"] h3,
-  html[lang="zh"] div:not([data-brand-logo]):not(.brand-lock) {
+  html[lang="zh"] div:not([data-brand-logo]):not(.brand-lock):not([data-user-badge]):not(.user-badge-chip) {
     font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif !important;
     letter-spacing: 0 !important;
   }
@@ -124,6 +124,25 @@
     display: inline-flex !important;
     align-items: center !important;
     transform: none !important;
+  }
+
+  /* IMMUTABLE USERNAME BADGE, WALLET ADDRESS & PLAYER TAG: Absolute protection across all languages */
+  html [data-user-badge],
+  html .user-badge-chip,
+  html .user-badge-text,
+  html .user-tag-protect,
+  html [data-wallet-address],
+  html [data-user-badge] *,
+  html .user-badge-chip *,
+  html [data-wallet-address] * {
+    font-family: 'JetBrains Mono', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, monospace !important;
+    direction: ltr !important;
+    unicode-bidi: isolate !important;
+    letter-spacing: -0.01em !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    line-height: 1 !important;
+    text-transform: none !important;
   }
 
   /* Protected Monospace Numbers, Hashes, Currency & Speeds across all languages */

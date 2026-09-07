@@ -243,6 +243,8 @@ export function usePulsarStore() {
     xp: userData.xp || 0,
     level: userData.level || 1,
     playerId: userData.playerId || (account.address ? RealWeb3Manager.getPlayerTagForAddress(account.address) : undefined),
+    bestReactionMs: userData.bestReactionMs,
+    avgReactionMs: userData.avgReactionMs,
   };
 
   return {

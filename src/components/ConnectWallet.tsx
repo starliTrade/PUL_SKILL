@@ -470,25 +470,40 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
         <button
           ref={triggerRef}
           type="button"
+          data-user-badge="true"
           onClick={() => {
             sounds.playClick();
             setDropdownOpen(!dropdownOpen);
           }}
           className={cn(
-            'flex items-center gap-1.5 h-7.5 px-2.5 rounded-full border transition-all cursor-pointer select-none text-left',
-            'border-emerald-500/30 bg-zinc-900/80 hover:bg-zinc-800/90 active:scale-95 text-xs',
-            dropdownOpen && 'ring-1 ring-emerald-400 bg-zinc-800'
+            'user-badge-chip flex items-center gap-1.5 h-7.5 px-2.5 rounded-full border transition-all cursor-pointer select-none text-left',
+            'border-emerald-500/30 bg-zinc-900/90 hover:bg-zinc-800/95 active:scale-95 text-xs shadow-[0_2px_8px_rgba(0,0,0,0.4)]',
+            dropdownOpen && 'ring-1 ring-emerald-400 bg-zinc-800 border-emerald-400/60'
           )}
+          style={{
+            direction: 'ltr',
+            fontFamily: "'JetBrains Mono', 'Plus Jakarta Sans', -apple-system, monospace",
+          }}
           title={fullAddr}
         >
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 shadow-[0_0_6px_#34d399]" />
-          <span className="font-mono font-medium text-zinc-200 tracking-tight text-[11px] leading-none max-w-[70px] sm:max-w-[95px] truncate">
+          <span
+            data-user-badge="true"
+            className="user-badge-text font-mono font-semibold text-zinc-100 tracking-tight text-[11px] leading-none max-w-[80px] sm:max-w-[105px] truncate"
+            style={{
+              direction: 'ltr',
+              fontFamily: "'JetBrains Mono', 'Plus Jakarta Sans', -apple-system, monospace",
+              fontSize: '11px',
+              fontWeight: 600,
+              lineHeight: 1,
+            }}
+          >
             {userLabel}
           </span>
           <ChevronDown
             className={cn(
               'w-3 h-3 text-zinc-400 transition-transform duration-200 shrink-0 -ml-0.5',
-              dropdownOpen && 'transform rotate-180 text-white'
+              dropdownOpen && 'transform rotate-180 text-emerald-300'
             )}
           />
         </button>
@@ -502,38 +517,59 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 6, scale: 0.96 }}
               transition={{ duration: 0.15, ease: 'easeOut' }}
-              className="absolute right-0 mt-2 w-72 sm:w-80 rounded-2xl bg-zinc-950/95 backdrop-blur-2xl border border-white/[0.12] shadow-[0_16px_48px_rgba(0,0,0,0.85)] z-[99999] overflow-hidden p-3 text-left"
+              className="absolute right-0 mt-2 w-[calc(100vw-32px)] sm:w-84 max-w-sm rounded-2xl bg-zinc-950/98 backdrop-blur-2xl border border-white/[0.12] shadow-[0_24px_60px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.06)] z-[99999] overflow-hidden p-3.5 text-left"
               style={{ direction: 'ltr' }}
             >
-              {/* Header */}
-              <div className="flex items-center justify-between pb-2.5 border-b border-white/[0.06]">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-300 font-bold text-xs shrink-0">
+              {/* Header: Player Tag + Level + Network Indicator */}
+              <div className="flex items-center justify-between pb-3 border-b border-white/[0.06]">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500/20 via-teal-500/10 to-sky-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-300 font-bold text-xs shrink-0 shadow-[0_0_14px_rgba(52,211,153,0.2)]">
                     <Sparkles className="w-4 h-4 text-emerald-400" />
                   </div>
                   <div className="min-w-0">
-                    <div className="text-xs font-bold text-white truncate flex items-center gap-1.5">
-                      <span>{wallet.playerId || 'PULSAR Duelist'}</span>
-                      <span className="text-[9px] font-mono font-normal bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 px-1 py-0.2 rounded">
+                    <div className="text-xs font-bold text-white truncate flex items-center gap-1.5" style={{ direction: 'ltr' }}>
+                      <span
+                        data-user-badge="true"
+                        className="user-badge-text font-mono font-bold text-white text-xs truncate"
+                        style={{
+                          fontFamily: "'JetBrains Mono', 'Plus Jakarta Sans', monospace",
+                          fontSize: '12px',
+                          fontWeight: 700,
+                        }}
+                      >
+                        {wallet.playerId || 'PULSAR Duelist'}
+                      </span>
+                      <span
+                        data-user-badge="true"
+                        className="text-[9.5px] font-mono font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded shadow-sm"
+                        style={{
+                          fontFamily: "'JetBrains Mono', monospace",
+                          fontSize: '9.5px',
+                        }}
+                      >
                         Lv.{stats.level || 1}
                       </span>
                     </div>
-                    <div className="text-[10px] text-zinc-400 flex items-center gap-1 mt-0.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
-                      <span>Polygon Mainnet (137)</span>
+                    <div className="text-[10px] text-zinc-400 flex items-center gap-1.5 mt-0.5" style={{ direction: 'ltr' }}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block shadow-[0_0_6px_#34d399] animate-pulse" />
+                      <span className="font-mono text-[10px] text-zinc-300 font-medium">Polygon PoS</span>
+                      <span className="text-zinc-600">•</span>
+                      <span className="font-mono text-[9.5px] text-zinc-400">Chain 137</span>
                     </div>
                   </div>
                 </div>
 
-                <span className="text-[10px] font-mono text-zinc-400 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.06]">
-                  {wallet.provider || 'Web3'}
-                </span>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <span className="text-[10px] font-mono text-zinc-300 bg-white/[0.05] px-2 py-0.5 rounded-md border border-white/[0.08] font-medium">
+                    {wallet.provider || 'Web3'}
+                  </span>
+                </div>
               </div>
 
               {/* Real Live On-Chain Balance Card */}
-              <div className="my-2.5 p-3 rounded-xl bg-gradient-to-br from-emerald-500/10 via-zinc-900/60 to-zinc-950 border border-emerald-500/20">
-                <div className="flex items-center justify-between text-[10.5px] text-zinc-400 mb-1">
-                  <span>Polygon On-Chain Balance</span>
+              <div className="my-2.5 p-3 rounded-xl bg-gradient-to-br from-emerald-500/10 via-zinc-900/90 to-zinc-950 border border-emerald-500/25 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+                <div className="flex items-center justify-between text-[10.5px] text-zinc-400 mb-1" style={{ direction: 'ltr' }}>
+                  <span className="font-medium text-zinc-300">Polygon USDT Vault</span>
                   <button
                     type="button"
                     disabled={isRefreshingBalance}
@@ -546,22 +582,22 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                         setTimeout(() => setIsRefreshingBalance(false), 500);
                       }
                     }}
-                    className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1 text-[10px] font-mono cursor-pointer disabled:opacity-50"
+                    className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1 text-[10px] font-mono cursor-pointer disabled:opacity-50 transition-colors px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20"
                     title="Refresh live on-chain balance"
                   >
                     <RefreshCw className={cn('w-3 h-3', isRefreshingBalance && 'animate-spin')} />
-                    <span>{isRefreshingBalance ? 'Updating...' : 'Refresh'}</span>
+                    <span>{isRefreshingBalance ? 'Syncing...' : 'Sync'}</span>
                   </button>
                 </div>
-                <div className="flex items-baseline justify-between mt-1">
+                <div className="flex items-baseline justify-between mt-1.5" style={{ direction: 'ltr' }}>
                   <div>
-                    <div className="text-xl font-bold font-mono text-emerald-300">
+                    <div className="text-xl font-bold font-mono text-emerald-300 tracking-tight" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
                       ${wallet.balance.toFixed(2)}{' '}
-                      <span className="text-xs font-sans text-emerald-400 font-normal">USDT</span>
+                      <span className="text-xs font-sans text-emerald-400 font-semibold">USDT</span>
                     </div>
                     <div className="text-[10px] font-medium text-zinc-400 mt-0.5 flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                      <span>Polygon PoS • Gasless USDT</span>
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_4px_#34d399]"></span>
+                      <span className="font-mono text-[9.5px]">Smart Escrow Settlement</span>
                     </div>
                   </div>
                   <button
@@ -570,21 +606,50 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                       sounds.playClick();
                       setShowDepositModal(true);
                     }}
-                    className="text-[10.5px] font-semibold text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1 active:scale-95"
+                    className="text-[10.5px] font-semibold text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1 active:scale-95 shadow-[0_2px_8px_rgba(52,211,153,0.2)]"
                   >
-                    <ArrowDownLeft className="w-3 h-3 text-emerald-400" />
-                    <span>Receive USDT</span>
+                    <ArrowDownLeft className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Deposit / QR</span>
                   </button>
                 </div>
               </div>
 
+              {/* Quick Duel Stats Row */}
+              <div className="mb-2.5 grid grid-cols-3 gap-1.5 p-2 rounded-xl bg-white/[0.02] border border-white/[0.06] text-center" style={{ direction: 'ltr' }}>
+                <div className="p-1">
+                  <div className="text-[9.5px] text-zinc-400 font-medium">Duels</div>
+                  <div className="text-xs font-bold font-mono text-zinc-100">{stats.totalMatches || 0}</div>
+                </div>
+                <div className="p-1 border-x border-white/[0.06]">
+                  <div className="text-[9.5px] text-zinc-400 font-medium">Win Rate</div>
+                  <div className="text-xs font-bold font-mono text-emerald-400">
+                    {stats.totalMatches ? Math.round(((stats.wins || 0) / stats.totalMatches) * 100) : 0}%
+                  </div>
+                </div>
+                <div className="p-1">
+                  <div className="text-[9.5px] text-zinc-400 font-medium">Best Reflex</div>
+                  <div className="text-xs font-bold font-mono text-sky-400">
+                    {stats.bestReactionMs ? `${stats.bestReactionMs}ms` : '--'}
+                  </div>
+                </div>
+              </div>
+
               {/* Wallet Address Box */}
-              <div className="mb-2.5 p-2 rounded-xl bg-zinc-900/80 border border-white/[0.06] flex items-center justify-between gap-2">
+              <div className="mb-2.5 p-2 rounded-xl bg-zinc-900/90 border border-white/[0.08] flex items-center justify-between gap-2" style={{ direction: 'ltr' }}>
                 <div className="min-w-0 flex-1">
-                  <div className="text-[9.5px] text-zinc-400 uppercase tracking-wider font-mono">
+                  <div className="text-[9.5px] text-zinc-400 uppercase tracking-wider font-mono font-medium">
                     Wallet Address
                   </div>
-                  <div className="text-[11px] font-mono text-zinc-200 truncate mt-0.5" title={fullAddr}>
+                  <div
+                    data-wallet-address="true"
+                    className="text-[11px] font-mono text-zinc-200 truncate mt-0.5 font-medium"
+                    style={{
+                      fontFamily: "'JetBrains Mono', monospace",
+                      fontSize: '11px',
+                      direction: 'ltr',
+                    }}
+                    title={fullAddr}
+                  >
                     {fullAddr}
                   </div>
                 </div>
@@ -597,7 +662,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                       'p-1.5 rounded-lg border transition-all cursor-pointer flex items-center gap-1 text-[10px] font-mono',
                       copiedAddr
                         ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
-                        : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.06] text-zinc-300 hover:text-white'
+                        : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.08] text-zinc-300 hover:text-white'
                     )}
                     title="Copy full address"
                   >
@@ -618,7 +683,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                     href={`https://polygonscan.com/address/${fullAddr}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="p-1.5 rounded-lg border border-white/[0.06] bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                    className="p-1.5 rounded-lg border border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white transition-colors cursor-pointer"
                     title="View on Polygonscan"
                   >
                     <ExternalLink className="w-3 h-3" />
@@ -626,7 +691,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                 </div>
               </div>
 
-              {/* Disconnect */}
+              {/* Disconnect Session */}
               <div className="pt-2 border-t border-white/[0.06]">
                 <button
                   type="button"
@@ -635,7 +700,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                     disconnectWallet();
                     setDropdownOpen(false);
                   }}
-                  className="w-full py-1.5 px-2.5 rounded-lg text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors flex items-center justify-center gap-1.5 cursor-pointer font-medium"
+                  className="w-full py-2 px-2.5 rounded-xl text-xs text-rose-400 hover:text-rose-300 bg-rose-500/5 hover:bg-rose-500/15 border border-rose-500/20 transition-all flex items-center justify-center gap-1.5 cursor-pointer font-medium active:scale-[0.99]"
                 >
                   <LogOut className="w-3.5 h-3.5" />
                   <span>Disconnect Session</span>

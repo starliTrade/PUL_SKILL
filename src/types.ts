@@ -17,6 +17,8 @@ export interface UserStats {
   xp: number;
   level: number;
   playerId?: string;
+  bestReactionMs?: number;
+  avgReactionMs?: number;
 }
 
 export interface MatchHistoryItem {

@@ -173,8 +173,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                     <PulsarDynamicAvatar level={stats.level} size="md" glow showBadge={false} />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 flex-nowrap">
-                      <span className="text-[13px] font-bold text-white tracking-tight truncate">
+                    <div className="flex items-center gap-1.5 flex-nowrap" dir="ltr">
+                      <span
+                        data-user-badge="true"
+                        className="user-tag-protect text-[13px] font-bold text-white tracking-tight truncate font-mono"
+                        style={{
+                          fontFamily: "'JetBrains Mono', 'Plus Jakarta Sans', monospace",
+                          direction: 'ltr',
+                        }}
+                      >
                         {wallet.connected ? (wallet.playerId || 'Pulsar Duelist') : t('unconnectedPlayer')}
                       </span>
                       <span

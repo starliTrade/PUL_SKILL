@@ -407,6 +407,18 @@ class RealWeb3Manager {
     if (this.wcInitPromise) return this.wcInitPromise;
 
     this.wcInitPromise = (async () => {
+      // Purge any stale/orphaned proposal keys before initializing provider
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith('wc@2:') && k.includes('proposal')) {
+              localStorage.removeItem(k);
+            }
+          }
+        }
+      } catch {}
+
       const EthereumProviderClass = await getEthereumProviderClass();
       const projectId = getWalletConnectProjectId();
       if (!projectId || projectId.length < 10) {
@@ -420,6 +432,7 @@ class RealWeb3Manager {
         chains: [137],
         optionalChains: [1, 56, 42161],
         showQrModal: false,
+        disableProviderPing: true,
         metadata: this.wcMetadata(),
       });
 

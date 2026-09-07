@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ShieldCheck, Activity, Play, RotateCcw, Zap, AlertTriangle } from 'lucide-react';
+import { ShieldCheck, Activity, Play, RotateCcw, Zap, AlertTriangle, Swords, Sparkles } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
+import { useLanguage } from '../i18n/LanguageContext';
 
 interface Star {
   x: number;
@@ -20,8 +21,10 @@ interface PulsarHeroVisualizerProps {
 
 export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
   className,
+  onStartBattle,
 }) => {
   const { bestReactionMs } = usePulsarStore();
+  const { t, isRTL } = useLanguage();
   const [livePing, setLivePing] = useState<number>(14);
 
   // Interactive reflex test state
@@ -201,7 +204,7 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
     setFalseStart(false);
     setTestState('waiting');
 
-    const randomDelay = 1500 + Math.random() * 2500;
+    const randomDelay = 1400 + Math.random() * 2200;
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       setTestState('ready');
@@ -217,7 +220,7 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
       setFalseStart(true);
       sounds.playLoss();
       setTestState('idle');
-      setTimeout(() => setFalseStart(false), 2000);
+      setTimeout(() => setFalseStart(false), 2400);
       return;
     }
 
@@ -236,13 +239,13 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
         className="absolute -inset-1 rounded-2xl pointer-events-none"
         style={{
           background:
-            'radial-gradient(ellipse at 50% 30%, rgba(255, 255, 255, 0.04) 0%, rgba(56, 189, 248, 0.02) 40%, transparent 70%)',
+            'radial-gradient(ellipse at 50% 30%, rgba(255, 255, 255, 0.04) 0%, rgba(56, 189, 248, 0.03) 40%, transparent 70%)',
           filter: 'blur(12px)',
         }}
       />
 
-      {/* Main Full-Width Cosmic Reflex Card (Compact Height) */}
-      <div className="relative overflow-hidden p-2.5 sm:p-3 rounded-xl bg-zinc-950/95 border border-white/[0.05] shadow-[0_4px_20px_rgba(0,0,0,0.75)] backdrop-blur-md w-full">
+      {/* Main Full-Width Cosmic Reflex Card (Standardized Geometry & Elevation) */}
+      <div className="relative overflow-hidden p-3 sm:p-3.5 rounded-2xl bg-zinc-950/95 border border-white/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.8)] backdrop-blur-xl w-full">
         {/* Background Twinkling Canvas with Pulsar Cosmic Flare */}
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
           <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block opacity-75" />
@@ -251,53 +254,70 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
         {/* Relative Content Container */}
         <div className="relative z-10">
           {/* Top Status Strip */}
-          <div className="flex items-center justify-between pb-1.5 border-b border-white/[0.03]">
-            <div className="flex items-center gap-1.5">
-              <span className="relative flex h-1.5 w-1.5">
+          <div className="flex items-center justify-between pb-2 border-b border-white/[0.04]">
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500 shadow-[0_0_6px_#10b981]" />
               </span>
-              <span className="text-[9.5px] font-mono text-zinc-300 font-semibold tracking-tight">
+              <span
+                className="text-[10px] font-mono text-zinc-200 font-bold tracking-wider"
+                style={{ direction: 'ltr' }}
+              >
                 PULSAR PROTOCOL
               </span>
             </div>
 
-            <div className="flex items-center gap-1 text-[8.5px] font-mono text-zinc-400 bg-white/[0.03] px-1.5 py-0.5 rounded-full border border-white/[0.03]">
-              <Activity className="w-2 h-2 text-emerald-400" />
-              <span>{livePing}ms Global Ping</span>
+            <div
+              className="flex items-center gap-1.5 text-[9px] font-mono text-zinc-300 bg-white/[0.04] px-2 py-0.5 rounded-full border border-white/[0.06]"
+              style={{ direction: 'ltr' }}
+            >
+              <Activity className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+              <span>{livePing}ms Global Sync</span>
             </div>
           </div>
 
-          {/* Center Display: Compact Interactive Reflex Benchmark Screen */}
+          {/* Center Display: Interactive Reflex Benchmark Screen */}
           <div
             onClick={testState === 'waiting' || testState === 'ready' ? handleTestClick : undefined}
             className={cn(
-              'py-2 px-2 text-center transition-all duration-200 rounded-lg my-1.5',
-              testState === 'waiting' && 'bg-amber-950/20 border border-amber-500/25 cursor-pointer',
+              'py-2.5 px-3 text-center transition-all duration-200 rounded-xl my-2 border select-none',
+              testState === 'waiting' && 'bg-amber-950/30 border-amber-500/30 cursor-pointer shadow-[inset_0_0_20px_rgba(245,158,11,0.1)]',
               testState === 'ready' &&
-                'bg-emerald-950/60 border border-emerald-400 cursor-pointer shadow-[0_0_20px_rgba(52,211,153,0.35)] animate-pulse',
-              testState === 'result' && 'bg-white/[0.02] border border-sky-500/15',
-              testState === 'idle' && 'bg-transparent'
+                'bg-emerald-950/70 border-emerald-400 cursor-pointer shadow-[0_0_30px_rgba(52,211,153,0.4),inset_0_0_20px_rgba(52,211,153,0.2)] animate-pulse',
+              testState === 'result' && 'bg-white/[0.02] border-sky-500/20 shadow-[inset_0_0_15px_rgba(56,189,248,0.05)]',
+              testState === 'idle' && 'bg-white/[0.01] border-white/[0.03]'
             )}
           >
-            <div className="text-[8.5px] uppercase font-mono tracking-wider text-zinc-400 mb-0.5">
-              {testState === 'idle' && 'Sub-ms Reflex Benchmark'}
-              {testState === 'waiting' && 'Wait for Green Flash...'}
-              {testState === 'ready' && 'TAP NOW!'}
-              {testState === 'result' && 'Verified Human Response'}
+            <div className="text-[9.5px] font-medium tracking-wide text-zinc-400 mb-0.5">
+              {testState === 'idle' && (t('reflexBenchmarkTitle') || 'Sub-ms Reflex Benchmark')}
+              {testState === 'waiting' && (t('reflexWaitSignal') || 'Wait for Green Flash...')}
+              {testState === 'ready' && (t('reflexTapNow') || 'TAP ANYWHERE NOW!')}
+              {testState === 'result' && (t('reflexVerifiedHuman') || 'Verified Human Response')}
             </div>
 
-            {/* Monospace ms number */}
-            <div className="flex items-baseline justify-center gap-1 my-0.5">
+            {/* Monospace ms number with Protected LTR Layout */}
+            <div
+              className="flex items-baseline justify-center gap-1.5 my-1"
+              dir="ltr"
+              style={{ direction: 'ltr' }}
+            >
               <span
+                data-user-badge="true"
                 className={cn(
-                  'text-2xl sm:text-3xl font-black font-mono tracking-tight transition-colors',
+                  'font-black font-mono tracking-tight transition-colors',
                   testState === 'waiting'
-                    ? 'text-amber-400 text-xl sm:text-2xl'
+                    ? 'text-amber-400 text-2xl sm:text-3xl'
                     : testState === 'ready'
-                    ? 'text-emerald-300 text-xl sm:text-2xl'
-                    : 'text-white'
+                    ? 'text-emerald-300 text-3xl sm:text-4xl'
+                    : testState === 'result'
+                    ? 'text-emerald-300 text-3xl sm:text-4xl'
+                    : 'text-white text-3xl sm:text-4xl'
                 )}
+                style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  direction: 'ltr',
+                }}
               >
                 {testState === 'waiting' ? (
                   <span className="text-amber-400 animate-pulse">WAIT...</span>
@@ -312,85 +332,108 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
                 )}
               </span>
               {testState !== 'waiting' && testState !== 'ready' && (
-                <span className="text-[11px] font-mono text-zinc-500 font-medium">ms</span>
+                <span
+                  data-user-badge="true"
+                  className="text-xs font-mono text-zinc-400 font-semibold"
+                  style={{ fontFamily: "'JetBrains Mono', monospace" }}
+                >
+                  ms
+                </span>
               )}
             </div>
 
             {/* Sub-label / status feedback */}
             {falseStart && (
-              <div className="text-rose-400 text-[9px] font-mono font-semibold animate-shake mt-0.5 flex items-center justify-center gap-1">
-                <AlertTriangle className="w-2.5 h-2.5" />
-                <span>Too early! Wait for green flash.</span>
+              <div className="text-rose-400 text-[10px] font-medium animate-shake mt-1 flex items-center justify-center gap-1.5">
+                <AlertTriangle className="w-3 h-3 shrink-0" />
+                <span>{t('reflexTooEarly') || 'Too early! Wait for green flash.'}</span>
               </div>
             )}
 
             {testState === 'result' && (
-              <div className="text-sky-400 text-[9px] font-mono mt-0.5 flex items-center justify-center gap-1">
-                <Zap className="w-2.5 h-2.5" />
+              <div className="text-sky-400 text-[10px] font-medium mt-1 flex items-center justify-center gap-1.5">
+                <Zap className="w-3 h-3 text-sky-400 shrink-0" />
                 <span>
                   {testReactionMs < 200
-                    ? 'Top 1% Reflex Elite'
+                    ? t('reflexTop1') || 'Top 1% Reflex Elite'
                     : testReactionMs < 250
-                    ? 'Competitive Duelist Reflex'
-                    : 'Ready for 1v1 Arena'}
+                    ? t('reflexCompetitive') || 'Competitive Duelist Reflex'
+                    : t('reflexReady') || 'Ready for 1v1 Arena'}
                 </span>
               </div>
             )}
           </div>
 
-          {/* Interactive Action Trigger Button */}
-          <div className="mt-0.5 flex items-center justify-center">
+          {/* Interactive Action Trigger Buttons */}
+          <div className="mt-1 flex items-center justify-center gap-2">
             {testState === 'idle' && (
               <button
                 onClick={handleStartTest}
-                className="w-full py-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] hover:border-white/[0.12] text-[11px] font-medium text-zinc-300 hover:text-white transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.99]"
+                className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-sky-500/10 via-emerald-500/10 to-teal-500/10 hover:from-sky-500/20 hover:via-emerald-500/20 hover:to-teal-500/20 border border-white/[0.08] hover:border-emerald-500/30 text-xs font-semibold text-zinc-200 hover:text-white transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-[0.99] shadow-[0_2px_12px_rgba(0,0,0,0.3)]"
               >
-                <Play className="w-2.5 h-2.5 fill-current text-sky-400" />
-                <span>Test Your Reaction Speed (Free)</span>
+                <Play className="w-3 h-3 fill-current text-emerald-400 shrink-0" />
+                <span>{t('reflexTestCta') || 'Test Your Reaction Speed (Free)'}</span>
               </button>
             )}
 
             {testState === 'waiting' && (
               <button
                 onClick={handleTestClick}
-                className="w-full py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] font-mono text-amber-300 font-bold transition-all flex items-center justify-center gap-1 cursor-pointer"
+                className="w-full py-2 px-3 rounded-xl bg-amber-500/15 border border-amber-500/40 text-xs font-mono text-amber-300 font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-[0_0_15px_rgba(245,158,11,0.2)]"
               >
-                <span>Hold... click when green!</span>
+                <span>{t('reflexWaitSignal') || 'Hold... click when green!'}</span>
               </button>
             )}
 
             {testState === 'ready' && (
               <button
                 onClick={handleTestClick}
-                className="w-full py-1.5 rounded-lg bg-emerald-500 border border-emerald-400 text-[11px] font-mono text-black font-extrabold transition-all flex items-center justify-center gap-1 cursor-pointer shadow-[0_0_16px_rgba(52,211,153,0.5)]"
+                className="w-full py-2 px-3 rounded-xl bg-emerald-400 hover:bg-emerald-300 border border-emerald-300 text-xs font-mono text-zinc-950 font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-[0_0_20px_rgba(52,211,153,0.6)] animate-pulse"
               >
-                <span>TAP ANYWHERE NOW!</span>
+                <span>{t('reflexTapNow') || 'TAP ANYWHERE NOW!'}</span>
               </button>
             )}
 
             {testState === 'result' && (
-              <div className="w-full flex gap-1.5">
+              <div className="w-full flex items-center gap-2">
                 <button
                   onClick={handleStartTest}
-                  className="flex-1 py-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-[11px] font-medium text-zinc-300 hover:text-white transition-all flex items-center justify-center gap-1 cursor-pointer"
+                  className="flex-1 py-2 px-3 rounded-xl bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.08] text-xs font-medium text-zinc-200 hover:text-white transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.98]"
                 >
-                  <RotateCcw className="w-2.5 h-2.5" />
-                  <span>Retest</span>
+                  <RotateCcw className="w-3 h-3 text-zinc-400" />
+                  <span>{t('reflexRetest') || 'Retest Speed'}</span>
                 </button>
+
+                {onStartBattle && (
+                  <button
+                    onClick={() => {
+                      sounds.playClick();
+                      onStartBattle();
+                    }}
+                    className="flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-xs font-bold text-zinc-950 transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-[0_0_16px_rgba(52,211,153,0.3)] active:scale-[0.98]"
+                  >
+                    <Swords className="w-3 h-3 text-zinc-950" />
+                    <span>{t('reflexEnterArena') || 'Enter 1v1 Arena'}</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
 
           {/* Micro Telemetry Footer */}
-          <div className="mt-2 pt-1.5 border-t border-white/[0.04] flex items-center justify-between text-[8.5px] text-zinc-500 font-mono">
-            <div className="flex items-center gap-1 text-zinc-400">
-              <ShieldCheck className="w-2 h-2 text-emerald-400" />
-              <span>Biometric Anti-Cheat</span>
+          <div
+            className="mt-2.5 pt-2 border-t border-white/[0.04] flex items-center justify-between text-[9px] text-zinc-400 font-mono"
+            style={{ direction: 'ltr' }}
+          >
+            <div className="flex items-center gap-1.5 text-zinc-400">
+              <ShieldCheck className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+              <span>Biometric Anti-Cheat v2.4</span>
             </div>
-            <span className="text-zinc-500">Sub-ms Clock</span>
+            <span className="text-zinc-500 font-medium">Sub-ms Clock Sync</span>
           </div>
         </div>
       </div>
     </div>
   );
 };
+

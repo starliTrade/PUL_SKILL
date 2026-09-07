@@ -248,8 +248,15 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                     )}
                   </div>
                 ) : (
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <h2 className="text-sm font-semibold text-white tracking-tight truncate">
+                  <div className="flex items-center gap-1.5 min-w-0" dir="ltr">
+                    <h2
+                      data-user-badge="true"
+                      className="user-tag-protect text-sm font-bold text-white tracking-tight truncate font-mono"
+                      style={{
+                        fontFamily: "'JetBrains Mono', 'Plus Jakarta Sans', monospace",
+                        direction: 'ltr',
+                      }}
+                    >
                       {wallet.connected ? (wallet.playerId || 'Pulsar Duelist') : t('unconnectedPlayer')}
                     </h2>
                     {wallet.connected && (

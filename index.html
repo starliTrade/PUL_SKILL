@@ -18,19 +18,68 @@
     <!-- Early safety interceptor for strict mode / readonly mutation errors in iframe preview -->
     <script>
       (function() {
+        // Purge orphaned/stale WalletConnect proposal keys on load
+        try {
+          if (typeof window !== 'undefined' && window.localStorage) {
+            for (var i = 0; i < localStorage.length; i++) {
+              var k = localStorage.key(i);
+              if (k && k.indexOf('wc@2:') === 0 && k.indexOf('proposal') !== -1) {
+                localStorage.removeItem(k);
+              }
+            }
+          }
+        } catch(e) {}
+
         var isIgnorable = function(raw) {
-          var msg = String((raw && (raw.message || (raw.error && raw.error.message) || raw.reason || '')) || raw || '').toLowerCase();
+          var msg = '';
+          try {
+            if (typeof raw === 'string') {
+              msg = raw;
+            } else if (raw && typeof raw === 'object') {
+              msg = (raw.message || (raw.error && raw.error.message) || raw.reason || raw.msg || JSON.stringify(raw) || '');
+            } else {
+              msg = String(raw || '');
+            }
+          } catch(err) {
+            msg = String(raw || '');
+          }
+          var lower = msg.toLowerCase();
           return (
-            msg.includes('attempted to assign to readonly property') ||
-            msg.includes('which has only a getter') ||
-            msg.includes('cannot assign to read only property') ||
-            msg.includes('websocket connection closed') ||
-            msg.includes('failed to connect to websocket') ||
-            msg.includes('403') ||
-            msg.includes('origin not allowed') ||
-            msg.includes('relay.walletconnect')
+            lower.includes('no matching key') ||
+            lower.includes('proposal:') ||
+            lower.includes('attempted to assign to readonly property') ||
+            lower.includes('which has only a getter') ||
+            lower.includes('cannot assign to read only property') ||
+            lower.includes('websocket connection closed') ||
+            lower.includes('failed to connect to websocket') ||
+            lower.includes('403') ||
+            lower.includes('origin not allowed') ||
+            lower.includes('relay.walletconnect') ||
+            lower.includes('walletconnect')
           );
         };
+
+        if (typeof console !== 'undefined' && console.error) {
+          var origConsoleError = console.error;
+          console.error = function() {
+            var args = Array.prototype.slice.call(arguments);
+            var shouldIgnore = false;
+            for (var i = 0; i < args.length; i++) {
+              if (isIgnorable(args[i])) {
+                shouldIgnore = true;
+                break;
+              }
+            }
+            if (shouldIgnore) {
+              if (console.warn) {
+                console.warn.apply(console, ['[Pulsar Background Log Intercepted]:'].concat(args));
+              }
+              return;
+            }
+            origConsoleError.apply(console, args);
+          };
+        }
+
         window.addEventListener('error', function(e) {
           if (isIgnorable(e)) {
             try { e.preventDefault(); } catch (err) {}
