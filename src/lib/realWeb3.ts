@@ -1162,11 +1162,14 @@ class RealWeb3Manager {
       if (data.wins > 0 || data.totalMatches > 0) {
         const lbRef = doc(db, 'leaderboard', cleanAddr);
         const winRate = data.totalMatches > 0 ? Math.round((data.wins / data.totalMatches) * 100) : 0;
+        const tag = data.playerId || RealWeb3Manager.getPlayerTagForAddress(cleanAddr);
         await setDoc(
           lbRef,
           {
             address: cleanAddr,
             shortAddress: `${cleanAddr.slice(0, 6)}...${cleanAddr.slice(-4)}`,
+            playerId: tag,
+            name: tag,
             wins: data.wins,
             totalMatches: data.totalMatches,
             bestReactionMs: data.bestReactionMs,

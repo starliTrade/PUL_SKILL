@@ -209,6 +209,16 @@ export function usePulsarStore() {
     }
   };
 
+  const updatePlayerTag = async (newTag: string) => {
+    if (!account.connected || !account.address) return;
+    const clean = newTag.trim();
+    if (!clean) return;
+    const data = await realWeb3Manager.loadUserDataAsync(account.address);
+    data.playerId = clean;
+    await realWeb3Manager.saveUserDataAsync(data);
+    setUserData({ ...data });
+  };
+
   const currentUsdtBalance =
     account.balanceUSDT !== undefined && !isNaN(account.balanceUSDT)
       ? account.balanceUSDT
@@ -254,5 +264,6 @@ export function usePulsarStore() {
     recordMatch,
     depositFunds,
     withdrawFunds,
+    updatePlayerTag,
   };
 }

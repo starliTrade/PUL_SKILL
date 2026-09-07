@@ -20,10 +20,13 @@ export const PULSAR_CONTRACT_CONFIG = {
     USDC: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
   },
 
-  // Escrow Deployment Target
+  // Escrow Deployment Target (Polygon Mainnet Verified)
   escrow: {
-    address: '0x27C17a42E4cb04C0567e6fe84594A1a76C291566',
+    address: '0xac92cb9f43ca51bd723692932bc4f979ea2e3aef',
     platformFeeBps: 200, // 2%
+    treasuryWallet: '0x0B7533FA9f95D21962fae73962b214dB67F8ec89',
+    oracleSigner: '0x884179C3B577025abEFEfF6694aA2AFc652716da',
+    deployTxHash: '0xc6cf493665cd45fb1ede715d63adfbb09f970cfe83047c680f4f1980e26d3759',
   },
 };
 

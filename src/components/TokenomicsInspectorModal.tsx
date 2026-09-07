@@ -140,7 +140,7 @@ export const TokenomicsInspectorModal: React.FC<TokenomicsInspectorModalProps> =
                 <div className="p-2.5 rounded-xl bg-zinc-900/60 border border-white/[0.04]">
                   <div className="text-[10px] text-zinc-500 font-mono">{t('settlementStandard')}</div>
                   <div className="text-xs font-bold text-emerald-400 font-mono mt-0.5">
-                    Polygon Amoy / EIP-712
+                    Polygon Mainnet / EIP-712
                   </div>
                 </div>
               </div>

@@ -68,7 +68,7 @@ export const TOKENOMICS_SPEC = {
   tokenName: 'Pulsar Protocol Token',
   tokenTicker: '$PULSAR',
   totalSupply: '100,000,000 $PULSAR',
-  network: 'Polygon Amoy / Ethereum L2',
+  network: 'Polygon Mainnet (Chain ID 137)',
   contractStandard: 'ERC-20 with EIP-712 Meta-Transactions',
   distribution: [
     { label: 'Proof-of-Reflex Skill Mining (XP Conversion)', percent: 65, color: 'bg-sky-400' },

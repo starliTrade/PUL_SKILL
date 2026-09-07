@@ -22,6 +22,8 @@ import {
   Sliders,
   Info,
   Trophy,
+  Edit2,
+  X,
 } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
 import { ConnectWallet } from '../components/ConnectWallet';
@@ -51,13 +53,16 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
     history,
     bestReactionMs,
     avgReactionMs,
-    depositFunds,
+    updatePlayerTag,
   } = usePulsarStore();
 
   const [copiedAddr, setCopiedAddr] = useState(false);
   const [copiedPlayerId, setCopiedPlayerId] = useState(false);
   const [showInspector, setShowInspector] = useState(false);
   const [depositMsg, setDepositMsg] = useState<string | null>(null);
+  const [isEditingTag, setIsEditingTag] = useState(false);
+  const [tagInput, setTagInput] = useState('');
+  const [tagError, setTagError] = useState<string | null>(null);
 
   const winRate =
     stats.totalMatches > 0 ? Math.round((stats.wins / stats.totalMatches) * 100) : 0;
@@ -94,10 +99,28 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
     }
   };
 
-  const handleDepositVaultFunds = (amount: number) => {
+  const handleStartEditTag = () => {
+    sounds.playClick();
+    setTagInput(wallet.playerId || '');
+    setTagError(null);
+    setIsEditingTag(true);
+  };
+
+  const handleSaveTag = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const clean = tagInput.trim();
+    if (clean.length < 3) {
+      setTagError('Gamer Tag must be at least 3 characters');
+      return;
+    }
+    if (clean.length > 20) {
+      setTagError('Gamer Tag cannot exceed 20 characters');
+      return;
+    }
     sounds.playWin();
-    depositFunds(amount);
-    setDepositMsg(`+${amount} USDT added to Vault!`);
+    await updatePlayerTag(clean);
+    setIsEditingTag(false);
+    setDepositMsg(`Gamer Tag updated to ${clean}!`);
     setTimeout(() => setDepositMsg(null), 3000);
   };
 
@@ -189,24 +212,72 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
             {/* Identity, Tags & Wallet Address */}
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <h2 className="text-sm font-semibold text-white tracking-tight truncate">
-                    {wallet.connected ? (wallet.playerId || 'Pulsar Duelist') : t('unconnectedPlayer')}
-                  </h2>
-                  {wallet.connected && wallet.playerId && (
-                    <button
-                      onClick={handleCopyPlayerId}
-                      className="p-0.5 rounded bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white transition-all cursor-pointer shrink-0"
-                      title="Copy Player ID"
-                    >
-                      {copiedPlayerId ? (
-                        <Check className="w-2.5 h-2.5 text-emerald-400" />
-                      ) : (
-                        <Copy className="w-2.5 h-2.5" />
-                      )}
-                    </button>
-                  )}
-                </div>
+                {isEditingTag ? (
+                  <div className="flex-1 min-w-0">
+                    <form onSubmit={handleSaveTag} className="flex items-center gap-1 min-w-0">
+                      <input
+                        type="text"
+                        value={tagInput}
+                        onChange={(e) => {
+                          setTagInput(e.target.value);
+                          if (tagError) setTagError(null);
+                        }}
+                        placeholder="e.g. StarWarrior#77"
+                        maxLength={20}
+                        autoFocus
+                        className="bg-black/80 border border-sky-500/50 rounded px-2 py-0.5 text-xs text-white font-mono focus:outline-none focus:border-sky-400 min-w-0 flex-1"
+                      />
+                      <button
+                        type="submit"
+                        className="p-1 rounded bg-sky-500 hover:bg-sky-400 text-black font-bold text-[10px] shrink-0 cursor-pointer"
+                        title="Save Tag"
+                      >
+                        <Check className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingTag(false)}
+                        className="p-1 rounded bg-white/[0.08] hover:bg-white/[0.15] text-zinc-300 text-[10px] shrink-0 cursor-pointer"
+                        title="Cancel"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </form>
+                    {tagError && (
+                      <span className="text-[9.5px] text-rose-400 block mt-0.5 font-medium">{tagError}</span>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <h2 className="text-sm font-semibold text-white tracking-tight truncate">
+                      {wallet.connected ? (wallet.playerId || 'Pulsar Duelist') : t('unconnectedPlayer')}
+                    </h2>
+                    {wallet.connected && (
+                      <>
+                        <button
+                          onClick={handleStartEditTag}
+                          className="p-0.5 rounded bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white transition-all cursor-pointer shrink-0"
+                          title="Edit Gamer Tag"
+                        >
+                          <Edit2 className="w-2.5 h-2.5" />
+                        </button>
+                        {wallet.playerId && (
+                          <button
+                            onClick={handleCopyPlayerId}
+                            className="p-0.5 rounded bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white transition-all cursor-pointer shrink-0"
+                            title="Copy Player ID"
+                          >
+                            {copiedPlayerId ? (
+                              <Check className="w-2.5 h-2.5 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-2.5 h-2.5" />
+                            )}
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
 
                 {/* Tier Badge */}
                 <span
@@ -352,55 +423,6 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
             <div className="text-base font-bold text-purple-300 font-mono" dir="ltr">{stats.xp}</div>
             <div className="text-[9px] text-purple-400/80 font-mono">{t('miningActive')}</div>
           </div>
-        </div>
-
-        {/* Vault Balance & Faucet Topup Section */}
-        <div className="linear-card p-3.5 rounded-xl">
-          <div className="flex items-center justify-between gap-3 mb-2.5">
-            <div className="flex-1 min-w-0 pr-2 rtl:pr-0 rtl:pl-2">
-              <div className="text-[10.5px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5">
-                <Coins className="w-3 h-3 text-emerald-400 shrink-0" />
-                <span className="truncate">{t('vaultEscrow')}</span>
-              </div>
-              <div className="text-[11px] text-zinc-500 mt-0.5 line-clamp-2 leading-tight">
-                {t('directOnchainBalance')}
-              </div>
-            </div>
-            <div className="shrink-0 text-right rtl:text-left">
-              <div className="text-base font-bold text-emerald-400 font-mono inline-flex items-center gap-1" dir="ltr">
-                <span>${stats.balance.toFixed(2)}</span>
-                <span className="text-xs text-emerald-500/80 font-sans">USDT</span>
-              </div>
-              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Polygon Mainnet</div>
-            </div>
-          </div>
-
-          {wallet.connected ? (
-            <div className="pt-2 border-t border-white/[0.04]">
-              <button
-                onClick={() => handleDepositVaultFunds(20)}
-                className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-xs font-semibold text-emerald-300 transition-all cursor-pointer shadow-sm active:scale-[0.98]"
-              >
-                <Coins className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                <span className="truncate">{t('depositUSDT')} (+20 USDT)</span>
-              </button>
-            </div>
-          ) : (
-            <div className="pt-2 border-t border-white/[0.04] flex justify-center">
-              <ConnectWallet />
-            </div>
-          )}
-
-          {depositMsg && (
-            <motion.div
-              initial={{ opacity: 0, y: -4 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="mt-2 text-center text-[11px] text-emerald-400 font-medium bg-emerald-500/10 border border-emerald-500/20 py-1.5 px-2.5 rounded-lg flex items-center justify-center gap-1.5"
-            >
-              <Sparkles className="w-3 h-3 text-emerald-400 shrink-0" />
-              <span>{depositMsg}</span>
-            </motion.div>
-          )}
         </div>
 
         {/* Pulsar Avatar Evolution Matrix (5 Stages Color Breakdown) */}
