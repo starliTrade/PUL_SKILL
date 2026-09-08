@@ -305,8 +305,130 @@ export function useWeb3(): Web3State {
 }
 
 // -----------------------------------------------------------------------------
-// 5. TOP-LEVEL WEB3 PROVIDER WRAPPER
+// 5. TOP-LEVEL WEB3 PROVIDER WRAPPER & IOS LIFECYCLE WATCHER
 // -----------------------------------------------------------------------------
+
+/**
+ * Diagnostic helper to inspect WalletConnect session storage integrity in iOS browser contexts
+ */
+export function checkWalletConnectSessionIntegrity(): {
+  hasActiveSession: boolean;
+  sessionCount: number;
+  hasKeychain: boolean;
+  savedAddress: string | null;
+  isIOS: boolean;
+  details: string[];
+} {
+  const isIOS =
+    typeof navigator !== 'undefined' &&
+    (/iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+
+  let sessionCount = 0;
+  let hasKeychain = false;
+  const details: string[] = [];
+
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i) || '';
+        if (key.includes('wc@2:client:0.3//session') || (key.startsWith('wc@2:') && key.includes('session'))) {
+          sessionCount++;
+          const val = localStorage.getItem(key);
+          if (val) {
+            try {
+              const parsed = JSON.parse(val);
+              details.push(`WC_SESSION[${key}]: ${Array.isArray(parsed) ? parsed.length : 1} session(s) found`);
+            } catch {
+              details.push(`WC_SESSION[${key}]: present`);
+            }
+          }
+        }
+        if (key.includes('keychain')) {
+          hasKeychain = true;
+        }
+      }
+    } catch (e) {
+      details.push(`STORAGE_ACCESS_ERROR: ${String(e)}`);
+    }
+  }
+
+  const savedAddress =
+    typeof window !== 'undefined' && window.localStorage
+      ? localStorage.getItem('pulsar_active_address')
+      : null;
+
+  return {
+    hasActiveSession: sessionCount > 0 || Boolean(savedAddress),
+    sessionCount,
+    hasKeychain,
+    savedAddress,
+    isIOS,
+    details,
+  };
+}
+
+function IOSLifecycleManager(): null {
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const isIOS =
+      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+    const logLifecycleEvent = (eventName: string, extra?: Record<string, any>) => {
+      const integrity = checkWalletConnectSessionIntegrity();
+      console.log(`[iOS Web3 Lifecycle] 📱 ${eventName}`, {
+        isIOS,
+        timestamp: new Date().toISOString(),
+        visibilityState: document.visibilityState,
+        activeAddress: integrity.savedAddress,
+        sessionCount: integrity.sessionCount,
+        hasKeychain: integrity.hasKeychain,
+        details: integrity.details,
+        ...extra,
+      });
+
+      // Verification check: detect if session was unexpectedly wiped
+      if (integrity.isIOS && !integrity.hasActiveSession && integrity.savedAddress) {
+        console.warn(
+          '[iOS Web3 Lifecycle] ⚠️ Potential session desync detected on iOS return: savedAddress exists but WC storage keys were altered.'
+        );
+      }
+    };
+
+    // Log initial mount lifecycle
+    logLifecycleEvent('Provider Mounted / App Started');
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        logLifecycleEvent('Return from External App (visibilitychange: visible)');
+      } else {
+        logLifecycleEvent('Suspended to Background (visibilitychange: hidden)');
+      }
+    };
+
+    const handlePageShow = (e: Event & { persisted?: boolean }) => {
+      logLifecycleEvent('Page Resumed (pageshow)', { persisted: Boolean(e.persisted) });
+    };
+
+    const handleFocus = () => {
+      logLifecycleEvent('Window Focused (focus)');
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pageshow', handlePageShow);
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pageshow', handlePageShow);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, []);
+
+  return null;
+}
 
 interface Web3ProviderProps {
   children: React.ReactNode;
@@ -316,7 +438,12 @@ export function Web3Provider({ children }: Web3ProviderProps): React.ReactElemen
   return React.createElement(
     WagmiProvider,
     { config: wagmiConfig },
-    React.createElement(QueryClientProvider, { client: queryClient }, children)
+    React.createElement(
+      QueryClientProvider,
+      { client: queryClient },
+      React.createElement(IOSLifecycleManager, null),
+      children
+    )
   );
 }
 
