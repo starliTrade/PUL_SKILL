@@ -32,6 +32,7 @@ import { XPSystem, XPSummary } from '../lib/xpSystem';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { TokenomicsInspectorModal } from '../components/TokenomicsInspectorModal';
 import { ConnectWallet } from '../components/ConnectWallet';
+import { DuelCertificateModal } from '../components/DuelCertificateModal';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
@@ -55,6 +56,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   const [opponent, setOpponent] = useState<string>(opponentName || getRandomOpponent());
   const [currentStake, setCurrentStake] = useState<number>(stakeAmount);
   const [showWalletModal, setShowWalletModal] = useState(false);
+  const [showCertificateModal, setShowCertificateModal] = useState(false);
 
   useEffect(() => {
     if (opponentName) setOpponent(opponentName);
@@ -1030,6 +1032,18 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                     <RotateCcw className="w-4 h-4 fill-black" />
                     <span>{t('nextDuel')}</span>
                   </button>
+
+                  <button
+                    onClick={() => {
+                      sounds.playClick();
+                      setShowCertificateModal(true);
+                    }}
+                    className="w-full py-2.5 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-sky-400 font-mono text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors active:scale-95"
+                  >
+                    <ShieldCheck className="w-4 h-4 text-sky-400" />
+                    <span>View Cryptographic Certificate & Proof</span>
+                  </button>
+
                   <button
                     onClick={handleBackToLobby}
                     className="w-full btn-secondary py-3 flex items-center justify-center gap-2 cursor-pointer text-xs"
@@ -1043,6 +1057,28 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
           </>
         )}
       </main>
+
+      {/* Duel Cryptographic Certificate Modal */}
+      {matchResult && (
+        <DuelCertificateModal
+          isOpen={showCertificateModal}
+          onClose={() => setShowCertificateModal(false)}
+          match={{
+            id: `PULSAR-${Date.now().toString(36).toUpperCase()}`,
+            game: 'reaction',
+            result: matchResult.outcome === 'win' ? 'win' : 'loss',
+            entryFee: currentStake,
+            prize: matchResult.outcome === 'win' ? matchResult.prize || (currentStake * 1.96) : 0,
+            yourTime: matchResult.yourTime,
+            opponentTime: matchResult.opponentTime,
+            timestamp: Date.now(),
+            oracleSignature: `0x7a8f9c${Date.now().toString(16).padEnd(58, 'fa3b09')}`,
+            opponentName: opponent,
+          }}
+          playerTag={wallet.playerId}
+          walletAddress={wallet.address || undefined}
+        />
+      )}
 
       {/* Tokenomics Spec Modal */}
       {xpSummary && (

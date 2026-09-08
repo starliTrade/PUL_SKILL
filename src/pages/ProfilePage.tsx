@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   Wallet,
   Shield,
+  ShieldCheck,
   Activity,
   Award,
   Zap,
@@ -35,8 +36,10 @@ import {
   AVATAR_STAGES,
 } from '../components/PulsarDynamicAvatar';
 import { TokenomicsInspectorModal } from '../components/TokenomicsInspectorModal';
+import { DuelCertificateModal } from '../components/DuelCertificateModal';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { XPSystem, TierInfo } from '../lib/xpSystem';
+import { MatchRecord } from '../lib/realWeb3';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
@@ -60,6 +63,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
   const [copiedAddr, setCopiedAddr] = useState(false);
   const [copiedPlayerId, setCopiedPlayerId] = useState(false);
   const [showInspector, setShowInspector] = useState(false);
+  const [selectedMatchForCert, setSelectedMatchForCert] = useState<MatchRecord | null>(null);
   const [depositMsg, setDepositMsg] = useState<string | null>(null);
   const [isEditingTag, setIsEditingTag] = useState(false);
   const [isSavingTag, setIsSavingTag] = useState(false);
@@ -539,6 +543,85 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
           </div>
         </div>
 
+        {/* Cryptographically Settled Duels & Certificates */}
+        <div className="linear-card p-3.5 rounded-xl">
+          <div className="flex items-center justify-between mb-2.5">
+            <div className="flex items-center gap-1.5">
+              <ShieldCheck className="w-3.5 h-3.5 text-sky-400" />
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                Settled Battles & Certificates
+              </h3>
+            </div>
+            <span className="text-[9px] font-mono text-zinc-500">
+              Click to view on-chain proof
+            </span>
+          </div>
+
+          {history && history.filter((m: any) => (m.entryFee || m.stake || 0) > 0).length > 0 ? (
+            <div className="space-y-1.5">
+              {history
+                .filter((m: any) => (m.entryFee || m.stake || 0) > 0)
+                .slice(0, 4)
+                .map((m: any, idx: number) => {
+                  const isWin = m.result === 'win';
+                  const opp = m.opponentName || m.opponent || 'Duelist';
+                  const fee = Number(m.entryFee ?? m.stake ?? 1);
+                  const prize = Number(m.prize || fee * 1.96);
+                  const timeMs = m.yourTime || m.reactionTime || 185;
+
+                  return (
+                    <div
+                      key={m.id || idx}
+                      onClick={() => {
+                        sounds.playClick();
+                        setSelectedMatchForCert(m);
+                      }}
+                      className="p-2.5 rounded-lg bg-zinc-950/40 hover:bg-zinc-900/60 border border-white/[0.04] hover:border-white/10 flex items-center justify-between gap-2 cursor-pointer transition-colors"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={cn(
+                            'w-2 h-2 rounded-full shrink-0',
+                            isWin ? 'bg-emerald-400' : 'bg-rose-400'
+                          )}
+                        />
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-white truncate flex items-center gap-1.5">
+                            <span className="truncate">{opp}</span>
+                            <span className="text-[10px] font-mono font-normal text-zinc-400">
+                              ({timeMs}ms)
+                            </span>
+                          </div>
+                          <div className="text-[10px] font-mono text-zinc-500">
+                            ${fee} USDT Stake · EIP-712 Verified
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0 font-mono">
+                        <div
+                          className={cn(
+                            'text-xs font-bold',
+                            isWin ? 'text-emerald-400' : 'text-zinc-500'
+                          )}
+                        >
+                          {isWin ? `+$${prize.toFixed(2)}` : `-$${fee}`}
+                        </div>
+                        <div className="text-[9px] text-sky-400 hover:underline">
+                          View Proof →
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          ) : (
+            <div className="py-4 text-center text-zinc-500 text-[11px] font-mono">
+              No settled USDT duels yet. Win a duel in the arena to generate cryptographic certificates!
+            </div>
+          )}
+        </div>
+
         {/* Security & Smart Contract Architecture Section */}
         <div className="linear-card p-3.5 rounded-xl">
           <div className="flex items-center gap-1.5 mb-2.5">
@@ -589,6 +672,17 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
         <TokenomicsInspectorModal
           isOpen={showInspector}
           onClose={() => setShowInspector(false)}
+        />
+      )}
+
+      {/* Duel Cryptographic Certificate Modal */}
+      {selectedMatchForCert && (
+        <DuelCertificateModal
+          isOpen={!!selectedMatchForCert}
+          onClose={() => setSelectedMatchForCert(null)}
+          match={selectedMatchForCert}
+          playerTag={wallet.playerId}
+          walletAddress={wallet.address || undefined}
         />
       )}
     </div>

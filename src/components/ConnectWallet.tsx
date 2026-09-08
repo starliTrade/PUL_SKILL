@@ -204,6 +204,16 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
     }
   }, [isOpen, wallet.connected]);
 
+  // Auto-close modal as soon as wallet connection handshake completes successfully
+  useEffect(() => {
+    if (wallet.connected && isOpen) {
+      setConnectingWalletId(null);
+      setActiveHandoff(null);
+      setErrorMessage(null);
+      setIsOpen(false);
+    }
+  }, [wallet.connected, isOpen]);
+
   // Close dropdown on outside click
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {

@@ -2,6 +2,37 @@ class SoundFX {
   private ctx: AudioContext | null = null;
   private isMuted: boolean = false;
 
+  constructor() {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        this.isMuted = localStorage.getItem('pulsar_sound_muted') === 'true';
+      }
+    } catch {}
+  }
+
+  public toggleMute(): boolean {
+    this.isMuted = !this.isMuted;
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.setItem('pulsar_sound_muted', String(this.isMuted));
+      }
+    } catch {}
+    return this.isMuted;
+  }
+
+  public getMuted(): boolean {
+    return this.isMuted;
+  }
+
+  public setMuted(muted: boolean) {
+    this.isMuted = muted;
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.setItem('pulsar_sound_muted', String(this.isMuted));
+      }
+    } catch {}
+  }
+
   private initCtx() {
     if (!this.ctx && typeof window !== 'undefined') {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;

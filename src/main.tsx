@@ -20,6 +20,10 @@ if (typeof window !== 'undefined') {
   } catch {}
 
   const isIgnorableBackgroundError = (raw: any): boolean => {
+    if (raw && typeof raw === 'object' && (raw.level === 50 || raw.level === 40 || typeof raw.level === 'number')) {
+      return true;
+    }
+
     let msg = '';
     try {
       if (typeof raw === 'string') {
@@ -49,7 +53,9 @@ if (typeof window !== 'undefined') {
       lower.includes('relay.walletconnect') ||
       lower.includes('attempted to assign to readonly property') ||
       lower.includes('which has only a getter') ||
-      lower.includes('cannot assign to read only property')
+      lower.includes('cannot assign to read only property') ||
+      lower.includes('level":50') ||
+      lower.includes('level":40')
     );
   };
 

@@ -395,11 +395,16 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
 
           <div className="linear-card divide-y divide-white/[0.04] overflow-hidden">
             {(() => {
-              const matchesToDisplay = liveCloudMatches.length > 0 ? liveCloudMatches : history;
+              const allSource = liveCloudMatches.length > 0 ? liveCloudMatches : history;
+              // STRICTLY SUPPORT & DISPLAY ONLY REAL USDT STAKED BATTLES (stake > 0)
+              const matchesToDisplay = allSource.filter((m: any) => {
+                const fee = Number(m.entryFee ?? m.stake ?? 0);
+                return fee > 0;
+              });
 
               if (matchesToDisplay.length === 0) {
                 return (
-                  <div className="px-4 py-4 text-center">
+                  <div className="px-4 py-5 text-center">
                     <div className="flex items-center justify-center gap-1.5 text-zinc-400 text-xs font-mono mb-1">
                       <Radio className="w-3.5 h-3.5 text-sky-400 animate-pulse" />
                       <span>{t('oracleVerified')}</span>
@@ -411,8 +416,13 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                 );
               }
 
-              return matchesToDisplay.slice(0, 5).map((match) => {
+              return matchesToDisplay.slice(0, 5).map((match: any) => {
                 const isWin = match.result === 'win';
+                const opp = match.opponentName || match.opponent || 'Arena Duelist';
+                const reactionMs = match.yourTime || match.reactionTime || match.opponentTime || 185;
+                const stakeVal = Number(match.entryFee ?? match.stake ?? 1);
+                const prizeVal = Number(match.prize || (stakeVal * 1.96));
+
                 const timeAgo = match.timestamp
                   ? (() => {
                       const s = Math.floor((Date.now() - match.timestamp) / 1000);
@@ -433,18 +443,18 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                   >
                     <div className="flex items-center gap-2">
                       <div className={cn(
-                        "w-2 h-2 rounded-full",
+                        "w-2 h-2 rounded-full shrink-0",
                         isWin ? "bg-emerald-400" : "bg-rose-400"
                       )} />
                       <div>
                         <div className="font-semibold text-white tracking-tight flex items-center gap-1">
-                          <span>{match.opponent || 'Duelist'}</span>
-                          <span className="text-[10px] text-zinc-500 font-mono font-normal">
-                            ({match.reactionTime}ms)
+                          <span className="truncate max-w-[120px]">{opp}</span>
+                          <span className="text-[10px] text-zinc-400 font-mono font-normal">
+                            ({reactionMs}ms)
                           </span>
                         </div>
                         <div className="text-[10px] text-zinc-500 font-mono">
-                          {timeAgo} · ${match.stake || 1} USDT
+                          {timeAgo} · ${stakeVal} USDT
                         </div>
                       </div>
                     </div>
@@ -452,9 +462,9 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                     <div className="text-right font-mono">
                       <div className={cn(
                         "font-bold text-[11px]",
-                        isWin ? "text-emerald-400" : "text-zinc-500"
+                        isWin ? "text-emerald-400" : "text-zinc-400"
                       )}>
-                        {isWin ? `+$${(match.prize || (match.stake * 1.96)).toFixed(2)}` : `-$${match.stake || 1}`}
+                        {isWin ? `+$${prizeVal.toFixed(2)}` : `-$${stakeVal}`}
                       </div>
                       <div className="text-[9px] text-zinc-600">
                         Polygon Escrow

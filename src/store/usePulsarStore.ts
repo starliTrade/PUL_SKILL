@@ -225,6 +225,22 @@ export function usePulsarStore() {
     return await realWeb3Manager.checkUsernameAvailability(tag, account.address || undefined);
   };
 
+  const updateBenchmarkSpeed = async (speedMs: number) => {
+    if (speedMs <= 0) return;
+    const userAddress = account.connected && account.address ? account.address : 'guest_local_player';
+    const data = await realWeb3Manager.loadUserDataAsync(userAddress);
+    if (data.bestReactionMs === 0 || speedMs < data.bestReactionMs) {
+      data.bestReactionMs = speedMs;
+    }
+    if (data.avgReactionMs === 0) {
+      data.avgReactionMs = speedMs;
+    } else {
+      data.avgReactionMs = Math.round((data.avgReactionMs + speedMs) / 2);
+    }
+    await realWeb3Manager.saveUserDataAsync(data);
+    setUserData({ ...data });
+  };
+
   const currentUsdtBalance =
     account.balanceUSDT !== undefined && !isNaN(account.balanceUSDT)
       ? account.balanceUSDT
@@ -274,5 +290,6 @@ export function usePulsarStore() {
     withdrawFunds,
     updatePlayerTag,
     checkUsernameAvailability,
+    updateBenchmarkSpeed,
   };
 }

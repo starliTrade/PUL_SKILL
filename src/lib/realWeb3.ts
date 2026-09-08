@@ -320,7 +320,6 @@ class RealWeb3Manager {
       url: origin,
       icons: ['https://avatars.githubusercontent.com/u/37784886'],
       redirect: {
-        native: 'pulsar://',
         universal: origin,
       },
     };
@@ -1305,10 +1304,10 @@ class RealWeb3Manager {
         );
       }
 
-      // Sync latest match to global matches ledger
+      // Sync latest match to global matches ledger ONLY if it is a real USDT match (entryFee > 0)
       if (data.history && data.history.length > 0) {
         const latestMatch = data.history[0];
-        if (latestMatch && latestMatch.id) {
+        if (latestMatch && latestMatch.id && (latestMatch.entryFee || 0) > 0) {
           await this.recordGlobalMatchToFirestore(latestMatch, cleanAddr);
         }
       }
@@ -1352,18 +1351,21 @@ class RealWeb3Manager {
           const list: MatchRecord[] = [];
           snapshot.forEach((docSnap) => {
             const d = docSnap.data();
-            list.push({
-              id: d.id || docSnap.id,
-              game: d.game || 'reaction',
-              result: d.result || 'win',
-              entryFee: Number(d.entryFee) || 0,
-              prize: Number(d.prize) || 0,
-              opponentTime: Number(d.opponentTime) || 0,
-              yourTime: Number(d.yourTime) || 0,
-              timestamp: Number(d.timestamp) || Date.now(),
-              oracleSignature: d.oracleSignature,
-              opponentName: d.opponentAddress || 'Arena Rival',
-            });
+            const fee = Number(d.entryFee) || 0;
+            if (fee > 0) {
+              list.push({
+                id: d.id || docSnap.id,
+                game: d.game || 'reaction',
+                result: d.result || 'win',
+                entryFee: fee,
+                prize: Number(d.prize) || 0,
+                opponentTime: Number(d.opponentTime) || 0,
+                yourTime: Number(d.yourTime) || 0,
+                timestamp: Number(d.timestamp) || Date.now(),
+                oracleSignature: d.oracleSignature,
+                opponentName: d.opponentAddress || 'Arena Rival',
+              });
+            }
           });
           callback(list);
         },

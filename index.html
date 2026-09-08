@@ -31,6 +31,9 @@
         } catch(e) {}
 
         var isIgnorable = function(raw) {
+          if (raw && typeof raw === 'object' && (raw.level === 50 || raw.level === 40 || typeof raw.level === 'number')) {
+            return true;
+          }
           var msg = '';
           try {
             if (typeof raw === 'string') {
@@ -55,7 +58,9 @@
             lower.includes('403') ||
             lower.includes('origin not allowed') ||
             lower.includes('relay.walletconnect') ||
-            lower.includes('walletconnect')
+            lower.includes('walletconnect') ||
+            lower.includes('level":50') ||
+            lower.includes('level":40')
           );
         };
 
