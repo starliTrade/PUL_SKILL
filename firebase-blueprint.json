@@ -53,6 +53,18 @@
         "updatedAt": { "type": "number" }
       },
       "required": ["address", "wins", "bestReactionMs"]
+    },
+    "usernames": {
+      "title": "Unique Username Registry",
+      "description": "Enforces global uniqueness for player gamer tags mapped to owner wallet addresses.",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "tag": { "type": "string" },
+        "address": { "type": "string" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["username", "tag", "address", "updatedAt"]
     }
   }
 }

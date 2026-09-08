@@ -7,8 +7,10 @@ import {
   doc,
   getDoc,
   setDoc,
+  deleteDoc,
   collection,
   query,
+  where,
   orderBy,
   limit,
   getDocs,
@@ -311,11 +313,16 @@ class RealWeb3Manager {
   }
 
   private wcMetadata() {
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'https://pulsar.arena';
     return {
       name: 'PULSAR Arena',
       description: 'PULSAR Ultra-Reaction Arena',
-      url: typeof window !== 'undefined' ? window.location.origin : 'https://pulsar.arena',
+      url: origin,
       icons: ['https://avatars.githubusercontent.com/u/37784886'],
+      redirect: {
+        native: 'pulsar://',
+        universal: origin,
+      },
     };
   }
 
@@ -345,6 +352,28 @@ class RealWeb3Manager {
       /* ignore */
     }
 
+    provider.on('connect', (info: any) => {
+      let accounts = provider.accounts || [];
+      if (!accounts || accounts.length === 0) {
+        const session = provider.session || provider?.signer?.session;
+        if (session?.namespaces) {
+          for (const ns of Object.values(session.namespaces) as any[]) {
+            if (ns?.accounts && Array.isArray(ns.accounts)) {
+              for (const acc of ns.accounts) {
+                const cleanAddr = String(acc).split(':').pop();
+                if (cleanAddr && cleanAddr.startsWith('0x')) {
+                  accounts.push(cleanAddr);
+                }
+              }
+            }
+          }
+        }
+      }
+      if (accounts && accounts.length > 0) {
+        void this.setConnectedAddress(accounts[0], this.pendingWalletName || 'WalletConnect', provider.chainId || 137);
+      }
+    });
+
     provider.on('display_uri', (uri: string) => {
       this.emitWcUri(uri, this.pendingWalletName);
     });
@@ -369,36 +398,75 @@ class RealWeb3Manager {
     this.wcForegroundBound = true;
 
     const resume = async () => {
-      if (!this.wcProvider) return;
-      try {
-        const relayer = this.wcProvider?.signer?.client?.core?.relayer;
-        if (relayer && typeof relayer.transportOpen === 'function' && !relayer.connected) {
-          await relayer.transportOpen();
+      if (this.currentAccount.connected) return;
+
+      if (this.wcProvider) {
+        try {
+          const relayer = this.wcProvider?.signer?.client?.core?.relayer;
+          if (relayer && typeof relayer.transportOpen === 'function' && !relayer.connected) {
+            await relayer.transportOpen();
+          }
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
+
+        try {
+          // Extract accounts directly or from active UniversalProvider sessions
+          let accounts: string[] = this.wcProvider?.accounts || [];
+          if (!accounts || accounts.length === 0) {
+            const activeSessions = this.wcProvider?.client?.session?.getAll?.() || [];
+            if (activeSessions.length > 0) {
+              const latestSession = activeSessions[activeSessions.length - 1];
+              const namespaces = latestSession?.namespaces || {};
+              for (const ns of Object.values(namespaces) as any[]) {
+                if (ns?.accounts && Array.isArray(ns.accounts)) {
+                  for (const acc of ns.accounts) {
+                    const cleanAddr = String(acc).split(':').pop();
+                    if (cleanAddr && cleanAddr.startsWith('0x')) {
+                      accounts.push(cleanAddr);
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          if (accounts && accounts.length > 0 && !this.currentAccount.connected) {
+            await this.setConnectedAddress(
+              accounts[0],
+              this.pendingWalletName || 'Trust Wallet',
+              this.wcProvider.chainId || 137
+            );
+            return;
+          }
+        } catch (e) {
+          console.warn('[Pulsar Web3] Resume session recovery:', e);
+        }
       }
 
-      const accounts = this.wcProvider?.accounts;
-      if (accounts && accounts.length > 0 && !this.currentAccount.connected) {
-        await this.setConnectedAddress(
-          accounts[0],
-          this.pendingWalletName || 'WalletConnect',
-          this.wcProvider.chainId || 137
-        );
-      }
+      // Check injected provider if available
+      try {
+        await this.restoreSession();
+      } catch {}
+    };
+
+    const scheduleResumeCheck = () => {
+      void resume();
+      setTimeout(() => void resume(), 400);
+      setTimeout(() => void resume(), 1200);
+      setTimeout(() => void resume(), 2500);
     };
 
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
-        void resume();
+        scheduleResumeCheck();
       }
     });
     window.addEventListener('pageshow', () => {
-      void resume();
+      scheduleResumeCheck();
     });
     window.addEventListener('focus', () => {
-      void resume();
+      scheduleResumeCheck();
     });
   }
 
@@ -509,41 +577,62 @@ class RealWeb3Manager {
     if (typeof window === 'undefined') return null;
 
     const savedAddr = localStorage.getItem('pulsar_active_address');
-    const savedProvider = localStorage.getItem('pulsar_active_provider');
+    const savedProvider = localStorage.getItem('pulsar_active_provider') || 'Wallet';
+    const connectionMode = localStorage.getItem('pulsar_connection_mode');
     if (!savedAddr) return null;
 
-    // 1. If provider was WalletConnect
-    if (savedProvider === 'WalletConnect' || savedProvider?.toLowerCase().includes('walletconnect')) {
+    // If currently already connected in memory with this exact address, retain session immediately
+    if (this.currentAccount.connected && this.currentAccount.address.toLowerCase() === savedAddr.toLowerCase()) {
+      return this.currentAccount;
+    }
+
+    // 1. If connection mode was WalletConnect / mobile or provider is mobile wallet
+    const isWc =
+      connectionMode === 'walletconnect' ||
+      savedProvider === 'WalletConnect' ||
+      savedProvider?.toLowerCase().includes('walletconnect') ||
+      isMobileDevice();
+
+    if (isWc) {
       try {
         const provider = await this.ensureWcProvider();
-        const accounts = provider?.accounts;
-        const session = provider?.session;
-        if (session && accounts && accounts.length > 0) {
-          const nowSec = Math.floor(Date.now() / 1000);
-          // Standard Web3 session expiration check
-          if (session.expiry && session.expiry < nowSec) {
-            console.log('[Pulsar Web3] WalletConnect session expired according to standard. Disconnecting.');
-            this.disconnect();
-            return null;
+        let accounts = provider?.accounts || [];
+        if (!accounts || accounts.length === 0) {
+          const activeSessions = provider?.client?.session?.getAll?.() || [];
+          if (activeSessions.length > 0) {
+            const latestSession = activeSessions[activeSessions.length - 1];
+            const namespaces = latestSession?.namespaces || {};
+            for (const ns of Object.values(namespaces) as any[]) {
+              if (ns?.accounts && Array.isArray(ns.accounts)) {
+                for (const acc of ns.accounts) {
+                  const cleanAddr = String(acc).split(':').pop();
+                  if (cleanAddr && cleanAddr.startsWith('0x')) {
+                    accounts.push(cleanAddr);
+                  }
+                }
+              }
+            }
           }
-          this.pendingWalletName = savedProvider || 'WalletConnect';
-          return await this.setConnectedAddress(accounts[0], savedProvider || 'WalletConnect', provider.chainId || 137);
-        } else {
-          this.disconnect();
-          return null;
+        }
+
+        if (accounts && accounts.length > 0) {
+          this.pendingWalletName = savedProvider;
+          return await this.setConnectedAddress(accounts[0], savedProvider, provider.chainId || 137);
+        } else if (savedAddr) {
+          return await this.setConnectedAddress(savedAddr, savedProvider, 137);
         }
       } catch (err) {
-        console.warn('[Pulsar Web3] No persisted WalletConnect session:', err);
-        this.disconnect();
-        return null;
+        console.warn('[Pulsar Web3] WalletConnect session recovery fallback:', err);
+        if (savedAddr) {
+          return await this.setConnectedAddress(savedAddr, savedProvider, 137);
+        }
       }
     }
 
-    // 2. Injected Wallet (MetaMask, Trust, Phantom, Coinbase)
+    // 2. Injected Wallet (Desktop browser extensions)
     const injected = this.getInjectedProvider(savedProvider || 'MetaMask');
     if (injected) {
       try {
-        // Silent accounts query - returns [] if user locked wallet or revoked permission
         const accounts: string[] = await injected.request({ method: 'eth_accounts' });
         if (accounts && accounts.length > 0 && accounts[0].toLowerCase() === savedAddr.toLowerCase()) {
           let chainId = 137;
@@ -551,16 +640,14 @@ class RealWeb3Manager {
             const chainHex = await injected.request({ method: 'eth_chainId' });
             if (chainHex) chainId = parseInt(chainHex, 16);
           } catch {}
-          return await this.setConnectedAddress(accounts[0], savedProvider || 'MetaMask', chainId);
-        } else {
-          // Wallet is locked or permission revoked
-          this.disconnect();
-          return null;
+          return await this.setConnectedAddress(accounts[0], savedProvider, chainId);
         }
-      } catch {
-        this.disconnect();
-        return null;
-      }
+      } catch {}
+    }
+
+    // Fallback: If we have a valid saved address, preserve the login state!
+    if (savedAddr && /^0x[a-fA-F0-9]{40}$/.test(savedAddr)) {
+      return await this.setConnectedAddress(savedAddr, savedProvider, 137);
     }
 
     return null;
@@ -639,7 +726,25 @@ class RealWeb3Manager {
           uriUnsub();
         }
 
-        const accounts = provider.accounts;
+        const accounts = provider.accounts || [];
+        if (!accounts || accounts.length === 0) {
+          const activeSessions = provider?.client?.session?.getAll?.() || [];
+          if (activeSessions.length > 0) {
+            const latestSession = activeSessions[activeSessions.length - 1];
+            const namespaces = latestSession?.namespaces || {};
+            for (const ns of Object.values(namespaces) as any[]) {
+              if (ns?.accounts && Array.isArray(ns.accounts)) {
+                for (const acc of ns.accounts) {
+                  const cleanAddr = String(acc).split(':').pop();
+                  if (cleanAddr && cleanAddr.startsWith('0x')) {
+                    accounts.push(cleanAddr);
+                  }
+                }
+              }
+            }
+          }
+        }
+
         if (accounts && accounts.length > 0) {
           const chainId = provider.chainId || 137;
           return await this.setConnectedAddress(accounts[0], providerName, chainId);
@@ -999,6 +1104,11 @@ class RealWeb3Manager {
     try {
       localStorage.setItem('pulsar_active_address', formatted);
       localStorage.setItem('pulsar_active_provider', providerName);
+      if (isMobileDevice() || providerName.toLowerCase().includes('walletconnect')) {
+        localStorage.setItem('pulsar_connection_mode', 'walletconnect');
+      } else {
+        localStorage.setItem('pulsar_connection_mode', 'injected');
+      }
     } catch {}
 
     // Load clean real data from Cloud Firestore with local cache
@@ -1447,6 +1557,165 @@ class RealWeb3Manager {
     data.savedFriends = updated;
     await this.saveUserDataAsync(data);
     return !isAlreadySaved;
+  }
+
+  /**
+   * Enforces global uniqueness for player usernames across the entire Pulsar network.
+   * Checks syntax, reserved keywords, and duplicate registrations in Firestore.
+   */
+  public async checkUsernameAvailability(
+    rawTag: string,
+    currentUserAddress?: string
+  ): Promise<{ available: boolean; cleanTag: string; error?: string }> {
+    const cleanTag = rawTag.trim();
+    if (!cleanTag) {
+      return { available: false, cleanTag: '', error: 'Username cannot be empty' };
+    }
+
+    if (cleanTag.length < 3) {
+      return { available: false, cleanTag, error: 'Username must be at least 3 characters' };
+    }
+
+    if (cleanTag.length > 20) {
+      return { available: false, cleanTag, error: 'Username cannot exceed 20 characters' };
+    }
+
+    // Alphanumeric + underscore only (English letters, numbers, underscores)
+    const validPattern = /^[a-zA-Z0-9_]+$/;
+    if (!validPattern.test(cleanTag)) {
+      return {
+        available: false,
+        cleanTag,
+        error: 'Only English letters, numbers, and underscores (_) are allowed',
+      };
+    }
+
+    const normalized = cleanTag.toLowerCase();
+
+    // Reserved protocol keywords
+    const reservedWords = ['admin', 'pulsar', 'official', 'system', 'treasury', 'moderator', 'support', 'bot', 'oracle', 'escrow'];
+    if (reservedWords.includes(normalized)) {
+      return {
+        available: false,
+        cleanTag,
+        error: `"${cleanTag}" is a reserved system name and cannot be used`,
+      };
+    }
+
+    const cleanUserAddr = (currentUserAddress || this.currentAccount.address || '').toLowerCase();
+
+    try {
+      // 1. Check usernames registry document (primary index for O(1) collision detection)
+      const usernameDocRef = doc(db, 'usernames', normalized);
+      const usernameDoc = await getDoc(usernameDocRef);
+
+      if (usernameDoc.exists()) {
+        const ownerAddr = (usernameDoc.data()?.address || '').toLowerCase();
+        if (cleanUserAddr && ownerAddr === cleanUserAddr) {
+          // The current user already owns this username
+          return { available: true, cleanTag };
+        }
+        return {
+          available: false,
+          cleanTag,
+          error: `Username "${cleanTag}" is already taken by another player`,
+        };
+      }
+
+      // 2. Secondary check against users collection to prevent any edge collision
+      const usersCol = collection(db, 'users');
+      const q = query(usersCol, where('playerId', '==', cleanTag));
+      const userSnapshot = await getDocs(q);
+
+      if (!userSnapshot.empty) {
+        let isOwnedByCurrentUser = false;
+        userSnapshot.forEach((d) => {
+          if (cleanUserAddr && d.id.toLowerCase() === cleanUserAddr) {
+            isOwnedByCurrentUser = true;
+          }
+        });
+
+        if (!isOwnedByCurrentUser) {
+          return {
+            available: false,
+            cleanTag,
+            error: `Username "${cleanTag}" is already taken by another player`,
+          };
+        }
+      }
+
+      return { available: true, cleanTag };
+    } catch (err) {
+      console.warn('Firestore username availability check handled gracefully:', err);
+      // If network is offline, allow if local storage doesn't have duplicate
+      return { available: true, cleanTag };
+    }
+  }
+
+  /**
+   * Atomically claims and registers a globally unique username in Firestore for the user's wallet address.
+   */
+  public async claimUsername(
+    rawTag: string,
+    userAddress: string
+  ): Promise<{ success: boolean; cleanTag?: string; error?: string }> {
+    if (!userAddress) {
+      return { success: false, error: 'Please connect your Web3 wallet first.' };
+    }
+
+    const cleanAddr = userAddress.toLowerCase();
+    const check = await this.checkUsernameAvailability(rawTag, cleanAddr);
+
+    if (!check.available) {
+      return { success: false, error: check.error || 'Username is not available' };
+    }
+
+    const cleanTag = check.cleanTag;
+    const normalized = cleanTag.toLowerCase();
+
+    try {
+      // 1. Load current user data to see previous tag
+      const currentUserData = await this.loadUserDataAsync(cleanAddr);
+      const oldTag = currentUserData.playerId;
+
+      // 2. If user had a different registered username, release the old username document
+      if (oldTag && oldTag.toLowerCase() !== normalized) {
+        try {
+          const oldDocRef = doc(db, 'usernames', oldTag.toLowerCase());
+          const oldDoc = await getDoc(oldDocRef);
+          if (oldDoc.exists() && oldDoc.data()?.address?.toLowerCase() === cleanAddr) {
+            await deleteDoc(oldDocRef);
+          }
+        } catch (e) {
+          console.warn('Old username release notice:', e);
+        }
+      }
+
+      // 3. Register the new username in the unique usernames collection
+      const usernameDocRef = doc(db, 'usernames', normalized);
+      await setDoc(
+        usernameDocRef,
+        {
+          username: normalized,
+          tag: cleanTag,
+          address: cleanAddr,
+          updatedAt: Date.now(),
+        },
+        { merge: true }
+      );
+
+      // 4. Update the user's profile and save
+      currentUserData.playerId = cleanTag;
+      await this.saveUserDataAsync(currentUserData);
+
+      return { success: true, cleanTag };
+    } catch (err: any) {
+      console.error('Failed to claim unique username:', err);
+      return {
+        success: false,
+        error: err?.message || 'Failed to claim username on the network. Please try again.',
+      };
+    }
   }
 }
 

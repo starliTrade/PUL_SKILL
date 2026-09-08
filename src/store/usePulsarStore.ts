@@ -209,14 +209,20 @@ export function usePulsarStore() {
     }
   };
 
-  const updatePlayerTag = async (newTag: string) => {
-    if (!account.connected || !account.address) return;
-    const clean = newTag.trim();
-    if (!clean) return;
-    const data = await realWeb3Manager.loadUserDataAsync(account.address);
-    data.playerId = clean;
-    await realWeb3Manager.saveUserDataAsync(data);
-    setUserData({ ...data });
+  const updatePlayerTag = async (newTag: string): Promise<{ success: boolean; error?: string }> => {
+    if (!account.connected || !account.address) {
+      return { success: false, error: 'Please connect your wallet first' };
+    }
+    const result = await realWeb3Manager.claimUsername(newTag, account.address);
+    if (result.success) {
+      const updated = await realWeb3Manager.loadUserDataAsync(account.address);
+      setUserData({ ...updated });
+    }
+    return result;
+  };
+
+  const checkUsernameAvailability = async (tag: string) => {
+    return await realWeb3Manager.checkUsernameAvailability(tag, account.address || undefined);
   };
 
   const currentUsdtBalance =
@@ -267,5 +273,6 @@ export function usePulsarStore() {
     depositFunds,
     withdrawFunds,
     updatePlayerTag,
+    checkUsernameAvailability,
   };
 }

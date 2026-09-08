@@ -24,6 +24,7 @@ import {
   Trophy,
   Edit2,
   X,
+  Loader2,
 } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
 import { ConnectWallet } from '../components/ConnectWallet';
@@ -61,6 +62,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
   const [showInspector, setShowInspector] = useState(false);
   const [depositMsg, setDepositMsg] = useState<string | null>(null);
   const [isEditingTag, setIsEditingTag] = useState(false);
+  const [isSavingTag, setIsSavingTag] = useState(false);
   const [tagInput, setTagInput] = useState('');
   const [tagError, setTagError] = useState<string | null>(null);
 
@@ -110,18 +112,40 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
     if (e) e.preventDefault();
     const clean = tagInput.trim();
     if (clean.length < 3) {
-      setTagError('Gamer Tag must be at least 3 characters');
+      setTagError('Username must be at least 3 characters');
+      sounds.playLoss();
       return;
     }
     if (clean.length > 20) {
-      setTagError('Gamer Tag cannot exceed 20 characters');
+      setTagError('Username cannot exceed 20 characters');
+      sounds.playLoss();
       return;
     }
-    sounds.playWin();
-    await updatePlayerTag(clean);
-    setIsEditingTag(false);
-    setDepositMsg(`Gamer Tag updated to ${clean}!`);
-    setTimeout(() => setDepositMsg(null), 3000);
+    const pattern = /^[a-zA-Z0-9_]+$/;
+    if (!pattern.test(clean)) {
+      setTagError('Only English letters, numbers, and (_) allowed');
+      sounds.playLoss();
+      return;
+    }
+
+    try {
+      setIsSavingTag(true);
+      setTagError(null);
+      const res = await updatePlayerTag(clean);
+      if (!res.success) {
+        setTagError(res.error || 'Username is already taken by another player');
+        sounds.playLoss();
+      } else {
+        sounds.playWin();
+        setIsEditingTag(false);
+        setDepositMsg(`Username successfully claimed: ${clean}`);
+        setTimeout(() => setDepositMsg(null), 3500);
+      }
+    } catch (err: any) {
+      setTagError(err?.message || 'Failed to verify username uniqueness');
+    } finally {
+      setIsSavingTag(false);
+    }
   };
 
   const PROTOCOL_SPECS = [
@@ -214,37 +238,46 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
               <div className="flex items-center justify-between gap-2">
                 {isEditingTag ? (
                   <div className="flex-1 min-w-0">
-                    <form onSubmit={handleSaveTag} className="flex items-center gap-1 min-w-0">
+                    <form onSubmit={handleSaveTag} className="flex items-center gap-1 min-w-0" dir="ltr">
                       <input
                         type="text"
                         value={tagInput}
+                        disabled={isSavingTag}
                         onChange={(e) => {
                           setTagInput(e.target.value);
                           if (tagError) setTagError(null);
                         }}
-                        placeholder="e.g. StarWarrior#77"
+                        placeholder="e.g. StarWarrior_7"
                         maxLength={20}
                         autoFocus
-                        className="bg-black/80 border border-sky-500/50 rounded px-2 py-0.5 text-xs text-white font-mono focus:outline-none focus:border-sky-400 min-w-0 flex-1"
+                        className="bg-black/90 border border-sky-500/50 rounded px-2 py-0.5 text-xs text-white font-mono focus:outline-none focus:border-sky-400 min-w-0 flex-1 disabled:opacity-50"
                       />
                       <button
                         type="submit"
-                        className="p-1 rounded bg-sky-500 hover:bg-sky-400 text-black font-bold text-[10px] shrink-0 cursor-pointer"
-                        title="Save Tag"
+                        disabled={isSavingTag}
+                        className="p-1 rounded bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-black font-bold text-[10px] shrink-0 cursor-pointer flex items-center justify-center min-w-[24px] min-h-[24px]"
+                        title="Claim Unique Username"
                       >
-                        <Check className="w-3 h-3" />
+                        {isSavingTag ? (
+                          <Loader2 className="w-3 h-3 animate-spin text-black" />
+                        ) : (
+                          <Check className="w-3 h-3" />
+                        )}
                       </button>
                       <button
                         type="button"
+                        disabled={isSavingTag}
                         onClick={() => setIsEditingTag(false)}
-                        className="p-1 rounded bg-white/[0.08] hover:bg-white/[0.15] text-zinc-300 text-[10px] shrink-0 cursor-pointer"
+                        className="p-1 rounded bg-white/[0.08] hover:bg-white/[0.15] disabled:opacity-50 text-zinc-300 text-[10px] shrink-0 cursor-pointer min-w-[24px] min-h-[24px] flex items-center justify-center"
                         title="Cancel"
                       >
                         <X className="w-3 h-3" />
                       </button>
                     </form>
-                    {tagError && (
+                    {tagError ? (
                       <span className="text-[9.5px] text-rose-400 block mt-0.5 font-medium">{tagError}</span>
+                    ) : (
+                      <span className="text-[9px] text-zinc-500 block mt-0.5">3-20 characters • Letters, numbers & (_)</span>
                     )}
                   </div>
                 ) : (
