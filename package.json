@@ -12,6 +12,7 @@
     "test:server": "python3 scripts/test_game_server.py"
   },
   "dependencies": {
+    "@sentry/react": "^10.73.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "@walletconnect/ethereum-provider": "^2.24.0",

@@ -206,7 +206,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
           </div>
           <span className="text-[10px] text-sky-400/90 font-mono flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
-            EIP-712 Active
+            SIWE Session
           </span>
         </div>
 
@@ -573,7 +573,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                             </span>
                           </div>
                           <div className="text-[10px] font-mono text-zinc-500">
-                            ${fee} USDT Stake · EIP-712 Verified
+                            ${fee} USDT Stake · {m.oracleSignature ? 'Oracle Verified' : 'Local Result'}
                           </div>
                         </div>
                       </div>
@@ -644,6 +644,46 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
               );
             })}
           </div>
+        </div>
+
+        {/* P2.3 — Legal Center links */}
+        <div className="linear-card p-3.5 rounded-xl">
+          <div className="flex items-center gap-1.5 mb-2.5">
+            <Shield className="w-3.5 h-3.5 text-zinc-400" />
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
+              {t('legalTitle')}
+            </h3>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <button
+              onClick={() => {
+                sounds.playClick();
+                onNavigate('/legal');
+              }}
+              className="p-2 rounded-lg bg-zinc-950/40 border border-white/[0.04] hover:border-white/10 text-[10.5px] text-zinc-300 hover:text-white transition-colors cursor-pointer text-center"
+            >
+              {t('legalTosTitle')}
+            </button>
+            <button
+              onClick={() => {
+                sounds.playClick();
+                onNavigate('/legal');
+              }}
+              className="p-2 rounded-lg bg-zinc-950/40 border border-white/[0.04] hover:border-white/10 text-[10.5px] text-zinc-300 hover:text-white transition-colors cursor-pointer text-center"
+            >
+              {t('legalPrivacyTitle')}
+            </button>
+            <button
+              onClick={() => {
+                sounds.playClick();
+                onNavigate('/legal');
+              }}
+              className="p-2 rounded-lg bg-zinc-950/40 border border-white/[0.04] hover:border-white/10 text-[10.5px] text-amber-400/90 hover:text-amber-300 transition-colors cursor-pointer text-center"
+            >
+              {t('legalRiskTitle')}
+            </button>
+          </div>
+          <p className="text-[9px] text-zinc-500 mt-2 leading-relaxed">{t('legalEntityNotice')}</p>
         </div>
       </main>
 

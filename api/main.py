@@ -1,5 +1,5 @@
 """
-PULSAR P1.11 — Authoritative game server (FastAPI).
+PULSAR P1.11/P2.2a — Authoritative game server (FastAPI).
 
 Endpoints:
   GET  /api/health
@@ -16,6 +16,9 @@ Security model:
 - Every privileged route requires a valid SIWE-derived session token.
 - Match results are computed ONLY by match_engine.settle(); the oracle signs
   only engine output. Clients can never self-report a win into settlement.
+- Match state persists to Firestore when credentials exist (P2.2a), so
+  matchmaking and rounds survive instance recycling; falls back to in-memory
+  for local dev.
 """
 
 from __future__ import annotations
@@ -27,21 +30,53 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from auth import issue_nonce, issue_session, verify_session  # verify_session used by _auth
-from match_engine import (
-    MatchError,
-    MatchStore,
-    ROUNDS,
-    commit_intent,
-    reveal_target,
-    settle,
-    submit_result,
-)
 from oracle import sign_settlement
+from store import create_store, install_persistence
 
-app = FastAPI(title="PULSAR Game Server", version="1.0.0")
-store = MatchStore()
+app = FastAPI(title="PULSAR Game Server", version="1.1.0")
 
-ALLOWED_STAKES = (1.0, 2.0, 5.0, 10.0)
+# P2.4 — server error monitoring. No-ops unless SENTRY_DSN is set in the
+# server environment. Never required for local dev.
+_server_dsn = os.environ.get("SENTRY_DSN", "")
+if _server_dsn:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+
+        sentry_sdk.init(
+            dsn=_server_dsn,
+            environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
+            traces_sample_rate=0.0,
+            send_default_pii=False,
+            integrations=[FastApiIntegration()],
+        )
+    except Exception:
+        pass  # monitoring must never prevent startup
+
+store = create_store()
+
+# P2.2a — persistence wiring. The engine mutators are wrapped with a save
+# hook, and this module calls them THROUGH the module object so the wrapped
+# versions (not stale by-name imports) are always used.
+import match_engine as engine  # noqa: E402  (after env-backed imports)
+
+install_persistence(store, engine)
+commit_intent = engine.commit_intent
+reveal_target = engine.reveal_target
+submit_result = engine.submit_result
+settle = engine.settle
+ROUNDS = engine.ROUNDS
+
+
+
+@app.get("/api/health")
+def health() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "service": "pulsar-game-server",
+        "rounds": ROUNDS,
+        "matchStore": store.backend_name,  # honest visibility for ops
+    }
 
 
 def _request_domain(request: Request) -> str:
@@ -89,11 +124,6 @@ class ResultRequest(BaseModel):
     matchId: str
     roundIndex: int
     measuredMs: float = Field(gt=0, le=5000)
-
-
-@app.get("/api/health")
-def health() -> dict[str, Any]:
-    return {"ok": True, "service": "pulsar-game-server", "rounds": ROUNDS}
 
 
 @app.post("/api/auth/nonce")

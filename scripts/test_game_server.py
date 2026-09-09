@@ -190,6 +190,33 @@ try:
 except Exception:
     check("Oracle refuses fabricated record without validatedTimes", True)
 
+# --- 4. Durable store serialization (P2.2a) ----------------------------------
+from store import _match_from_doc, _match_to_doc  # noqa: E402
+
+m4 = store.enqueue(Account.create().address.lower(), 5.0)
+opp4 = Account.create().address.lower()
+store.enqueue(opp4, 5.0)
+for idx in range(me.ROUNDS):
+    for addr, base in ((list(m4.players)[0], 210.0), (opp4, 260.0)):
+        me.commit_intent(m4, addr, idx, "0x" + hashlib.sha256(f"{addr}{idx}".encode()).hexdigest())
+        me.reveal_target(m4, addr, idx)
+        wait_out_target(m4, addr, idx)
+        me.submit_result(m4, addr, idx, base + idx * 4)
+me.settle(m4)
+m4.signed_settlement = {"signature": "0x" + "77" * 65}
+
+restored = _match_from_doc(_match_to_doc(m4))
+check(
+    "Durable store round-trip preserves match state",
+    restored.status == m4.status
+    and restored.winner == m4.winner
+    and restored.signed_settlement == m4.signed_settlement
+    and restored.rounds == m4.rounds
+    and restored.players == m4.players,
+)
+check("Round-trip rounds compare equal", restored.rounds == m4.rounds)
+check("Round-trip players compare equal", restored.players == m4.players)
+
 print()
 if failures:
     print(f"FAILED: {len(failures)} -> {failures}")

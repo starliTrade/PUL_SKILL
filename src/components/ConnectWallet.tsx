@@ -1317,7 +1317,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                   {/* OpenSea-Style Footer */}
                   <div className="mt-4 pt-3.5 border-t border-white/[0.06] text-center space-y-1.5 shrink-0">
                     <p className="text-[11px] text-zinc-500 leading-relaxed max-w-xs mx-auto">
-                      By connecting your wallet, you agree to the Terms of Service & Privacy Policy.
+                      By connecting your wallet, you agree to the <a href="/legal" target="_blank" rel="noreferrer" className="text-sky-400/90 hover:text-sky-300 underline">Terms of Service</a> & <a href="/legal" target="_blank" rel="noreferrer" className="text-sky-400/90 hover:text-sky-300 underline">Privacy Policy</a>.
                     </p>
                     <div className="flex items-center justify-center gap-1 text-[11px] text-zinc-400">
                       <span>Need help?</span>

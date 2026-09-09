@@ -2,7 +2,11 @@ import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import { LanguageProvider } from './i18n/LanguageContext';
+import { initErrorMonitoring } from './lib/monitoring';
 import './index.css';
+
+// P2.4 — error monitoring. No-ops unless VITE_SENTRY_DSN is configured.
+initErrorMonitoring();
 
 // Boot hygiene: purge orphaned/stale WalletConnect proposal keys.
 // NOTE (P0.8): the previous console.error / window.onerror interception that

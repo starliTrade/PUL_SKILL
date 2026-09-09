@@ -3,3 +3,5 @@ uvicorn==0.34.0
 eth-account==0.13.6
 pycryptodome==3.21.0
 pydantic==2.10.5
+google-cloud-firestore==2.20.0
+sentry-sdk[fastapi]==2.20.0

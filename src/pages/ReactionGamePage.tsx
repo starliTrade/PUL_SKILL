@@ -44,6 +44,7 @@ import {
 } from '../lib/gameServerClient';
 import { settleDuel as settleDuelOnChain, escrowStatus } from '../lib/escrowFlow';
 import { realWeb3Manager } from '../lib/realWeb3';
+import { reportError } from '../lib/monitoring';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { ConnectWallet } from '../components/ConnectWallet';
 import { DuelCertificateModal } from '../components/DuelCertificateModal';
@@ -588,6 +589,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
         return;
       } catch (err: unknown) {
         clearInterval(progressInterval);
+        reportError(err, { where: 'serverRoundSubmit', matchId: serverMatch.matchId, roundIndex });
         const msg = err instanceof Error ? err.message : String(err);
         setMatchResult({ outcome: 'void', yourTime: userTime, opponentTime: 0, prize: 0, reason: msg });
         setPhase('bot-detected');

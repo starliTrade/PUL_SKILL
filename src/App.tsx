@@ -4,18 +4,24 @@ import { LobbyPage } from './pages/LobbyPage';
 import { ReactionGamePage } from './pages/ReactionGamePage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProfilePage } from './pages/ProfilePage';
+import { LegalPage, type LegalTab } from './pages/LegalPage';
+import { EligibilityGate } from './components/EligibilityGate';
 import { BottomNav, TabType } from './components/BottomNav';
+
+const KNOWN_PATHS = ['/', '/lobby', '/dashboard', '/profile', '/game/reaction', '/legal'];
 
 export default function App() {
   const [currentPath, setCurrentPath] = useState<string>(() => {
     if (typeof window !== 'undefined') {
       const pathname = window.location.pathname;
-      if (['/lobby', '/dashboard', '/profile', '/game/reaction'].includes(pathname)) {
+      if (KNOWN_PATHS.includes(pathname)) {
         return pathname;
       }
     }
     return '/';
   });
+
+  const [legalTab, setLegalTab] = useState<LegalTab>('tos');
 
   const [activeOpponent, setActiveOpponent] = useState<string | undefined>(undefined);
   const [activeStake, setActiveStake] = useState<number>(1);
@@ -23,7 +29,7 @@ export default function App() {
   useEffect(() => {
     const handlePopState = () => {
       const pathname = window.location.pathname;
-      if (['/', '/lobby', '/dashboard', '/profile', '/game/reaction'].includes(pathname)) {
+      if (KNOWN_PATHS.includes(pathname)) {
         setCurrentPath(pathname);
       } else {
         setCurrentPath('/');
@@ -34,7 +40,8 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  const navigate = (path: string, opponent?: string, stake?: number) => {
+  const navigate = (path: string, opponent?: string, stake?: number, legalTab?: LegalTab) => {
+    if (path === '/legal' && legalTab) setLegalTab(legalTab);
     if (opponent !== undefined) {
       setActiveOpponent(opponent);
     }
@@ -74,6 +81,10 @@ export default function App() {
       )}
       {currentPath === '/dashboard' && <DashboardPage onNavigate={navigate} />}
       {currentPath === '/profile' && <ProfilePage onNavigate={navigate} />}
+      {currentPath === '/legal' && <LegalPage onNavigate={navigate} initialTab={legalTab} />}
+
+      {/* P2.3 — first-visit 18+ / jurisdiction eligibility gate */}
+      <EligibilityGate />
 
       {/* Floating Bottom Navigation (hidden during active reaction game) */}
       {!isGameRoute && (
