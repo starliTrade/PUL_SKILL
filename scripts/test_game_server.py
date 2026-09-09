@@ -68,11 +68,22 @@ opp = Account.create().address.lower()
 m2 = store.enqueue(opp, 1.0)
 check("Matchmaking pairs two players", m1.match_id == m2.match_id and m1.status == "active")
 
+
+def wait_out_target(match, addr, idx):
+    """Simulate wall-clock elapse of the round's target delay on the server.
+    The engine reads time.time() directly, so tests rewind revealed_at by the
+    full target window — identical to a client waiting honestly."""
+    r = match.rounds[addr].get(idx)
+    if r and r.revealed_at:
+        r.revealed_at -= r.target_ms / 1000.0
+
+
 # playerA round flow
 intent = hashlib.sha256(b"my-intent").hexdigest()
 me.commit_intent(m1, player_addr, 0, "0x" + intent)
 target = me.reveal_target(m1, player_addr, 0)
 check("Target revealed after commit", target["targetMs"] >= 1200)
+wait_out_target(m1, player_addr, 0)
 
 # Reveal without commit must fail
 try:
@@ -94,9 +105,17 @@ except me.MatchError:
     check("Rejected round cannot be re-rolled", True)
 
 # plausible submission accepted (on a fresh round)
+# instant submission after reveal must be REJECTED (timing floor)
 me.commit_intent(m1, player_addr, 1, "0x" + hashlib.sha256(b"i1").hexdigest())
 me.reveal_target(m1, player_addr, 1)
 res = me.submit_result(m1, player_addr, 1, 250.0)
+check("Instant submit after reveal rejected", res["accepted"] is False and "target" in res["reason"])
+
+# honest wait then submit accepted (fresh round — 1 was burned by the floor)
+me.commit_intent(m1, player_addr, 2, "0x" + hashlib.sha256(b"i2").hexdigest())
+me.reveal_target(m1, player_addr, 2)
+wait_out_target(m1, player_addr, 2)
+res = me.submit_result(m1, player_addr, 2, 250.0)
 check("Plausible time accepted", res["accepted"] is True)
 
 # double submission blocked
@@ -110,14 +129,21 @@ except me.MatchError:
 for idx in range(me.ROUNDS):
     me.commit_intent(m1, opp, idx, "0x" + hashlib.sha256(f"o{idx}".encode()).hexdigest())
     me.reveal_target(m1, opp, idx)
+    wait_out_target(m1, opp, idx)
     me.submit_result(m1, opp, idx, 300.0 + idx * 5)
-me.commit_intent(m1, player_addr, 2, "0x" + hashlib.sha256(b"i2").hexdigest())
-me.reveal_target(m1, player_addr, 2)
-me.submit_result(m1, player_addr, 2, 245.0)
-
-# playerA round 0 was rejected -> only 2 valid rounds -> expected void.
+# Bo3 semantics: a forfeited (invalid) round is LOST. playerA burned rounds
+# 0 and 1, won only round 2 (245<310) -> opponent wins 2-1. Anti-cheat has
+# real teeth: cheating costs rounds, not just a warning.
 result = me.settle(m1)
-check("Void when validated rounds insufficient", result["status"] == "void")
+check("Forfeited rounds lose the match (2-1)", result["status"] == "settled" and result["winner"] == opp)
+
+# Mutual-disclosure rule: opponent's VALID time is visible only for rounds
+# where I also submitted (r0: both submitted -> 300.0 disclosed; r1: I never
+# got a valid submission after the instant-submit burn -> not disclosed).
+view = m1.public_view(for_address=player_addr)
+check("Opponent address disclosed", view["opponent"] == opp)
+check("Mutual submission discloses opponent time", abs(view["opponentTimes"].get("0", -1) - 300.0) < 0.01)
+check("Opponent round counter tracks submissions", view["opponentSubmitted"] == me.ROUNDS)
 
 # --- 3. Clean settlement + oracle signature ----------------------------------
 m3 = store.enqueue(Account.create().address.lower(), 2.0)
@@ -127,6 +153,7 @@ for idx in range(me.ROUNDS):
     for addr, base in ((m3.players and list(m3.players)[0], 220.0), (w_addr, 280.0)):
         me.commit_intent(m3, addr, idx, "0x" + hashlib.sha256(f"{addr}{idx}".encode()).hexdigest())
         me.reveal_target(m3, addr, idx)
+        wait_out_target(m3, addr, idx)
         me.submit_result(m3, addr, idx, base + idx * 3)
 
 result = me.settle(m3)

@@ -29,6 +29,21 @@ import { GamePhase, MouseTrajectoryPoint, MatchResolution, TargetVectorDirection
 import { AntiCheat, getRandomOpponent, TargetSpawnConfig } from '../lib/antiCheat';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { XPSystem, XPSummary } from '../lib/xpSystem';
+import {
+  gameServerConfigured,
+  ensureSession,
+  queueForMatch,
+  commitRound,
+  revealRoundTarget,
+  submitRoundResult,
+  settleMatch,
+  getMatch,
+  matchIdToBytes32,
+  type ServerSession,
+  type MatchView,
+} from '../lib/gameServerClient';
+import { settleDuel as settleDuelOnChain, escrowStatus } from '../lib/escrowFlow';
+import { realWeb3Manager } from '../lib/realWeb3';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { ConnectWallet } from '../components/ConnectWallet';
 import { DuelCertificateModal } from '../components/DuelCertificateModal';
@@ -48,7 +63,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   stakeAmount = 1,
 }) => {
   const { t } = useLanguage();
-  const { wallet, recordMatch } = usePulsarStore();
+  const { wallet, recordMatch, requestSignature } = usePulsarStore();
   const [phase, setPhase] = useState<GamePhase>('human-verify');
   const [countdown, setCountdown] = useState<number>(3);
   const [matchResult, setMatchResult] = useState<MatchResolution | null>(null);
@@ -56,6 +71,16 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   const [currentStake, setCurrentStake] = useState<number>(stakeAmount);
   const [showWalletModal, setShowWalletModal] = useState(false);
   const [showCertificateModal, setShowCertificateModal] = useState(false);
+
+  // P2.2 — Server-authoritative mode state. When a real (staked) match runs
+  // through the game server, `serverMatch` holds the authoritative view and
+  // every round follows the server's commit → reveal → submit protocol.
+  // Practice mode (stake 0) never touches the server.
+  const [serverMatch, setServerMatch] = useState<MatchView | null>(null);
+  const [serverSession, setServerSession] = useState<ServerSession | null>(null);
+  const [serverError, setServerError] = useState<string>('');
+  const [settlementTxHash, setSettlementTxHash] = useState<string>('');
+  const isServerMode = currentStake > 0 && gameServerConfigured();
 
   useEffect(() => {
     if (opponentName) setOpponent(opponentName);
@@ -90,15 +115,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   const trajectoryRef = useRef<MouseTrajectoryPoint[]>([]);
   const reactionTimeRef = useRef<number>(0);
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
-
-  // Clear timers on unmount
-  useEffect(() => {
-    return () => {
-      if (waitTimeoutRef.current) clearTimeout(waitTimeoutRef.current);
-      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
-      if (roundTransitionTimeoutRef.current) clearTimeout(roundTransitionTimeoutRef.current);
-    };
-  }, []);
+  const targetRevealRef = useRef<number>(0); // when this round's server target appeared
 
   // Randomize calibration target for human latency check
   const randomizeCalibrationTarget = useCallback(() => {
@@ -155,13 +172,102 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
     };
   }, [phase]);
 
-  // Start waiting phase
+  // Clear timers on unmount
+  useEffect(() => {
+    return () => {
+      if (waitTimeoutRef.current) clearTimeout(waitTimeoutRef.current);
+      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+      if (roundTransitionTimeoutRef.current) clearTimeout(roundTransitionTimeoutRef.current);
+    };
+  }, []);
+
+  // P2.2 — Server-authoritative matchmaking for staked matches. Practice mode
+  // (stake 0) never queues and never touches the server.
+  const startServerMatch = useCallback(async () => {
+    if (!isServerMode || !wallet.address) return;
+    setServerError('');
+    setPhase('matchmaking');
+    try {
+      const provider = realWeb3Manager.getActiveEip1193Provider();
+      if (!provider) throw new Error('No active wallet to sign in with.');
+      const session = await ensureSession(wallet.address, async (message: string) => {
+        try {
+          return await provider.request({ method: 'personal_sign', params: [message, wallet.address] });
+        } catch (e: unknown) {
+          const code = (e as { code?: number })?.code;
+          if (code === -32601 || code === -32602) {
+            return await provider.request({ method: 'signMessage', params: [wallet.address, message] });
+          }
+          throw e;
+        }
+      });
+      setServerSession(session);
+      let view = await queueForMatch(session, currentStake);
+      // Poll while waiting in the queue (queueForMatch is idempotent: it
+      // returns the caller's waiting match or their active match).
+      const deadline = Date.now() + 90_000;
+      while (view.status === 'waiting' && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2500));
+        view = await queueForMatch(session, currentStake);
+      }
+      if (view.status === 'waiting') throw new Error('No opponent joined within 90 seconds. Try again.');
+      setServerMatch(view);
+      if (view.opponent) setOpponent(view.opponent);
+      sounds.playMatchFound();
+      setBo3State({ userScore: 0, opponentScore: 0, currentRound: 1, rounds: [], targetWins: 2, isMatchOver: false });
+      setPhase('ready');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setServerError(msg);
+      setMatchResult({ outcome: 'void', yourTime: 0, opponentTime: 0, prize: 0, reason: msg });
+      setPhase('bot-detected'); // honest error shell; reason is rendered
+    }
+  }, [isServerMode, wallet.address, currentStake]);
+
+  // Auto-start server matchmaking once on mount for staked matches.
+  const serverStartRef = useRef(false);
+  useEffect(() => {
+    if (currentStake > 0 && gameServerConfigured() && !serverStartRef.current) {
+      serverStartRef.current = true;
+      void startServerMatch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Start waiting phase — practice: local randomized delay. Server mode:
+  // commit this round, fetch the server's target delay, and wait exactly that
+  // long before the target appears.
   const startWaitingPhase = () => {
     setPhase('waiting');
     setEarlyClickWarning(false);
     trajectoryRef.current = [];
 
-    // Randomized delay between 1800ms - 4200ms
+    if (isServerMode && serverSession && serverMatch) {
+      const roundIndex = bo3State.currentRound - 1;
+      const intent = crypto.getRandomValues(new Uint8Array(32));
+      const intentHex = Array.from(intent).map((b) => b.toString(16).padStart(2, '0')).join('');
+      void (async () => {
+        try {
+          await commitRound(serverSession, serverMatch.matchId, roundIndex, `0x${intentHex}`);
+          const { targetMs } = await revealRoundTarget(serverSession, serverMatch.matchId, roundIndex);
+          waitTimeoutRef.current = setTimeout(() => {
+            const target = AntiCheat.generateTargetSpawn();
+            setSpawnConfig(target);
+            startTimeRef.current = performance.now();
+            targetRevealRef.current = performance.now();
+            setPhase('action');
+            sounds.playGo();
+          }, targetMs);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setMatchResult({ outcome: 'void', yourTime: 0, opponentTime: 0, prize: 0, reason: msg });
+          setPhase('bot-detected');
+        }
+      })();
+      return;
+    }
+
+    // Practice mode: randomized delay between 1800ms - 4200ms
     const delay = Math.random() * 2400 + 1800;
     waitTimeoutRef.current = setTimeout(() => {
       const target = AntiCheat.generateTargetSpawn();
@@ -227,7 +333,176 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
     });
   };
 
-  // Verification stage with anti-cheat telemetry evaluation & Best-of-3 handling
+  // Verification stage — dual mode. Server mode: submit the measured time to
+  // the authoritative engine (plausibility + timing floor enforced there) and
+  // score the round from the mutually-disclosed opponent time. Practice: the
+  // local anti-cheat flow with a clearly-labeled bot opponent.
+  // Score one server round locally from the mutually-disclosed opponent time.
+  // If the opponent hasn't submitted yet, the round shows as undecided (no
+  // fabricated points) — the server's settlement remains authoritative.
+  const applyServerRoundOutcome = (roundIndex: number, userTime: number, oppMs: number | null) => {
+    const roundWinner: 'user' | 'opponent' | 'tie' =
+      oppMs == null ? 'tie' : userTime < oppMs ? 'user' : userTime > oppMs ? 'opponent' : 'tie';
+    const newRoundResult: RoundResult = {
+      roundNumber: roundIndex + 1,
+      winner: roundWinner,
+      userTime,
+      opponentTime: oppMs ?? 0,
+    };
+    const newUserScore = bo3State.userScore + (roundWinner === 'user' ? 1 : 0);
+    const newOpponentScore = bo3State.opponentScore + (roundWinner === 'opponent' ? 1 : 0);
+    const newRounds = [...bo3State.rounds, newRoundResult];
+    const decided = newUserScore >= 2 || newOpponentScore >= 2;
+
+    setLastRoundResult(newRoundResult);
+    setBo3State({
+      userScore: newUserScore,
+      opponentScore: newOpponentScore,
+      currentRound: roundIndex + 2,
+      rounds: newRounds,
+      targetWins: 2,
+      isMatchOver: decided,
+    });
+
+    if (decided) {
+      void finishServerMatch(newRounds, newUserScore, newOpponentScore, userTime, oppMs ?? 0);
+      return;
+    }
+
+    if (roundWinner === 'user') sounds.playWin();
+    else if (roundWinner === 'opponent') sounds.playHit();
+    setRoundTransitionMessage(
+      oppMs == null
+        ? t('waitingOpponentRound')
+        : newUserScore === 1 && newOpponentScore === 1
+          ? 'TIE 1 - 1! DECIDING ROUND (MATCH POINT)!'
+          : roundWinner === 'user'
+            ? `ROUND ${roundIndex + 1} WON!`
+            : `ROUND ${roundIndex + 1} LOST!`
+    );
+    setPhase('round-transition');
+    roundTransitionTimeoutRef.current = setTimeout(() => setPhase('ready'), 1900);
+  };
+
+  // End of a server match: fetch/settle authoritatively, claim the prize
+  // on-chain if the server declared us the winner, and record history.
+  const finishServerMatch = async (
+    rounds: RoundResult[],
+    userScore: number,
+    oppScore: number,
+    yourTime: number,
+    oppTime: number
+  ): Promise<void> => {
+    if (!serverSession || !serverMatch) return;
+    try {
+      const view = await getMatch(serverSession, serverMatch.matchId);
+      setServerMatch(view);
+      if (view.status === 'void') {
+        setMatchResult({
+          outcome: 'void',
+          yourTime,
+          opponentTime: oppTime,
+          prize: 0,
+          reason: 'Match voided — stakes are refundable on-chain.',
+          rounds,
+          userScore,
+          opponentScore: oppScore,
+        });
+        sounds.playLoss();
+        setPhase('result');
+        return;
+      }
+      // settleMatch is idempotent server-side: when the opponent settled
+      // first, the SAME oracle-signed settlement is replayed to us.
+      const result = await settleMatch(serverSession, serverMatch.matchId);
+      if (result.status !== 'settled') {
+        setMatchResult({
+          outcome: 'void',
+          yourTime,
+          opponentTime: oppTime,
+          prize: 0,
+          reason: 'Match could not be settled — stakes are refundable on-chain.',
+          rounds,
+          userScore,
+          opponentScore: oppScore,
+        });
+        sounds.playLoss();
+        setPhase('result');
+        return;
+      }
+      const iWon = result.winner.toLowerCase() === wallet.address?.toLowerCase();
+      const prize = iWon ? Math.round(currentStake * 2 * 0.98 * 100) / 100 : 0;
+
+      // Winner submits the oracle-signed proof to release the pot.
+      let txHash = '';
+      if (iWon) {
+        try {
+          const bytes32 = await matchIdToBytes32(result.matchId);
+          txHash = await settleDuelOnChain({
+            matchId: bytes32,
+            winner: result.winner,
+            winnerTimeMs: result.winnerTimeMs,
+            loserTimeMs: result.loserTimeMs,
+            nonce: result.serverNonce.toString(),
+            deadline: result.deadline,
+            signature: result.signature,
+          });
+          setSettlementTxHash(txHash);
+          sounds.playWin();
+          try {
+            confetti({ particleCount: 90, spread: 75, origin: { y: 0.6 }, colors: ['#38bdf8', '#10b981', '#ffffff', '#eab308'] });
+          } catch {}
+        } catch (err: unknown) {
+          // On-chain claim failed — the signed proof stays valid for 10 minutes.
+          const msg = err instanceof Error ? err.message : String(err);
+          setMatchResult({
+            outcome: iWon ? 'win' : 'loss',
+            yourTime,
+            opponentTime: oppTime,
+            prize,
+            reason: `On-chain claim failed: ${msg}. The signed proof remains claimable for 10 minutes.`,
+            rounds,
+            userScore,
+            opponentScore: oppScore,
+          });
+          setPhase('result');
+          return;
+        }
+      } else {
+        sounds.playLoss();
+      }
+
+      const avgUser = Math.round(rounds.reduce((a, r) => a + r.userTime, 0) / Math.max(rounds.length, 1));
+      const avgOpp = Math.round(rounds.reduce((a, r) => a + r.opponentTime, 0) / Math.max(rounds.length, 1));
+      setMatchResult({
+        outcome: iWon ? 'win' : 'loss',
+        yourTime: avgUser,
+        opponentTime: avgOpp,
+        prize,
+        rounds,
+        userScore,
+        opponentScore: oppScore,
+      });
+
+      void recordMatch({
+        id: result.matchId,
+        game: 'Reaction Duel (Ranked · Bo3)',
+        result: iWon ? 'win' : 'loss',
+        entryFee: currentStake,
+        prize,
+        opponentTime: avgOpp,
+        yourTime: avgUser,
+        timestamp: Date.now(),
+      }).then((xpRes) => setXpSummary(xpRes));
+
+      setPhase('result');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setMatchResult({ outcome: 'void', yourTime, opponentTime: oppTime, prize: 0, reason: msg });
+      setPhase('bot-detected');
+    }
+  };
+
   const processVerification = async (timeMs: number, eventCheck?: { isTrusted: boolean; pointerType?: string; hasNaturalJitter: boolean }) => {
     setPhase('verifying');
     setVerifyProgress(0);
@@ -236,12 +511,95 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
       setVerifyProgress((prev) => Math.min(prev + 20, 92));
     }, 70);
 
+    const userTime = Math.round(timeMs);
+
+    if (isServerMode && serverSession && serverMatch) {
+      const roundIndex = bo3State.currentRound - 1;
+      try {
+        const res = await submitRoundResult(serverSession, serverMatch.matchId, roundIndex, userTime);
+        // Refresh the authoritative view (includes mutually-disclosed
+        // opponent time for this round, if both have submitted).
+        const view = await getMatch(serverSession, serverMatch.matchId);
+        setServerMatch(view);
+        const oppTimeRaw = view.opponentTimes[String(roundIndex)];
+        const oppTime = oppTimeRaw != null ? Math.round(oppTimeRaw) : null;
+
+        // Local sanity check (server already enforced the real gates).
+        if (userTime < AntiCheat.minHumanReaction) {
+          clearInterval(progressInterval);
+          setVerifyProgress(100);
+          sounds.playLoss();
+          setMatchResult({
+            outcome: 'void',
+            yourTime: userTime,
+            opponentTime: 0,
+            prize: 0,
+            reason: t('roundRejected', { reason: 'below human minimum' }),
+          });
+          setPhase('bot-detected');
+          return;
+        }
+
+        if (!res.accepted) {
+          clearInterval(progressInterval);
+          setVerifyProgress(100);
+          sounds.playLoss();
+          // The round is burned on the server — record the forfeit and move on.
+          const newRoundResult: RoundResult = { roundNumber: roundIndex + 1, winner: 'opponent', userTime, opponentTime: oppTime ?? 0 };
+          const newUserScore = bo3State.userScore;
+          const newOpponentScore = bo3State.opponentScore + 1;
+          const newRounds = [...bo3State.rounds, newRoundResult];
+          const decided = newUserScore >= 2 || newOpponentScore >= 2;
+          setLastRoundResult(newRoundResult);
+          setBo3State({ userScore: newUserScore, opponentScore: newOpponentScore, currentRound: roundIndex + 2, rounds: newRounds, targetWins: 2, isMatchOver: decided });
+          if (decided) {
+            void finishServerMatch(newRounds, newUserScore, newOpponentScore, userTime, oppTime ?? 0);
+          } else {
+            setRoundTransitionMessage(t('roundRejected', { reason: res.reason || '' }));
+            setPhase('round-transition');
+            roundTransitionTimeoutRef.current = setTimeout(() => setPhase('ready'), 2200);
+          }
+          return;
+        }
+
+        // Accepted. Score the round when the opponent's time is known; if the
+        // opponent hasn't submitted yet, show the honest wait state.
+        clearInterval(progressInterval);
+        setVerifyProgress(100);
+        if (oppTime == null) {
+          setPhase('round-transition');
+          // Poll briefly for the opponent's disclosure, then continue.
+          roundTransitionTimeoutRef.current = setTimeout(() => {
+            void (async () => {
+              try {
+                const v2 = await getMatch(serverSession, serverMatch.matchId);
+                setServerMatch(v2);
+                const o2 = v2.opponentTimes[String(roundIndex)];
+                const oppMs = o2 != null ? Math.round(o2) : null;
+                applyServerRoundOutcome(roundIndex, userTime, oppMs);
+              } catch {
+                applyServerRoundOutcome(roundIndex, userTime, null);
+              }
+            })();
+          }, 1500);
+          return;
+        }
+        applyServerRoundOutcome(roundIndex, userTime, oppTime);
+        return;
+      } catch (err: unknown) {
+        clearInterval(progressInterval);
+        const msg = err instanceof Error ? err.message : String(err);
+        setMatchResult({ outcome: 'void', yourTime: userTime, opponentTime: 0, prize: 0, reason: msg });
+        setPhase('bot-detected');
+        return;
+      }
+    }
+
     await AntiCheat.simulateServerDelay(650, 1000);
     clearInterval(progressInterval);
     setVerifyProgress(100);
 
-    const userTime = Math.round(timeMs);
-    // Gaussian tier-based opponent simulation
+    // Practice mode: Gaussian tier-based opponent simulation
     const oppTier = currentStake >= 10 ? 'High' : currentStake >= 5 ? 'Veteran' : currentStake >= 2 ? 'Novice' : 'Micro';
     const oppTime = AntiCheat.simulateOpponentReaction(oppTier);
     const resolution = AntiCheat.resolveMatch(userTime, oppTime, trajectoryRef.current, currentStake, eventCheck);
@@ -425,8 +783,14 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
         <div className="flex items-center gap-3" dir="ltr" style={{ direction: 'ltr' }}>
           <div className="text-right">
             <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-mono">{t('bestOfThree')}</div>
-            <div className="text-xs font-semibold text-zinc-200">{opponent}</div>
-            {currentStake === 0 && (
+            <div className="text-xs font-semibold text-zinc-200">
+              {isServerMode && opponent.startsWith('0x')
+                ? `${opponent.slice(0, 6)}...${opponent.slice(-4)}`
+                : opponent}
+            </div>
+            {isServerMode ? (
+              <div className="text-[9px] text-emerald-400/90 font-mono">{t('serverModeLabel')}</div>
+            ) : (
               <div className="text-[9px] text-amber-400/90 font-mono">{t('practiceModeLabel')}</div>
             )}
           </div>
@@ -506,13 +870,32 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
           <span className="text-[10.5px] font-mono">{t('firstTo2Wins')}</span>
         </div>
         <div className="text-emerald-400 font-mono font-bold text-xs">
-          {t('prizeLabel', { prize: AntiCheat.calculatePrize(currentStake).toFixed(2) })}
+          {isServerMode
+            ? t('prizeLabel', { prize: (currentStake * 2 * 0.98).toFixed(2) })
+            : t('prizeLabel', { prize: AntiCheat.calculatePrize(currentStake).toFixed(2) })}
         </div>
       </div>
 
       {/* Main Interactive Stage */}
       <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-4 max-w-md mx-auto w-full pb-10">
         
+        {/* PHASE 0: Server Matchmaking (real staked matches) */}
+        {phase === 'matchmaking' && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="flex flex-col items-center text-center max-w-xs"
+          >
+            <LoaderCircle className="w-10 h-10 text-emerald-400 animate-spin mb-3" />
+            <h3 className="text-base font-semibold text-white">{t('serverMatchmaking')}</h3>
+            <p className="text-xs text-zinc-400 mt-1 animate-pulse">{t('serverWaitingOpponent')}</p>
+            <div className="mt-4 text-[10px] font-mono text-zinc-500 flex items-start gap-1.5 text-left">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-px" />
+              <span>{t('serverModeNote')}</span>
+            </div>
+          </motion.div>
+        )}
+
         {/* Wallet Connection Required Gate (Only for Real Staked Matches) */}
         {!wallet.connected && currentStake > 0 ? (
           <motion.div
@@ -810,10 +1193,17 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                   <ShieldAlert className="w-8 h-8 text-red-400" />
                 </div>
 
-                <h2 className="text-xl font-bold text-red-400">{t('antiCheatTriggered')}</h2>
+                <h2 className="text-xl font-bold text-red-400">
+                  {isServerMode ? t('serverConnError') : t('antiCheatTriggered')}
+                </h2>
                 <p className="text-xs text-zinc-400 mt-1.5 leading-relaxed px-3">
                   {matchResult.reason || 'Input pattern flagged as non-human.'}
                 </p>
+                {isServerMode && (
+                  <p className="text-[10px] font-mono text-zinc-500 mt-2 px-3">
+                    {t('serverModeNote')}
+                  </p>
+                )}
 
                 <div className="linear-card p-3.5 w-full mt-5 space-y-2 text-xs">
                   <div className="flex justify-between">
@@ -894,8 +1284,27 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                     transition={{ delay: 0.2 }}
                     className="text-lg font-bold text-white mt-1 font-mono"
                   >
-                    {matchResult.prize > 0 ? `+$${matchResult.prize.toFixed(2)} USDT` : t('practiceVictory')}
+                    {isServerMode && matchResult.prize > 0 && settlementTxHash ? (
+                      t('prizeClaimed')
+                    ) : matchResult.prize > 0 ? (
+                      `+$${matchResult.prize.toFixed(2)} USDT`
+                    ) : (
+                      t('practiceVictory')
+                    )}
                   </motion.p>
+                )}
+                {isServerMode && matchResult.outcome === 'win' && matchResult.prize > 0 && !settlementTxHash && (
+                  <p className="text-[10px] text-amber-400/90 font-mono mt-1">{t('claimingPrize')}</p>
+                )}
+                {settlementTxHash && (
+                  <a
+                    href={`https://polygonscan.com/tx/${settlementTxHash}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[10px] font-mono text-sky-400 hover:text-sky-300 underline mt-1 cursor-pointer"
+                  >
+                    {settlementTxHash.slice(0, 10)}...{settlementTxHash.slice(-8)} ↗
+                  </a>
                 )}
 
                 {/* Round by Round Breakdown */}
@@ -1048,7 +1457,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
           isOpen={showCertificateModal}
           onClose={() => setShowCertificateModal(false)}
           match={{
-            id: `PULSAR-${Date.now().toString(36).toUpperCase()}`,
+            id: serverMatch?.matchId || `PULSAR-${Date.now().toString(36).toUpperCase()}`,
             game: 'reaction',
             result: matchResult.outcome === 'win' ? 'win' : 'loss',
             entryFee: currentStake,

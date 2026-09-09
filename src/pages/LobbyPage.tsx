@@ -28,6 +28,7 @@ import { realWeb3Manager, MatchRecord } from '../lib/realWeb3';
 import { escrowStatus } from '../lib/escrowFlow';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
+import { gameServerConfigured } from '../lib/gameServerClient';
 
 interface LobbyPageProps {
   onNavigate: (path: string, opponent?: string, stake?: number) => void;
@@ -77,9 +78,15 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
   const prize = (selectedStake * 2) * 0.98;
 
   const handleStartMatchmaking = () => {
-    // P1.15: real-money mode is honest — it only exists when the escrow
-    // contract is actually deployed and configured. No theater.
+    // P1.15/P2.2: real-money mode is honest — it only exists when BOTH the
+    // escrow contract AND the game server are actually deployed. No theater.
     if (gameMode === 'real' && !escrowStatus().configured) {
+      sounds.playError();
+      setEscrowOfflineAlert(true);
+      return;
+    }
+
+    if (gameMode === 'real' && !gameServerConfigured()) {
       sounds.playError();
       setEscrowOfflineAlert(true);
       return;
@@ -97,6 +104,15 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
       return;
     }
 
+    // P2.2: staked matches are matched by the authoritative server on the
+    // game screen itself (SIWE → queue → commit/reveal). No simulated search
+    // animation for real mode — the wait IS the real matchmaking.
+    if (gameMode === 'real') {
+      sounds.playClick();
+      onNavigate('/game/reaction', undefined, selectedStake);
+      return;
+      }
+
     sounds.playClick();
     setIsMatchmaking(true);
     setSearchStep(1);
@@ -111,9 +127,9 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
       setTimeout(() => {
         setIsMatchmaking(false);
         if (onStartDuelWithOpponent) {
-          onStartDuelWithOpponent(oppName, gameMode === 'real' ? selectedStake : 0);
+          onStartDuelWithOpponent(oppName, 0);
         }
-        onNavigate('/game/reaction', oppName, gameMode === 'real' ? selectedStake : 0);
+        onNavigate('/game/reaction', oppName, 0);
       }, 1500);
     }, 3200);
   };

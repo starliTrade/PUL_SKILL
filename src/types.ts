@@ -90,5 +90,6 @@ export type GamePhase =
   | 'verifying'
   | 'round-transition'
   | 'result'
-  | 'bot-detected';
+  | 'bot-detected'
+  | 'matchmaking';
 

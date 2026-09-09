@@ -186,9 +186,21 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
         match = store.get(match_id)
         if address not in match.players:
             raise HTTPException(status_code=403, detail="Not a participant")
+    except MatchError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    # Idempotent: when both clients race to settle, the first signs and the
+    # second receives the SAME oracle signature (never a second signature over
+    # a new nonce, which would break the contract's replay binding).
+    if match.status == "settled" and match.signed_settlement:
+        return dict(match.signed_settlement)
+
+    try:
         result = settle(match)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
+
     if result.get("status") == "settled":
         result = sign_settlement(result)
+        match.signed_settlement = dict(result)
     return result

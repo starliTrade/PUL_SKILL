@@ -51,6 +51,7 @@ class Round:
     target_salt: str = ""
     target_ms: float = 0.0
     revealed: bool = False
+    revealed_at: float = 0.0
     result_ms: float | None = None
     submitted_at: float = 0.0
     valid: bool = False
@@ -67,6 +68,7 @@ class Match:
     status: str = "waiting"  # waiting | active | settled | void
     winner: str = ""
     settled_at: float = 0.0
+    signed_settlement: dict[str, Any] | None = None  # replay for the other client
 
     def public_view(self, for_address: str | None = None) -> dict[str, Any]:
         """Round data is per-player secret; only summaries are public."""
@@ -97,6 +99,31 @@ class Match:
                     }
                 )
         view["myRounds"] = my_rounds
+        # Progress-only opponent info (never their times): lets clients know
+        # when the match is complete and settlement is safe to request.
+        my_addr = (for_address or "").lower()
+        opp_addr = next((a for a in self.players if a != my_addr), None)
+        # Opponent address is public on-chain data; safe to disclose.
+        view["opponent"] = opp_addr
+        if opp_addr:
+            opp_rounds = self.rounds.get(opp_addr, {}) or {}
+            my_submitted = {
+                idx for idx, r in (self.rounds.get(my_addr, {}) or {}).items() if r.result_ms is not None
+            }
+            # Mutual disclosure: an opponent's round time is revealed only once
+            # BOTH players have submitted that round. This is what makes live
+            # scoring honest without leaking anything exploitable mid-round.
+            view["opponentTimes"] = {
+                str(idx): r.result_ms
+                for idx, r in opp_rounds.items()
+                if idx in my_submitted and r.result_ms is not None and r.valid
+            }
+            view["opponentSubmitted"] = sum(
+                1 for r in opp_rounds.values() if r.result_ms is not None
+            )
+        else:
+            view["opponentTimes"] = {}
+            view["opponentSubmitted"] = 0
         return view
 
 
@@ -193,6 +220,7 @@ def reveal_target(match: Match, address: str, round_index: int) -> dict[str, Any
             r.target_salt.encode(), f"{r.target_ms:.0f}".encode(), hashlib.sha256
         ).hexdigest()
         r.revealed = True
+        r.revealed_at = now
     proof = hmac.new(
         r.target_salt.encode(), f"reveal|{r.target_ms:.0f}".encode(), hashlib.sha256
     ).hexdigest()
@@ -225,6 +253,15 @@ def _validate_plausibility(match: Match, r: Round, measured_ms: float, now: floa
         return f"implausible: {measured_ms}ms is below human minimum"
     if measured_ms > MAX_HUMAN_MS:
         return f"implausible: {measured_ms}ms exceeds maximum plausible reaction"
+    # Timing floor: the submission cannot arrive meaningfully before the
+    # revealed target delay has elapsed on the SERVER clock. This kills two
+    # client cheats at once: submitting a fabricated time instantly after the
+    # reveal, and clicking early then reporting a fast "reaction".
+    if r.revealed_at and now - r.revealed_at < (r.target_ms / 1000.0) * 0.9:
+        return (
+            f"implausible: submitted before the {r.target_ms:.0f}ms target "
+            "delay had elapsed on the server clock"
+        )
     return ""
 
 
@@ -237,34 +274,57 @@ def _ensure_active(match: Match, address: str) -> None:
 
 def settle(match: Match) -> dict[str, Any]:
     """
-    Deterministically settle from validated rounds. Returns the settlement
-    record (winner, per-player validated medians) for the oracle to sign.
+    Deterministically settle as Best-of-3 round wins, matching the client UI:
+    the faster VALID time wins each round; an invalid/missing round is a
+    forfeited round (anti-cheat deterrent); an exact tie awards neither.
+    First to 2 round wins takes the match. Returns the settlement record
+    (winner + per-player validated times) for the oracle to sign.
     """
     if match.status != "active":
         raise MatchError("Match is not active")
-    scores: dict[str, list[float]] = {}
-    for addr in match.players:
-        mine = match.rounds.get(addr, {})
-        valid_times = [r.result_ms for i, r in sorted(mine.items()) if r.valid and r.result_ms is not None]
-        scores[addr] = valid_times
+    a, b = sorted(match.players)
+    rounds_a = match.rounds.get(a, {})
+    rounds_b = match.rounds.get(b, {})
 
-    expected = ROUNDS
-    complete = {a: t for a, t in scores.items() if len(t) == expected}
-    if len(complete) < 2:
-        # Not enough validated rounds: void the match (stakes refund on-chain).
-        match.status = "void"
-        return {"status": "void", "reason": "insufficient validated rounds"}
+    wins_a = wins_b = 0
+    times_a: list[float] = []
+    times_b: list[float] = []
+    for idx in range(ROUNDS):
+        ra = rounds_a.get(idx)
+        rb = rounds_b.get(idx)
+        va = ra.result_ms if (ra and ra.valid and ra.result_ms is not None) else None
+        vb = rb.result_ms if (rb and rb.valid and rb.result_ms is not None) else None
+        if va is not None:
+            times_a.append(va)
+        if vb is not None:
+            times_b.append(vb)
+        if va is None and vb is None:
+            continue  # double forfeit: round awards nobody
+        if vb is None:
+            wins_a += 1  # forfeit by b
+            continue
+        if va is None:
+            wins_b += 1  # forfeit by a
+            continue
+        if va < vb:
+            wins_a += 1
+        elif vb < va:
+            wins_b += 1
+        # exact tie: round awards nobody
 
-    a, b = sorted(complete.keys())
-    median_a = _median(complete[a])
-    median_of_b = _median(complete[b])
-    if median_a == median_of_b:
+    wins_needed = ROUNDS // 2 + 1  # 2 of 3
+    if wins_a < wins_needed and wins_b < wins_needed:
         match.status = "void"
-        return {"status": "void", "reason": "exact tie — stakes refund"}
-    winner = a if median_a < median_of_b else b
+        return {"status": "void", "reason": "no round-win majority — stakes refund"}
+
+    winner = a if wins_a >= wins_needed else b
     loser = b if winner == a else a
-    winner_ms = int(round(median_a if winner == a else median_of_b))
-    loser_ms = int(round(median_of_b if winner == a else median_a))
+    winner_times = times_a if winner == a else times_b
+    loser_times = times_b if winner == a else times_a
+    # A player can win by forfeit with no valid time of their own; record the
+    # max plausible time so the on-chain proof still has real uint256 values.
+    winner_ms = int(round(min(winner_times))) if winner_times else int(MAX_HUMAN_MS)
+    loser_ms = int(round(min(loser_times))) if loser_times else int(MAX_HUMAN_MS)
     match.winner = winner
     match.status = "settled"
     match.settled_at = time.time()
@@ -274,14 +334,9 @@ def settle(match: Match) -> dict[str, Any]:
         "winner": winner,
         "loser": loser,
         "stake": match.stake,
-        "validatedTimes": {a: complete[a], b: complete[b]},
+        "roundWins": {a: wins_a, b: wins_b},
+        "validatedTimes": {a: times_a, b: times_b},
         "winningMedianMs": winner_ms,
         "winnerTimeMs": winner_ms,
         "loserTimeMs": loser_ms,
     }
-
-
-def _median(values: list[float]) -> float:
-    s = sorted(values)
-    n = len(s)
-    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
