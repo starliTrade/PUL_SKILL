@@ -30,7 +30,6 @@ import { AntiCheat, getRandomOpponent, TargetSpawnConfig } from '../lib/antiChea
 import { usePulsarStore } from '../store/usePulsarStore';
 import { XPSystem, XPSummary } from '../lib/xpSystem';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
-import { TokenomicsInspectorModal } from '../components/TokenomicsInspectorModal';
 import { ConnectWallet } from '../components/ConnectWallet';
 import { DuelCertificateModal } from '../components/DuelCertificateModal';
 import { sounds } from '../lib/sound';
@@ -82,7 +81,6 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   const [verifyProgress, setVerifyProgress] = useState<number>(0);
   const [earlyClickWarning, setEarlyClickWarning] = useState<boolean>(false);
   const [showTelemetryModal, setShowTelemetryModal] = useState<boolean>(false);
-  const [showTokenomicsModal, setShowTokenomicsModal] = useState<boolean>(false);
   const [xpSummary, setXpSummary] = useState<XPSummary | null>(null);
 
   const startTimeRef = useRef<number>(0);
@@ -428,6 +426,9 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
           <div className="text-right">
             <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-mono">{t('bestOfThree')}</div>
             <div className="text-xs font-semibold text-zinc-200">{opponent}</div>
+            {currentStake === 0 && (
+              <div className="text-[9px] text-amber-400/90 font-mono">{t('practiceModeLabel')}</div>
+            )}
           </div>
           <div className="w-8 h-8 rounded-full bg-zinc-900 border border-white/[0.06] flex items-center justify-center text-xs font-bold text-zinc-200 font-mono">
             {opponent.slice(0, 2).toUpperCase()}
@@ -962,22 +963,6 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                       </div>
                     </div>
 
-                    {/* $PULSAR Token Power */}
-                    <div
-                      onClick={() => {
-                        sounds.playClick();
-                        setShowTokenomicsModal(true);
-                      }}
-                      className="flex items-center justify-between pt-1 border-t border-white/[0.04] text-[9.5px] text-zinc-500 font-mono cursor-pointer hover:text-zinc-300 transition-colors"
-                    >
-                      <div className="flex items-center gap-1">
-                        <Coins className="w-2.5 h-2.5 text-zinc-400" />
-                        <span>{t('miningPower')}:</span>
-                      </div>
-                      <span className="text-zinc-300">
-                        ~{xpSummary.estimatedPulsarTokens} $PULSAR ⓘ
-                      </span>
-                    </div>
                   </motion.div>
                 )}
 
@@ -997,9 +982,8 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                     <div className="flex items-center justify-between pt-1.5 border-t border-white/[0.04] text-[9px] font-mono text-zinc-500">
                       <div className="flex items-center gap-1 text-sky-400">
                         <Cpu className="w-3 h-3" />
-                        <span>EIP-712 Oracle: 0x9E7F...12480</span>
+                        <span>{t('offChainNote')}</span>
                       </div>
-                      <span className="text-emerald-400 font-semibold">{t('instantEscrowPayout')}</span>
                     </div>
                   </div>
                 )}
@@ -1072,7 +1056,6 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
             yourTime: matchResult.yourTime,
             opponentTime: matchResult.opponentTime,
             timestamp: Date.now(),
-            oracleSignature: `0x7a8f9c${Date.now().toString(16).padEnd(58, 'fa3b09')}`,
             opponentName: opponent,
           }}
           playerTag={wallet.playerId}
@@ -1080,15 +1063,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
         />
       )}
 
-      {/* Tokenomics Spec Modal */}
-      {xpSummary && (
-        <TokenomicsInspectorModal
-          isOpen={showTokenomicsModal}
-          onClose={() => setShowTokenomicsModal(false)}
-          userLevel={xpSummary.newLevel}
-          userXP={xpSummary.newTotalXP}
-        />
-      )}
+
 
       {/* Connect Wallet Modal */}
       <ConnectWallet

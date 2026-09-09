@@ -2,5 +2,5 @@
   "name": "PULSAR — Skill Battles",
   "description": "Compete in real-time skill duels. Prove you are human. Winner takes all.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

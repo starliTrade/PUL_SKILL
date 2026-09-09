@@ -10,7 +10,6 @@ import {
   TrendingUp,
   Flame,
   Clock,
-  Coins,
   ChevronRight,
   ExternalLink,
   Sparkles,
@@ -21,7 +20,6 @@ import {
   Cpu,
   Radio,
   Sliders,
-  Info,
   Trophy,
   Edit2,
   X,
@@ -35,7 +33,6 @@ import {
   getAvatarTier,
   AVATAR_STAGES,
 } from '../components/PulsarDynamicAvatar';
-import { TokenomicsInspectorModal } from '../components/TokenomicsInspectorModal';
 import { DuelCertificateModal } from '../components/DuelCertificateModal';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { XPSystem, TierInfo } from '../lib/xpSystem';
@@ -62,7 +59,6 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
 
   const [copiedAddr, setCopiedAddr] = useState(false);
   const [copiedPlayerId, setCopiedPlayerId] = useState(false);
-  const [showInspector, setShowInspector] = useState(false);
   const [selectedMatchForCert, setSelectedMatchForCert] = useState<MatchRecord | null>(null);
   const [depositMsg, setDepositMsg] = useState<string | null>(null);
   const [isEditingTag, setIsEditingTag] = useState(false);
@@ -82,10 +78,6 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
   const totalWinnings = history
     .filter((m) => m.result === 'win')
     .reduce((acc, m) => acc + (m.prize - m.entryFee), 0);
-
-  const estimatedPulsarTokens = (stats.xp * 0.01 * tierInfo.multiplier).toFixed(
-    1
-  );
 
   const handleCopyAddress = () => {
     if (wallet.address) {
@@ -390,16 +382,6 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                   <span className="text-zinc-500">XP</span>
                 </span>
 
-                <button
-                  onClick={() => {
-                    sounds.playClick();
-                    setShowInspector(true);
-                  }}
-                  title="View $PULSAR Tokenomics & Mining Specs"
-                  className="w-4 h-4 rounded bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.06] flex items-center justify-center text-zinc-400 hover:text-white transition-colors cursor-pointer"
-                >
-                  <Info className="w-2.5 h-2.5" />
-                </button>
               </div>
             </div>
 
@@ -417,9 +399,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
             {/* Micro Mining Yield Metric */}
             <div className="flex items-center justify-between text-[9.5px] text-zinc-500 font-mono mt-1.5">
               <span>{t('multiplierLabel', { multiplier: tierInfo.multiplier })}</span>
-              <span className="text-zinc-400 font-medium">
-                {t('estYield', { yield: estimatedPulsarTokens })}
-              </span>
+              <span className="text-zinc-400 font-medium">{tierInfo.name}</span>
             </div>
           </div>
         </motion.div>
@@ -667,13 +647,6 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
         </div>
       </main>
 
-      {/* Tokenomics Modal */}
-      {showInspector && (
-        <TokenomicsInspectorModal
-          isOpen={showInspector}
-          onClose={() => setShowInspector(false)}
-        />
-      )}
 
       {/* Duel Cryptographic Certificate Modal */}
       {selectedMatchForCert && (

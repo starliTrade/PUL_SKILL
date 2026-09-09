@@ -27,7 +27,6 @@ import {
 import { AppHeader } from '../components/AppHeader';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { PulsarDynamicAvatar, getAvatarTier } from '../components/PulsarDynamicAvatar';
-import { TokenomicsInspectorModal } from '../components/TokenomicsInspectorModal';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { XPSystem, TierInfo } from '../lib/xpSystem';
 import { LeaderboardPlayer } from '../lib/realWeb3';
@@ -202,16 +201,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                   </div>
                 </div>
 
-                <button
-                  onClick={() => {
-                    sounds.playClick();
-                    setShowInspector(true);
-                  }}
-                  className="px-2 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-[9.5px] font-mono text-zinc-200 hover:text-white flex items-center gap-1 transition-all cursor-pointer shrink-0 shadow-sm self-center whitespace-nowrap active:scale-95"
-                >
+                <div className="px-2 py-1 rounded-lg bg-white/[0.04] border border-white/[0.08] text-[9.5px] font-mono text-zinc-200 flex items-center gap-1 shrink-0 self-center whitespace-nowrap">
                   <Sparkles className="w-3 h-3 text-sky-400 shrink-0" />
                   <span className="font-semibold">{t('miningMultiplier', { multiplier: tierInfo.multiplier })}</span>
-                </button>
+                </div>
               </div>
 
               {/* High-Impact 2-Col Metric: Balance & Net Profit */}
@@ -506,19 +499,27 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                             </div>
                             <div className="flex items-center justify-between text-zinc-400">
                               <span>{t('settlementHash')}:</span>
-                              <a
-                                href={m.hash ? `https://polygonscan.com/tx/${m.hash}` : 'https://polygonscan.com'}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-sky-400 hover:underline cursor-pointer flex items-center gap-1"
-                              >
-                                {m.hash ? `${m.hash.slice(0, 8)}...${m.hash.slice(-6)}` : 'Polygon 0x7f2a...8c1e'}
-                                <ExternalLink className="w-2.5 h-2.5" />
-                              </a>
+                              {m.hash && /^0x[0-9a-fA-F]{64}$/.test(m.hash) ? (
+                                <a
+                                  href={`https://polygonscan.com/tx/${m.hash}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-sky-400 hover:underline cursor-pointer flex items-center gap-1"
+                                >
+                                  {`${m.hash.slice(0, 8)}...${m.hash.slice(-6)}`}
+                                  <ExternalLink className="w-2.5 h-2.5" />
+                                </a>
+                              ) : (
+                                <span className="text-zinc-500">Off-chain result</span>
+                              )}
                             </div>
                             <div className="flex items-center justify-between text-zinc-400">
                               <span>{t('oracleNonce')}:</span>
-                              <span className="text-emerald-400">{t('verifiedEip712')}</span>
+                              {m.hash && /^0x[0-9a-fA-F]{64}$/.test(m.hash) ? (
+                                <span className="text-emerald-400">{t('verifiedEip712')}</span>
+                              ) : (
+                                <span className="text-amber-400">Pending server settlement</span>
+                              )}
                             </div>
                           </motion.div>
                         )}
@@ -675,13 +676,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
         )}
       </main>
 
-      {/* Protocol / Tokenomics Inspector Modal */}
-      {showInspector && (
-        <TokenomicsInspectorModal
-          isOpen={showInspector}
-          onClose={() => setShowInspector(false)}
-        />
-      )}
     </div>
   );
 };

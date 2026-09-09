@@ -16,7 +16,7 @@ import {
   Clock,
   Trophy,
 } from 'lucide-react';
-import { realWeb3Manager, FriendProfile, SEED_PLAYERS } from '../lib/realWeb3';
+import { realWeb3Manager, FriendProfile } from '../lib/realWeb3';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { cn } from '../lib/utils';
@@ -59,8 +59,7 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
         setSavedFriends([]);
         setSavedAddresses([]);
       }
-      // Pre-populate search with seed accounts for instant user feedback
-      setSearchResults(SEED_PLAYERS);
+      setSearchResults([]);
       setToastMsg(null);
     }
   }, [isOpen, wallet.connected, wallet.address]);
@@ -76,7 +75,7 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
   // Handle Search Input with debounce
   useEffect(() => {
     if (!searchQuery.trim()) {
-      setSearchResults(SEED_PLAYERS);
+      setSearchResults([]);
       setIsSearching(false);
       return;
     }
@@ -287,23 +286,6 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
                   <X className="w-3.5 h-3.5" />
                 </button>
               )}
-            </div>
-
-            {/* Quick Demo Test Pills */}
-            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-              <span className="text-zinc-500 text-[10px]">{t('testTargets')}</span>
-              {SEED_PLAYERS.map((seed) => (
-                <button
-                  key={seed.address}
-                  onClick={() => {
-                    sounds.playClick();
-                    setSearchQuery(seed.playerId);
-                  }}
-                  className="px-2 py-0.5 rounded-md bg-zinc-900/80 hover:bg-zinc-800 border border-white/[0.04] hover:border-white/[0.1] text-zinc-300 font-mono text-[10px] transition-all cursor-pointer"
-                >
-                  {seed.playerId}
-                </button>
-              ))}
             </div>
 
             {/* Results List */}

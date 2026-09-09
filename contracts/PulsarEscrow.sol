@@ -76,7 +76,7 @@ abstract contract ReentrancyGuard {
 contract PulsarEscrow is Ownable, ReentrancyGuard {
     uint256 public constant FEE_DENOMINATOR = 10000; // 100.00%
     uint256 public constant PLATFORM_FEE_BPS = 200;  // 2.00% (98% to winner)
-    uint256 public constant MATCH_TIMEOUT = 1 hours;
+    uint256 public constant MATCH_TIMEOUT = 10 minutes; // P1.17: aligned with game-server expiry
 
     IERC20 public immutable paymentToken;
     address public treasuryWallet;
@@ -110,6 +110,7 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         uint256 winnerTimeMs;
         uint256 loserTimeMs;
         uint256 nonce;
+        uint256 deadline;   // P1.17: settlement must be submitted before this Unix time
         bytes signature;
     }
 
@@ -185,7 +186,13 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         require(duel.status == MatchStatus.Active, "Match is not active");
         require(proof.winner == duel.player1 || proof.winner == duel.player2, "Winner not participant");
 
+        // P1.17: a signed settlement expires — the referee must re-sign with
+        // fresh state if submission is delayed past the deadline.
+        require(block.timestamp <= proof.deadline, "Settlement proof expired");
+
         // Verify cryptographic oracle signature
+        // NOTE: preimage MUST stay byte-identical to api/oracle.py
+        // build_settlement_digest(). They are one protocol.
         bytes32 ethSignedHash = keccak256(
             abi.encodePacked(
                 "\x19Ethereum Signed Message:\n32",
@@ -196,6 +203,7 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
                         proof.winnerTimeMs,
                         proof.loserTimeMs,
                         proof.nonce,
+                        proof.deadline,
                         block.chainid,
                         address(this)
                     )
@@ -280,6 +288,16 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         }
 
         require(v == 27 || v == 28, "Invalid signature v value");
+
+        // P1.17: enforce low-s (EIP-2 style) to kill signature malleability.
+        // (s, r, v) and (s', r, v') with s' = n - s recover the SAME address;
+        // without this check one oracle signature could be replayed twice
+        // with different usedSignatures hashes.
+        require(
+            uint256(s) <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0,
+            "Signature s-value too high"
+        );
+
         return ecrecover(ethSignedHash, v, r, s);
     }
 }

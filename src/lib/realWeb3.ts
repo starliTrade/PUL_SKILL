@@ -17,10 +17,9 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 import { db } from './firebase';
+import { buildSiweMessage, verifySignedSiwe, loadPersistedSiweSession } from './siwe';
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
-import {
-  isMobileDevice,
-  isWalletInAppBrowser,
+import { isMobileDevice,  isWalletInAppBrowser,
   getWalletConnectDeepLink,
   getNativeSchemeUri,
   openWalletConnectInNativeApp,
@@ -157,64 +156,6 @@ export interface LeaderboardPlayer {
   level: number;
 }
 
-export const SEED_PLAYERS: FriendProfile[] = [
-  {
-    address: '0x89205a3a3b2a69de6dbf7f01ed13b2108b2c43e7',
-    playerId: 'VortexSniper#42',
-    shortAddress: '0x8920...43e7',
-    level: 8,
-    xp: 2840,
-    wins: 24,
-    totalMatches: 31,
-    bestReactionMs: 162,
-    winRate: 77,
-    status: 'online',
-    bio: 'Sub-170ms kinetic specialist · Ready for high-stakes duels',
-  },
-  {
-    address: '0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc',
-    playerId: 'CyberPhantom#99',
-    shortAddress: '0x3c44...93bc',
-    level: 6,
-    xp: 1950,
-    wins: 19,
-    totalMatches: 28,
-    bestReactionMs: 178,
-    winRate: 68,
-    status: 'online',
-    bio: 'Zero-latency Polygon grinder · Quick reflexes',
-  },
-  {
-    address: '0x90f79bf6eb2c4f870365e785982e1f101e93b906',
-    playerId: 'NovaRider#07',
-    shortAddress: '0x90f7...b906',
-    level: 4,
-    xp: 1120,
-    wins: 12,
-    totalMatches: 21,
-    bestReactionMs: 194,
-    winRate: 57,
-    status: 'in_game',
-    bio: 'Casual micro-stake challenger · Practice makes perfect',
-  },
-];
-
-export const SEED_LEADERBOARD: LeaderboardPlayer[] = SEED_PLAYERS.map((s) => ({
-  address: s.address,
-  shortAddress: s.shortAddress,
-  name: s.playerId,
-  playerId: s.playerId,
-  wins: s.wins,
-  totalMatches: s.totalMatches,
-  bestReactionMs: s.bestReactionMs,
-  reactionTime: s.bestReactionMs,
-  winRate: s.winRate,
-  totalEarnedUSDT: Math.round(s.wins * 1.96 * 100) / 100,
-  totalWinnings: Math.round(s.wins * 1.96 * 100) / 100,
-  xp: s.xp,
-  level: s.level,
-}));
-
 class RealWeb3Manager {
   private currentAccount: ConnectedAccountState = {
     address: '',
@@ -288,6 +229,7 @@ class RealWeb3Manager {
     return has;
   }
 
+  private siweVerified = false;
   private wcProvider: any = null;
   private wcInitPromise: Promise<any> | null = null;
   private wcConnectPromise: Promise<ConnectedAccountState> | null = null;
@@ -644,8 +586,9 @@ class RealWeb3Manager {
       } catch {}
     }
 
-    // Fallback: If we have a valid saved address, preserve the login state!
-    if (savedAddr && /^0x[a-fA-F0-9]{40}$/.test(savedAddr)) {
+    // P0.5 — a persisted address alone is NOT identity. It only restores a
+    // viewer; real access requires a wallet signature (SIWE) this session.
+    if (this.siweVerified && savedAddr && /^0x[a-fA-F0-9]{40}$/.test(savedAddr)) {
       return await this.setConnectedAddress(savedAddr, savedProvider, 137);
     }
 
@@ -1005,16 +948,55 @@ class RealWeb3Manager {
     return await this.connectWalletConnectTargeted(provider, onUri);
   }
 
+  /**
+   * P0.5 — DEPRECATED forgery vector. This method previously allowed claiming
+   * any address without proving ownership. It is now disabled: real ownership
+   * proof flows through requestOwnershipSignature (SIWE) instead.
+   */
   public async connectDirect(address: string, providerName: string = 'EVM Wallet'): Promise<ConnectedAccountState> {
-    let cleanAddr = address.trim();
-    if (!cleanAddr.startsWith('0x') && !cleanAddr.startsWith('0X')) {
-      cleanAddr = `0x${cleanAddr}`;
+    void address;
+    void providerName;
+    throw new Error(
+      'Direct address entry is disabled. Connect a real wallet (or scan the WalletConnect code) to prove ownership.'
+    );
+  }
+
+  /**
+   * P0.5 — builds the EIP-4361 (SIWE) ownership message bound to this exact
+   * origin. The signature over this message is the ONLY accepted identity
+   * proof; it gates privileged writes and future payout authorization.
+   */
+  public buildOwnershipMessage(address: string): string {
+    if (typeof window === 'undefined') {
+      throw new Error('SIWE is only available in the browser.');
     }
-    // Validate that it's a valid 40-hex-character Ethereum/Polygon address
-    if (!/^0x[a-fA-F0-9]{40}$/.test(cleanAddr)) {
-      throw new Error('Invalid Ethereum/Polygon address. Address must be 42 characters starting with 0x.');
+    return buildSiweMessage(address.toLowerCase(), window.location.host);
+  }
+
+  /**
+   * P0.5 — recovers the signer via ecrecover and marks the session verified
+   * only if it matches the connected address.
+   */
+  public async verifyOwnershipSignature(address: string, message: string, signature: string): Promise<boolean> {
+    const ok = await verifySignedSiwe(message, signature, address);
+    if (ok) {
+      this.siweVerified = true;
+      try {
+        const session = loadPersistedSiweSession();
+        localStorage.setItem(
+          'pulsar_siwe_session',
+          JSON.stringify(session || { address: address.toLowerCase(), issuedAt: Date.now(), expiresAt: Date.now() + 24 * 60 * 60 * 1000 })
+        );
+      } catch {}
     }
-    return await this.setConnectedAddress(cleanAddr, providerName, 137);
+    return ok;
+  }
+
+  /** EIP-1193 provider of the currently connected wallet (injected or WalletConnect). */
+  public getActiveEip1193Provider(): any | null {
+    if (this.wcProvider?.connected) return this.wcProvider;
+    const injected = typeof window !== 'undefined' ? (window as any).ethereum : null;
+    return injected || null;
   }
 
   public disconnect(): void {
@@ -1025,6 +1007,7 @@ class RealWeb3Manager {
     } catch {
       /* ignore */
     }
+    this.siweVerified = false;
     this.wcConnectPromise = null;
     this.lastWcUri = null;
     this.lastHandoff = null;
@@ -1118,7 +1101,9 @@ class RealWeb3Manager {
       shortAddress: short,
       chainId,
       networkName: chainId === 137 ? 'Polygon Mainnet' : chainId === 1 ? 'Ethereum Mainnet' : chainId === 56 ? 'BNB Chain' : 'EVM Network',
-      balanceUSDT: userData.vaultBalance || 0,
+      // P1.16: start at zero; the REAL on-chain USDT balance arrives from
+      // fetchLiveOnChainBalances(). Never seed from the profile record.
+      balanceUSDT: 0,
       balancePOL: 0,
       connected: true,
       providerName,
@@ -1332,7 +1317,11 @@ class RealWeb3Manager {
           yourTime: match.yourTime || 0,
           opponentTime: match.opponentTime || 0,
           timestamp: match.timestamp || Date.now(),
-          oracleSignature: match.oracleSignature || '0x_oracle_verified',
+          // HONESTY RULE: only persist a real signature/tx hash. Local results
+          // are stored without oracle claims — never fabricated.
+          ...(match.oracleSignature && /^0x[0-9a-fA-F]{64,65}$/.test(match.oracleSignature)
+            ? { oracleSignature: match.oracleSignature }
+            : {}),
         },
         { merge: true }
       );
@@ -1420,7 +1409,9 @@ class RealWeb3Manager {
         return results;
       }
 
-      return SEED_LEADERBOARD;
+      // HONESTY RULE: no fabricated players. An empty leaderboard is the truth
+      // until real duels are recorded.
+      return [];
     } catch (e) {
       console.warn('Leaderboard query handled with local cache fallback:', e);
       try {
@@ -1430,7 +1421,7 @@ class RealWeb3Manager {
           if (Array.isArray(parsed) && parsed.length > 0) return parsed;
         }
       } catch {}
-      return SEED_LEADERBOARD;
+      return [];
     }
   }
 
@@ -1440,18 +1431,7 @@ class RealWeb3Manager {
 
     const matched: FriendProfile[] = [];
 
-    // 1. Check in-memory & verified seed profiles
-    for (const seed of SEED_PLAYERS) {
-      if (
-        seed.address.toLowerCase().includes(q) ||
-        seed.playerId.toLowerCase().includes(q) ||
-        seed.shortAddress.toLowerCase().includes(q)
-      ) {
-        matched.push(seed);
-      }
-    }
-
-    // 2. If it's a valid EVM address format and not found in seeds, generate dynamic verified profile
+    // Only real registered players are returned. No fabricated profiles.
     if (q.startsWith('0x') && q.length >= 6) {
       const alreadyAdded = matched.some((m) => m.address.toLowerCase() === q);
       if (!alreadyAdded) {
@@ -1502,12 +1482,8 @@ class RealWeb3Manager {
 
     for (const addr of friendAddrs) {
       const cleanAddr = addr.toLowerCase();
-      const seed = SEED_PLAYERS.find((s) => s.address.toLowerCase() === cleanAddr);
-      if (seed) {
-        friends.push(seed);
-      } else {
-        const friendData = this.loadFromLocal(cleanAddr);
-        if (friendData) {
+      const friendData = this.loadFromLocal(cleanAddr);
+      if (friendData) {
           friends.push({
             address: friendData.address,
             playerId: friendData.playerId || `Player#${friendData.address.slice(2, 6)}`,
@@ -1533,7 +1509,6 @@ class RealWeb3Manager {
             winRate: 0,
             status: 'online',
           });
-        }
       }
     }
 

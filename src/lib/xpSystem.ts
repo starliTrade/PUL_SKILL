@@ -46,7 +46,6 @@ export interface XPSummary {
   currentLevelXP: number;
   nextLevelThresholdXP: number;
   levelProgressPercent: number;
-  estimatedPulsarTokens: number;
   tierName: string;
   tierMultiplier: number;
 }
@@ -64,25 +63,9 @@ export interface TierInfo {
   description: string;
 }
 
-export const TOKENOMICS_SPEC = {
-  tokenName: 'Pulsar Protocol Token',
-  tokenTicker: '$PULSAR',
-  totalSupply: '100,000,000 $PULSAR',
-  network: 'Polygon Mainnet (Chain ID 137)',
-  contractStandard: 'ERC-20 with EIP-712 Meta-Transactions',
-  distribution: [
-    { label: 'Proof-of-Reflex Skill Mining (XP Conversion)', percent: 65, color: 'bg-sky-400' },
-    { label: 'Ecosystem Liquidity & Staking Vaults', percent: 15, color: 'bg-emerald-400' },
-    { label: 'Seasonal Tournaments & Prize Pools', percent: 10, color: 'bg-amber-400' },
-    { label: 'Core Development & Security Audits (24m Linear Vesting)', percent: 10, color: 'bg-purple-400' },
-  ],
-  utilities: [
-    '0% Platform Protocol Fee discount on duel settlements when holding >= 500 $PULSAR',
-    'Staking into High-Roller Escrow Liquidity Vaults with APY revenue share from 2% protocol rake',
-    'Exclusive access to Tier IV Apex Grandmaster Invitational Tournaments',
-    'Decentralized Governance Voting on new game modes and EIP-712 anti-cheat latency thresholds',
-  ],
-};
+// P0.10 — REMOVED: TOKENOMICS_SPEC. There is no $PULSAR token. Displaying a
+// token supply, distribution, staking APY, and "mining yield" for an asset that
+// does not exist is a fabricated financial claim, not a feature.
 
 export class XPSystem {
   public static getLevel(totalXP: number): number {
@@ -202,7 +185,6 @@ export class XPSystem {
         currentLevelXP: Math.max(0, inLevel),
         nextLevelThresholdXP: span,
         levelProgressPercent: Math.max(0, progress),
-        estimatedPulsarTokens: parseFloat((currentXP * 0.01 * tier.multiplier).toFixed(2)),
         tierName: tier.name,
         tierMultiplier: tier.multiplier,
       };
@@ -249,7 +231,6 @@ export class XPSystem {
       currentLevelXP: Math.max(0, currentInLevel),
       nextLevelThresholdXP: xpSpan,
       levelProgressPercent: Math.max(0, progressPercent),
-      estimatedPulsarTokens: parseFloat((newTotalXP * 0.01 * tier.multiplier).toFixed(2)),
       tierName: tier.name,
       tierMultiplier: tier.multiplier,
     };

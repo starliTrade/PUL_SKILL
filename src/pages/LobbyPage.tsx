@@ -25,6 +25,7 @@ import { AntiCheat, getRandomOpponent } from '../lib/antiCheat';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { realWeb3Manager, MatchRecord } from '../lib/realWeb3';
+import { escrowStatus } from '../lib/escrowFlow';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
 
@@ -53,6 +54,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
   const [searchStep, setSearchStep] = useState(0);
   const [mounted, setMounted] = useState(false);
   const [showWalletAlert, setShowWalletAlert] = useState(false);
+  const [escrowOfflineAlert, setEscrowOfflineAlert] = useState(false);
   const [showFriendModal, setShowFriendModal] = useState(false);
   const [isRefreshingOnChain, setIsRefreshingOnChain] = useState(false);
 
@@ -75,6 +77,14 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
   const prize = (selectedStake * 2) * 0.98;
 
   const handleStartMatchmaking = () => {
+    // P1.15: real-money mode is honest — it only exists when the escrow
+    // contract is actually deployed and configured. No theater.
+    if (gameMode === 'real' && !escrowStatus().configured) {
+      sounds.playError();
+      setEscrowOfflineAlert(true);
+      return;
+    }
+
     if (gameMode === 'real' && !wallet.connected) {
       sounds.playError();
       setShowWalletAlert(true);
@@ -389,7 +399,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
             </div>
             <div className="flex items-center gap-1 text-[10px] text-zinc-400 font-mono">
               <Users className="w-3 h-3 text-emerald-400" />
-              <span>{t('liquidityHandshake')}</span>
+              <span>{t('liveFeedLabel')}</span>
             </div>
           </div>
 
@@ -405,12 +415,8 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
               if (matchesToDisplay.length === 0) {
                 return (
                   <div className="px-4 py-5 text-center">
-                    <div className="flex items-center justify-center gap-1.5 text-zinc-400 text-xs font-mono mb-1">
-                      <Radio className="w-3.5 h-3.5 text-sky-400 animate-pulse" />
-                      <span>{t('oracleVerified')}</span>
-                    </div>
                     <p className="text-[11px] text-zinc-500 font-mono">
-                      {t('noMatchesYet')}
+                      {t('noLiveDuels')}
                     </p>
                   </div>
                 );
@@ -467,7 +473,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                         {isWin ? `+$${prizeVal.toFixed(2)}` : `-$${stakeVal}`}
                       </div>
                       <div className="text-[9px] text-zinc-600">
-                        Polygon Escrow
+                        Staked
                       </div>
                     </div>
                   </div>
@@ -522,6 +528,41 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
       )}
 
       {/* Insufficient Funds / Connect Wallet Alert Modal */}
+      {escrowOfflineAlert && mounted && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-sm linear-card p-5 relative"
+          >
+            <button
+              onClick={() => setEscrowOfflineAlert(false)}
+              className="absolute top-3 right-3 text-zinc-400 hover:text-white cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 mx-auto mb-3">
+              <AlertCircle className="w-5 h-5" />
+            </div>
+
+            <h3 className="text-sm font-bold text-white text-center mb-1">{t('escrowOfflineTitle')}</h3>
+            <p className="text-xs text-zinc-400 text-center mb-4 leading-relaxed">{t('escrowOfflineDesc')}</p>
+
+            <button
+              onClick={() => {
+                setEscrowOfflineAlert(false);
+                setGameMode('practice');
+              }}
+              className="w-full py-2 rounded-lg bg-zinc-900 border border-white/[0.08] text-xs font-semibold text-zinc-200 hover:text-white cursor-pointer"
+            >
+              {t('practiceArenaTitle')}
+            </button>
+          </motion.div>
+        </div>,
+        document.body
+      )}
+
       {showWalletAlert && mounted && createPortal(
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl">
           <motion.div

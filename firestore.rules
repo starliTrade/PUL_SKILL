@@ -1,22 +1,59 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // P0.6 — ECONOMY LOCKDOWN
+    //
+    // Clients are untrusted. Without a verified backend (P1 game server via
+    // Admin SDK, which bypasses these rules), no client may grant itself
+    // wins, XP, level, match count, or vault balance. Profile-only fields
+    // (player tag, saved friends, practice benchmarks) remain editable.
+
+    function economyUnchanged() {
+      return request.resource.data.wins == resource.data.wins
+        && request.resource.data.losses == resource.data.losses
+        && request.resource.data.voids == resource.data.voids
+        && request.resource.data.totalMatches == resource.data.totalMatches
+        && request.resource.data.xp == resource.data.xp
+        && request.resource.data.level == resource.data.level
+        && request.resource.data.vaultBalance == resource.data.vaultBalance;
+    }
+
     match /users/{userId} {
       allow read: if true;
-      allow write: if true;
+      // New profiles must start with a zeroed economy — no self-granted stats.
+      allow create: if request.resource.data.wins == 0
+        && request.resource.data.losses == 0
+        && request.resource.data.voids == 0
+        && request.resource.data.totalMatches == 0
+        && request.resource.data.xp == 0
+        && request.resource.data.level == 1
+        && (!('vaultBalance' in request.resource.data) || request.resource.data.vaultBalance == 0);
+      // Updates may edit the profile, never the economy.
+      allow update: if economyUnchanged();
+      allow delete: if false;
     }
+
+    // Self-reported match results and leaderboard rows are not trustworthy.
+    // Only the settlement server writes these collections.
     match /matches/{matchId} {
       allow read: if true;
-      allow create: if true;
-      allow update: if true;
+      allow write: if false;
     }
+
     match /leaderboard/{entry} {
       allow read: if true;
-      allow write: if true;
+      allow write: if false;
     }
+
+    // Username registry: unique by document id. A registration can never be
+    // re-pointed to a different address (anti-takeover).
     match /usernames/{username} {
       allow read: if true;
-      allow write: if true;
+      allow create: if request.resource.data.address is string
+        && request.resource.data.address.matches('^0x[0-9a-fA-F]{40}$');
+      allow update: if request.resource.data.address == resource.data.address;
+      allow delete: if false;
     }
   }
 }

@@ -1,10 +1,6 @@
-import React, { useState } from 'react';
-import { motion } from 'motion/react';
-import { Info } from 'lucide-react';
+import React from 'react';
 import { XPSystem, TierInfo } from '../lib/xpSystem';
-import { TokenomicsInspectorModal } from './TokenomicsInspectorModal';
 import { PulsarStarIcon } from './PulsarLogo';
-import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 
 interface SkillXPCompactCardProps {
@@ -18,7 +14,6 @@ export const SkillXPCompactCard: React.FC<SkillXPCompactCardProps> = ({
   level,
   className,
 }) => {
-  const [showInspector, setShowInspector] = useState(false);
   const tier: TierInfo = XPSystem.getTierInfo(level);
 
   const curLevelBaseXP = XPSystem.getXPForLevel(level);
@@ -27,78 +22,54 @@ export const SkillXPCompactCard: React.FC<SkillXPCompactCardProps> = ({
   const inLevel = Math.max(0, xp - curLevelBaseXP);
   const progressPercent = Math.min(100, Math.max(0, Math.round((inLevel / span) * 100)));
 
-  const estimatedPulsarTokens = (xp * 0.01 * tier.multiplier).toFixed(2);
-
   return (
-    <>
-      <div
-        className={cn(
-          'p-3 rounded-xl bg-zinc-950/80 border border-white/[0.06] relative overflow-hidden',
-          className
-        )}
-      >
-        <div className="flex items-center justify-between gap-2">
-          {/* Left: Level and Tier Badge */}
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-6 h-6 rounded-lg bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-zinc-300 shrink-0">
-              <PulsarStarIcon size={13} glow={false} showFlare={false} />
-            </div>
-
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-semibold text-zinc-200">
-                  Level {level}
-                </span>
-                <span className="text-[9px] font-mono text-zinc-400 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.06]">
-                  {tier.name}
-                </span>
-              </div>
-            </div>
+    <div
+      className={cn(
+        'p-3 rounded-xl bg-zinc-950/80 border border-white/[0.06] relative overflow-hidden',
+        className
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        {/* Left: Level and Tier Badge */}
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-6 h-6 rounded-lg bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-zinc-300 shrink-0">
+            <PulsarStarIcon size={13} glow={false} showFlare={false} />
           </div>
 
-          {/* Right: XP & Token power */}
-          <div className="flex items-center gap-2 shrink-0">
-            <div className="text-right">
-              <div className="text-[11px] font-mono text-zinc-300 font-semibold">
-                {inLevel.toLocaleString()} / {span.toLocaleString()} <span className="text-zinc-500 font-normal">XP</span>
-              </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-semibold text-zinc-200">
+                Level {level}
+              </span>
+              <span className="text-[9px] font-mono text-zinc-400 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.06]">
+                {tier.name}
+              </span>
             </div>
-
-            <button
-              onClick={() => {
-                sounds.playClick();
-                setShowInspector(true);
-              }}
-              title="View $PULSAR Tokenomics & Mining Specs"
-              className="w-6 h-6 rounded-md bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.06] flex items-center justify-center text-zinc-400 hover:text-white transition-colors cursor-pointer"
-            >
-              <Info className="w-3 h-3" />
-            </button>
           </div>
         </div>
 
-        {/* Level Progress Bar */}
-        <div className="mt-2 space-y-1">
-          <div className="w-full bg-zinc-800/60 rounded-full h-1 overflow-hidden">
-            <div
-              style={{ width: `${progressPercent}%` }}
-              className="h-full bg-zinc-300 rounded-full transition-all duration-500"
-            />
-          </div>
-          <div className="flex justify-between items-center text-[9px] text-zinc-500 font-mono">
-            <span>{progressPercent}% to Lv {level + 1}</span>
-            <span>~{estimatedPulsarTokens} $PULSAR mining</span>
+        {/* Right: XP */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="text-right">
+            <div className="text-[11px] font-mono text-zinc-300 font-semibold">
+              {inLevel.toLocaleString()} / {span.toLocaleString()} <span className="text-zinc-500 font-normal">XP</span>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Tokenomics Spec Modal */}
-      <TokenomicsInspectorModal
-        isOpen={showInspector}
-        onClose={() => setShowInspector(false)}
-        userLevel={level}
-        userXP={xp}
-      />
-    </>
+      {/* Level Progress Bar */}
+      <div className="mt-2 space-y-1">
+        <div className="w-full bg-zinc-800/60 rounded-full h-1 overflow-hidden">
+          <div
+            style={{ width: `${progressPercent}%` }}
+            className="h-full bg-zinc-300 rounded-full transition-all duration-500"
+          />
+        </div>
+        <div className="flex justify-between items-center text-[9px] text-zinc-500 font-mono">
+          <span>{progressPercent}% to Lv {level + 1}</span>
+        </div>
+      </div>
+    </div>
   );
 };
