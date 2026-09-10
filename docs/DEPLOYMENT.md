@@ -11,35 +11,63 @@ step in order; the Readiness Checklist at the bottom is the final gate.
 - A funded deployer wallet on Polygon (holds MATIC for gas; **never** used as the oracle key)
 - Firebase project (the one the client already uses) with Firestore enabled
 - A Sentry account (free tier is enough to start)
+- A free [Polygonscan API key](https://polygonscan.com/apis) (for contract verification)
+- Free testnet POL from the [Polygon faucet](https://faucet.polygon.technology/) (Amoy)
+
+### Chain strategy (Amoy first — this is the rehearsal phase)
+
+The client now defaults to **Polygon Amoy (80002)** and only switches to
+mainnet (137) via `VITE_CHAIN_ID=137` after the Readiness Checklist passes.
+On Amoy the escrow runs against `MockUSDT` (deployed by the script below, with
+a built-in faucet), so the entire money path is rehearsed with zero risk.
 
 ---
 
 ## 1. Deploy PulsarEscrow
 
-```bash
-cd contracts          # or repo root — contracts/PulsarEscrow.sol
-forge init --no-commit  # first time only
-forge build
-
-forge create PulsarEscrow \
-  --rpc-url https://polygon-rpc.com \
-  --private-key $DEPLOYER_KEY \
-  --constructor-args \
-    0xc2132D05D31c914a87C6611C10748AEb04B58e8F \   # USDC? NO — USDT on Polygon
-    <TREASURY_WALLET_ADDRESS> \
-    <ORACLE_WALLET_ADDRESS>
-```
-
-- **paymentToken**: USDT on Polygon `0xc2132D05D31c914a87C6611C10748AEb04B58e8F`
-- **treasuryWallet**: your platform revenue wallet (receives the 2% rake)
-- **oracleSigner**: the PUBLIC address matching `ORACLE_PRIVATE_KEY` used by the game server (step 3)
-
-Then verify:
+First scaffold forge-std (one time) and run the test suite on your machine:
 
 ```bash
-forge verify-contract <DEPLOYED_ADDRESS> contracts/PulsarEscrow.sol:PulsarEscrow \
-  --chain-id 137 --etherscan-api-key $POLYGONSCAN_API_KEY
+cd contracts && forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-commit
+forge test        # 10-test lifecycle suite: replay, forged sig, high-s, deadlines, refunds
 ```
+
+Then deploy with the provided script (Amoy shown; mainnet = add `--chain 137`):
+
+```bash
+export DEPLOYER_PRIVATE_KEY=0x...        # gas wallet, funded with testnet POL
+export TREASURY_ADDRESS=0x...            # receives the 2% rake
+export ORACLE_SIGNER_ADDRESS=0x...       # public addr of ORACLE_PRIVATE_KEY (step 2)
+# On Amoy leave PAYMENT_TOKEN_ADDRESS unset -> MockUSDT is deployed automatically
+
+forge script script/Deploy.s.sol --rpc-url https://rpc-amoy.polygon.technology --broadcast
+# => prints MockUSDT address + PulsarEscrow address
+```
+
+Fund the two test wallets on Amoy:
+
+```bash
+cast send $MOCK_USDT "faucet(address,uint256)" $PLAYER1 5000000000 --rpc-url ... --private-key $DEPLOYER_PRIVATE_KEY
+```
+
+Verify on the explorer:
+
+```bash
+forge verify-contract <ESCROW_ADDRESS> contracts/PulsarEscrow.sol:PulsarEscrow \
+  --chain-id 80002 --verifier-url https://api-amoy.polygonscan.com/api \
+  --etherscan-api-key $POLYGONSCAN_API_KEY
+```
+
+When moving to mainnet (137): set `PAYMENT_TOKEN_ADDRESS=0xc2132D05D31c914a87C6611C10748AEb04B58e8F`
+(canonical USDT), verify against `polygonscan.com`, and re-derive every address.
+
+⚠️ The oracle key signs real payouts. Use a dedicated key holding no funds;
+give it only signing authority. Consider moving production signing to AWS KMS
+or GCP KMS (the signing surface in `api/oracle.py` is designed for it).
+
+---
+
+## 1. Deploy PulsarEscrow
 
 Generate the oracle key (run ONCE, on a secure machine):
 
@@ -93,6 +121,8 @@ Set in Freebuff **Settings → Environment** (dev) **and** in
 | `VITE_ESCROW_ADDRESS` | Deployed contract (real-money mode activates when present) |
 | `VITE_TREASURY_WALLET_ADDRESS` | Public treasury (display purposes) |
 | `VITE_ORACLE_WALLET_ADDRESS` | Public oracle address (display purposes) |
+| `VITE_CHAIN_ID` | `80002` (Amoy rehearsal — the default) / `137` (mainnet, checklist-gated) |
+| `VITE_FAUCET_URL` (testnet) | MockUSDT/feucet link shown to players on Amoy |
 | `VITE_GAME_SERVER_URL` | e.g. `https://api.yourdomain.com` (no trailing slash) |
 | `VITE_WALLETCONNECT_PROJECT_ID` | From cloud.reown.com — needed for mobile wallets |
 | `VITE_SENTRY_DSN` (optional) | Client error monitoring |

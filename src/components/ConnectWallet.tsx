@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { usePulsarStore } from '../store/usePulsarStore';
+import { explorerAddressUrl } from '../lib/chain';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
@@ -690,7 +691,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                   </button>
 
                   <a
-                    href={`https://polygonscan.com/address/${fullAddr}`}
+                    href={explorerAddressUrl(fullAddr)}
                     target="_blank"
                     rel="noreferrer"
                     className="p-1.5 rounded-lg border border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white transition-colors cursor-pointer"

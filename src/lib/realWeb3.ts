@@ -17,6 +17,7 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 import { db } from './firebase';
+import { CHAIN, TOKENS } from './chain';
 import { buildSiweMessage, verifySignedSiwe, loadPersistedSiweSession } from './siwe';
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
 import { isMobileDevice,  isWalletInAppBrowser,
@@ -160,8 +161,8 @@ class RealWeb3Manager {
   private currentAccount: ConnectedAccountState = {
     address: '',
     shortAddress: '',
-    chainId: 137,
-    networkName: 'Polygon Mainnet',
+    chainId: CHAIN.chainId,
+    networkName: CHAIN.name,
     balanceUSDT: 0,
     connected: false,
     providerName: '',
@@ -180,7 +181,7 @@ class RealWeb3Manager {
           if (!accounts || accounts.length === 0) {
             this.disconnect();
           } else {
-            this.setConnectedAddress(accounts[0], this.currentAccount.providerName || 'MetaMask', 137);
+            this.setConnectedAddress(accounts[0], this.currentAccount.providerName || 'MetaMask', CHAIN.chainId);
           }
         });
 
@@ -311,7 +312,7 @@ class RealWeb3Manager {
         }
       }
       if (accounts && accounts.length > 0) {
-        void this.setConnectedAddress(accounts[0], this.pendingWalletName || 'WalletConnect', provider.chainId || 137);
+        void this.setConnectedAddress(accounts[0], this.pendingWalletName || 'WalletConnect', provider.chainId || CHAIN.chainId);
       }
     });
 
@@ -323,7 +324,7 @@ class RealWeb3Manager {
       if (!accounts || accounts.length === 0) {
         this.disconnect();
       } else {
-        this.setConnectedAddress(accounts[0], this.pendingWalletName || 'WalletConnect', 137);
+        this.setConnectedAddress(accounts[0], this.pendingWalletName || 'WalletConnect', CHAIN.chainId);
       }
     });
 
@@ -376,7 +377,7 @@ class RealWeb3Manager {
             await this.setConnectedAddress(
               accounts[0],
               this.pendingWalletName || 'Trust Wallet',
-              this.wcProvider.chainId || 137
+              this.wcProvider.chainId || CHAIN.chainId
             );
             return;
           }
@@ -438,8 +439,8 @@ class RealWeb3Manager {
 
       const initTask = EthereumProviderClass.init({
         projectId,
-        chains: [137],
-        optionalChains: [1, 56, 42161],
+        chains: [CHAIN.chainId],
+        optionalChains: [137, 1, 56, 42161],
         showQrModal: false,
         disableProviderPing: true,
         metadata: this.wcMetadata(),
@@ -558,14 +559,14 @@ class RealWeb3Manager {
 
         if (accounts && accounts.length > 0) {
           this.pendingWalletName = savedProvider;
-          return await this.setConnectedAddress(accounts[0], savedProvider, provider.chainId || 137);
+          return await this.setConnectedAddress(accounts[0], savedProvider, provider.chainId || CHAIN.chainId);
         } else if (savedAddr) {
-          return await this.setConnectedAddress(savedAddr, savedProvider, 137);
+          return await this.setConnectedAddress(savedAddr, savedProvider, CHAIN.chainId);
         }
       } catch (err) {
         console.warn('[Pulsar Web3] WalletConnect session recovery fallback:', err);
         if (savedAddr) {
-          return await this.setConnectedAddress(savedAddr, savedProvider, 137);
+          return await this.setConnectedAddress(savedAddr, savedProvider, CHAIN.chainId);
         }
       }
     }
@@ -576,7 +577,7 @@ class RealWeb3Manager {
       try {
         const accounts: string[] = await injected.request({ method: 'eth_accounts' });
         if (accounts && accounts.length > 0 && accounts[0].toLowerCase() === savedAddr.toLowerCase()) {
-          let chainId = 137;
+          let chainId: number = CHAIN.chainId;
           try {
             const chainHex = await injected.request({ method: 'eth_chainId' });
             if (chainHex) chainId = parseInt(chainHex, 16);
@@ -589,7 +590,7 @@ class RealWeb3Manager {
     // P0.5 — a persisted address alone is NOT identity. It only restores a
     // viewer; real access requires a wallet signature (SIWE) this session.
     if (this.siweVerified && savedAddr && /^0x[a-fA-F0-9]{40}$/.test(savedAddr)) {
-      return await this.setConnectedAddress(savedAddr, savedProvider, 137);
+      return await this.setConnectedAddress(savedAddr, savedProvider, CHAIN.chainId);
     }
 
     return null;
@@ -639,7 +640,7 @@ class RealWeb3Manager {
           return await this.setConnectedAddress(
             provider.accounts[0],
             providerName,
-            provider.chainId || 137
+            provider.chainId || CHAIN.chainId
           );
         }
 
@@ -688,7 +689,7 @@ class RealWeb3Manager {
         }
 
         if (accounts && accounts.length > 0) {
-          const chainId = provider.chainId || 137;
+          const chainId = provider.chainId || CHAIN.chainId;
           return await this.setConnectedAddress(accounts[0], providerName, chainId);
         }
         throw new Error('No accounts selected in your wallet.');
@@ -780,19 +781,19 @@ class RealWeb3Manager {
       });
 
       if (accounts && accounts.length > 0) {
-        let chainId = 137;
+        let chainId: number = CHAIN.chainId;
         try {
           const chainIdHex = await provider.request({ method: 'eth_chainId' });
           if (chainIdHex) chainId = parseInt(chainIdHex, 16);
         } catch {}
 
-        if (chainId !== 137) {
+        if (chainId !== CHAIN.chainId) {
           try {
             await provider.request({
               method: 'wallet_switchEthereumChain',
-              params: [{ chainId: '0x89' }],
+              params: [{ chainId: CHAIN.chainHex }],
             });
-            chainId = 137;
+            chainId = CHAIN.chainId;
           } catch (switchError: any) {
             if (switchError.code === 4902) {
               try {
@@ -800,15 +801,15 @@ class RealWeb3Manager {
                   method: 'wallet_addEthereumChain',
                   params: [
                     {
-                      chainId: '0x89',
-                      chainName: 'Polygon Mainnet',
-                      nativeCurrency: { name: 'POL', symbol: 'POL', decimals: 18 },
-                      rpcUrls: ['https://polygon-rpc.com'],
-                      blockExplorerUrls: ['https://polygonscan.com'],
+                      chainId: CHAIN.chainHex,
+                      chainName: CHAIN.name,
+                      nativeCurrency: { name: CHAIN.currency, symbol: CHAIN.currency, decimals: 18 },
+                      rpcUrls: [...CHAIN.rpcUrls],
+                      blockExplorerUrls: [CHAIN.explorerUrl],
                     },
                   ],
                 });
-                chainId = 137;
+                chainId = CHAIN.chainId;
               } catch {}
             }
           }
@@ -891,32 +892,32 @@ class RealWeb3Manager {
         });
 
         if (accounts && accounts.length > 0) {
-          let chainId = 137;
+          let chainId: number = CHAIN.chainId;
           try {
             const chainIdHex = await injected.request({ method: 'eth_chainId' });
             if (chainIdHex) chainId = parseInt(chainIdHex, 16);
           } catch {}
 
-          if (chainId !== 137) {
+          if (chainId !== CHAIN.chainId) {
             try {
               await injected.request({
                 method: 'wallet_switchEthereumChain',
-                params: [{ chainId: '0x89' }],
+                params: [{ chainId: CHAIN.chainHex }],
               });
-              chainId = 137;
+              chainId = CHAIN.chainId;
             } catch (switchError: any) {
               if (switchError.code === 4902) {
                 await injected.request({
                   method: 'wallet_addEthereumChain',
                   params: [{
-                    chainId: '0x89',
-                    chainName: 'Polygon Mainnet',
-                    nativeCurrency: { name: 'POL', symbol: 'POL', decimals: 18 },
-                    rpcUrls: ['https://polygon-rpc.com'],
-                    blockExplorerUrls: ['https://polygonscan.com'],
+                    chainId: CHAIN.chainHex,
+                    chainName: CHAIN.name,
+                    nativeCurrency: { name: CHAIN.currency, symbol: CHAIN.currency, decimals: 18 },
+                    rpcUrls: [...CHAIN.rpcUrls],
+                    blockExplorerUrls: [CHAIN.explorerUrl],
                   }],
                 });
-                chainId = 137;
+                chainId = CHAIN.chainId;
               } else {
                 throw new Error('Please approve the Polygon network switch in your wallet.');
               }
@@ -1020,8 +1021,8 @@ class RealWeb3Manager {
     this.currentAccount = {
       address: '',
       shortAddress: '',
-      chainId: 137,
-      networkName: 'Polygon Mainnet',
+      chainId: CHAIN.chainId,
+      networkName: CHAIN.name,
       balanceUSDT: 0,
       connected: false,
       providerName: '',
@@ -1033,20 +1034,17 @@ class RealWeb3Manager {
     if (!address || !address.startsWith('0x') || address.length !== 42) {
       return { usdt: 0, pol: 0 };
     }
-    const rpcs = [
-      'https://polygon-bor-rpc.publicnode.com',
-      'https://1rpc.io/matic',
-    ];
+    const rpcs = CHAIN.rpcUrls;
     for (const rpc of rpcs) {
       try {
         const { ethers } = await import('ethers');
-        const provider = new ethers.JsonRpcProvider(rpc, 137, { staticNetwork: true });
+        const provider = new ethers.JsonRpcProvider(rpc, CHAIN.chainId, { staticNetwork: true });
 
         const polWei = await provider.getBalance(address);
         const pol = parseFloat(ethers.formatEther(polWei));
 
         const usdtContract = new ethers.Contract(
-          '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
+          TOKENS.USDT,
           ['function balanceOf(address) view returns (uint256)'],
           provider
         );

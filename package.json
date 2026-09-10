@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "test:server": "python3 scripts/test_game_server.py"
+    "test:server": "python3 scripts/test_game_server.py",
+    "test:contract": "node contracts/test/compile_check.js"
   },
   "dependencies": {
     "@sentry/react": "^10.73.0",
@@ -34,6 +35,7 @@
     "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
+    "solc": "0.8.20",
     "tailwindcss": "^4.1.14"
   }
 }

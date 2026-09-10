@@ -9,22 +9,41 @@
  * is server-only (api/) and must NEVER appear in client code.
  */
 
-export const CHAIN = {
-  chainId: 137,
-  chainHex: '0x89',
-  name: 'Polygon Mainnet',
-  currency: 'POL',
-  rpcUrls: ['https://polygon-bor-rpc.publicnode.com', 'https://1rpc.io/matic', 'https://polygon-rpc.com'],
-  explorerUrl: 'https://polygonscan.com',
-} as const;
+const env = (typeof import.meta !== 'undefined' ? (import.meta as any).env ?? {} : {}) as Record<string, string | undefined>;
+
+/**
+ * Chain selection: Polygon Amoy testnet (80002) by default — the money path is
+ * rehearsed on testnet first — switching to mainnet (137) via VITE_CHAIN_ID=137
+ * only after the full readiness checklist (docs/DEPLOYMENT.md) passes.
+ * VITE_FAUCET_URL keeps testnet onboarding one click away.
+ */
+const configuredChainId = env['VITE_CHAIN_ID']?.trim() ? parseInt(env['VITE_CHAIN_ID']!.trim(), 10) : 80002;
+
+export const CHAIN =
+  configuredChainId === 137
+    ? ({
+        chainId: 137,
+        chainHex: '0x89',
+        name: 'Polygon Mainnet',
+        currency: 'POL',
+        rpcUrls: ['https://polygon-bor-rpc.publicnode.com', 'https://1rpc.io/matic', 'https://polygon-rpc.com'],
+        explorerUrl: 'https://polygonscan.com',
+      } as const)
+    : ({
+        chainId: 80002,
+        chainHex: '0x13882',
+        name: 'Polygon Amoy Testnet',
+        currency: 'POL',
+        rpcUrls: ['https://rpc-amoy.polygon.technology', 'https://polygon-amoy-bor-rpc.publicnode.com'],
+        explorerUrl: 'https://amoy.polygonscan.com',
+        faucetUrl: env['VITE_FAUCET_URL']?.trim() || 'https://faucet.polygon.technology/',
+      } as const);
 
 export const TOKENS = {
   // Canonical Polygon PoS USDT (6 decimals)
   USDT: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
   USDT_DECIMALS: 6,
 } as const;
-
-const env = (typeof import.meta !== 'undefined' ? (import.meta as any).env ?? {} : {}) as Record<string, string | undefined>;
 
 function resolveConfigured(kind: 'escrow' | 'treasury' | 'oracle', envKey: string, hardcoded: string) {
   const fromEnv = env[envKey]?.trim();
@@ -38,29 +57,16 @@ function resolveConfigured(kind: 'escrow' | 'treasury' | 'oracle', envKey: strin
 }
 
 /**
- * Escrow deployment. The hardcoded address below was found in the legacy
- * config and is treated as UNVERIFIED. Confirm it on Polygonscan, then set
- * VITE_ESCROW_ADDRESS (env wins over this fallback).
+ * Escrow deployment. No fallback address: an address exists only when a real
+ * deployment set VITE_ESCROW_ADDRESS. Until then real-money mode stays off.
  */
-export const ESCROW = resolveConfigured(
-  'escrow',
-  'VITE_ESCROW_ADDRESS',
-  '0xac92cb9f43ca51bd723692932bc4f979ea2e3aef'
-);
+export const ESCROW = resolveConfigured('escrow', 'VITE_ESCROW_ADDRESS', '');
 
 /** Platform treasury — receives the 2% rake. Set VITE_TREASURY_WALLET_ADDRESS. */
-export const TREASURY = resolveConfigured(
-  'treasury',
-  'VITE_TREASURY_WALLET_ADDRESS',
-  '0x0B7533FA9f95D21962fae73962b214dB67F8ec89'
-);
+export const TREASURY = resolveConfigured('treasury', 'VITE_TREASURY_WALLET_ADDRESS', '');
 
 /** Oracle signer — verifies settleDuel signatures. Set VITE_ORACLE_WALLET_ADDRESS. */
-export const ORACLE_SIGNER = resolveConfigured(
-  'oracle',
-  'VITE_ORACLE_WALLET_ADDRESS',
-  '0x884179C3B577025abEFEfF6694aA2AFc652716da'
-);
+export const ORACLE_SIGNER = resolveConfigured('oracle', 'VITE_ORACLE_WALLET_ADDRESS', '');
 
 export const ECONOMY = {
   /** Platform rake in basis points — must match contract PLATFORM_FEE_BPS (200 = 2%). */
