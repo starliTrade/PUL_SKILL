@@ -42,7 +42,7 @@ import {
   type ServerSession,
   type MatchView,
 } from '../lib/gameServerClient';
-import { settleDuel as settleDuelOnChain, escrowStatus, approveUsdt, createDuel, joinDuel } from '../lib/escrowFlow';
+import { settleDuel as settleDuelOnChain, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState } from '../lib/escrowFlow';
 import { isEscrowConfigured } from '../lib/chain';
 import { realWeb3Manager } from '../lib/realWeb3';
 import { reportError } from '../lib/monitoring';
@@ -228,6 +228,28 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
         await approveUsdt(currentStake);
         await createDuel(bytes32, currentStake);
       } else {
+        // The joiner must WAIT for the creator's createDuel to confirm
+        // on-chain — calling joinDuel earlier reverts ("Match not available")
+        // while the approval was already spent on gas. Poll the duel state
+        // (status 1 = Created) before joining. Nothing is taken from the
+        // joiner's wallet until the deposit is actually visible.
+        const joinDeadline = Date.now() + 120_000;
+        let created = false;
+        while (Date.now() < joinDeadline) {
+          try {
+            const st = await getDuelState(bytes32);
+            if (st.status === 1) {
+              created = true;
+              break;
+            }
+          } catch {
+            // contract read before deposit — keep waiting
+          }
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+        if (!created) {
+          throw new Error('Opponent stake deposit is not visible on-chain. Nothing was taken from your wallet.');
+        }
         await joinDuel(bytes32);
       }
 
@@ -262,12 +284,22 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
 
     if (isServerMode && serverSession && serverMatch) {
       const roundIndex = bo3State.currentRound - 1;
-      const intent = crypto.getRandomValues(new Uint8Array(32));
-      const intentHex = Array.from(intent).map((b) => b.toString(16).padStart(2, '0')).join('');
       void (async () => {
         try {
-          await commitRound(serverSession, serverMatch.matchId, roundIndex, `0x${intentHex}`);
-          const { targetMs } = await revealRoundTarget(serverSession, serverMatch.matchId, roundIndex);
+          let targetMs: number;
+          try {
+            // First attempt this round: bind a fresh intent, then get the target.
+            const intent = crypto.getRandomValues(new Uint8Array(32));
+            const intentHex = Array.from(intent).map((b) => b.toString(16).padStart(2, '0')).join('');
+            await commitRound(serverSession, serverMatch.matchId, roundIndex, `0x${intentHex}`);
+            ({ targetMs } = await revealRoundTarget(serverSession, serverMatch.matchId, roundIndex));
+          } catch {
+            // False-start re-entry (or page refresh): this round is already
+            // committed. Re-revealing returns the SAME target — the server
+            // never re-rolls a committed round, so no exploit exists. The
+            // previous code re-committed here and crashed the round.
+            ({ targetMs } = await revealRoundTarget(serverSession, serverMatch.matchId, roundIndex));
+          }
           waitTimeoutRef.current = setTimeout(() => {
             const target = AntiCheat.generateTargetSpawn();
             setSpawnConfig(target);

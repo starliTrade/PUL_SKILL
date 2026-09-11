@@ -76,7 +76,14 @@ abstract contract ReentrancyGuard {
 contract PulsarEscrow is Ownable, ReentrancyGuard {
     uint256 public constant FEE_DENOMINATOR = 10000; // 100.00%
     uint256 public constant PLATFORM_FEE_BPS = 200;  // 2.00% (98% to winner)
-    uint256 public constant MATCH_TIMEOUT = 10 minutes; // P1.17: aligned with game-server expiry
+    // Refund opens 30 minutes after the FIRST deposit. The oracle signature is
+    // valid for 10 minutes AFTER match end (signing), and a match can run up
+    // to ~10 minutes after the deposit — so the winner's settle window can
+    // extend to ~20 minutes post-deposit. A 10-minute MATCH_TIMEOUT opened
+    // refund before settlement could close, letting a losing player refund
+    // both stakes and negate the loss. 30 min guarantees the settle window is
+    // provably closed (deadline expired) before any refund can open.
+    uint256 public constant MATCH_TIMEOUT = 30 minutes;
 
     IERC20 public immutable paymentToken;
     address public treasuryWallet;

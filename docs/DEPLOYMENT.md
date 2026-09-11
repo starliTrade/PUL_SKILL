@@ -153,5 +153,5 @@ template. Before enabling real-money mode:
 - [ ] Legal docs reviewed + placeholders replaced; geo-blocking at edge active
 - [ ] Sentry (client + server) receiving test events
 - [ ] End-to-end test with real wallet on **Polygon Amoy testnet first**: approve → createDuel → joinDuel → play → settleDuel; verify winner receives 98% and treasury 2%
-- [ ] `refundTimeoutMatch` verified: create a duel, wait 10 minutes, refund works
+- [ ] `refundTimeoutMatch` verified: create a duel, wait 30 minutes (MATCH_TIMEOUT), refund works
 - [ ] Rollback plan: keep `VITE_ESCROW_ADDRESS` unset → app reverts to honest practice-only mode instantly
