@@ -40,10 +40,20 @@ export const CHAIN =
       } as const);
 
 export const TOKENS = {
-  // Canonical Polygon PoS USDT (6 decimals)
-  USDT: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
+  // Chain-aware payment token. On mainnet this is canonical PoS USDT
+  // (0xc2132D05D31c914a87C6611C10748AEb04B58e8F, 6 decimals). On the Amoy
+  // rehearsal the deploy script deploys MockUSDT and the address comes from
+  // VITE_ESCROW_*-style config instead — hardcoded mainnet addresses must
+  // never be used on a testnet, so the rehearsal would silently break.
+  USDT: configuredChainId === 137
+    ? '0xc2132D05D31c914a87C6611C10748AEb04B58e8F'
+    : (env['VITE_PAYMENT_TOKEN_ADDRESS']?.trim() || ''),
   USDT_DECIMALS: 6,
 } as const;
+
+export function isPaymentTokenConfigured(): boolean {
+  return TOKENS.USDT.length > 0;
+}
 
 function resolveConfigured(kind: 'escrow' | 'treasury' | 'oracle', envKey: string, hardcoded: string) {
   const fromEnv = env[envKey]?.trim();

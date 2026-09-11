@@ -119,11 +119,19 @@ class InMemoryStore:
     def __init__(self) -> None:
         self.matches: dict[str, Match] = {}
         self.queue: dict[float, list[str]] = {}
+        # address -> live (waiting|active) match id (idempotent enqueue).
+        self.player_match: dict[str, str] = {}
         self._lock = threading.Lock()
 
     def enqueue(self, address: str, stake: float) -> Match:
         addr = address.lower()
         with self._lock:
+            live = self.player_match.get(addr)
+            if live:
+                m = self.matches.get(live)
+                if m and m.status in ("waiting", "active"):
+                    return m
+                self.player_match.pop(addr, None)
             bucket = self.queue.setdefault(stake, [])
             for other in list(bucket):
                 m = self.matches.get(other)
@@ -133,9 +141,11 @@ class InMemoryStore:
                 if addr in m.players:
                     bucket.remove(other)
                     continue
+                # Found an opponent: activate the match.
                 m.players[addr] = {"address": addr, "joinedAt": time.time()}
                 m.status = "active"
                 bucket.remove(other)
+                self.player_match[addr] = m.match_id
                 return m
             match_id = secrets.token_hex(16)
             m = Match(
@@ -143,9 +153,11 @@ class InMemoryStore:
                 stake=stake,
                 created_at=time.time(),
                 players={addr: {"address": addr, "joinedAt": time.time()}},
+                creator=addr,
             )
             self.matches[match_id] = m
             bucket.append(match_id)
+            self.player_match[addr] = match_id
             return m
 
     def get(self, match_id: str) -> Match:
@@ -181,6 +193,8 @@ class FirestoreStore:
     def __init__(self, client: Any) -> None:
         self.db = client
         self.local = InMemoryStore()  # write-through cache for hot reads
+        # address -> live (waiting|active) match id for idempotent re-polls.
+        self.player_match: dict[str, str] = {}
 
     # -- internal ------------------------------------------------------------
 
@@ -199,6 +213,12 @@ class FirestoreStore:
 
     def enqueue(self, address: str, stake: float) -> Match:
         addr = address.lower()
+        live = self.player_match.get(addr)
+        if live:
+            m = self.local.matches.get(live)
+            if m and m.status in ("waiting", "active"):
+                return m
+            self.player_match.pop(addr, None)
         queue_ref = self._queue_ref(stake)
 
         @firestore.transactional  # type: ignore[name-defined]
@@ -216,6 +236,12 @@ class FirestoreStore:
                         transaction.set(mref, _match_to_doc(m))
                         transaction.set(queue_ref, {"waitingMatchId": None})
                         return m
+                    if addr in m.players:
+                        # Idempotent re-poll: the caller IS this waiting match's
+                        # creator. Without this branch the queue slot was stolen
+                        # from under them and every poll minted an orphan match.
+                        transaction.set(queue_ref, {"waitingMatchId": waiting_id})
+                        return m
             # No opponent: create a fresh waiting match and claim the queue slot.
             match_id = secrets.token_hex(16)
             m = Match(
@@ -223,6 +249,7 @@ class FirestoreStore:
                 stake=stake,
                 created_at=time.time(),
                 players={addr: {"address": addr, "joinedAt": time.time()}},
+                creator=addr,
             )
             transaction.set(self._match_ref(match_id), _match_to_doc(m))
             transaction.set(queue_ref, {"waitingMatchId": match_id})
@@ -232,6 +259,7 @@ class FirestoreStore:
         match = _txn_enqueue(transaction)
         assert match is not None
         self.local.put(match)
+        self.player_match[addr] = match.match_id
         return match
 
     def get(self, match_id: str) -> Match:

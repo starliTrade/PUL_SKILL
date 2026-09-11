@@ -8,7 +8,7 @@
  */
 
 import { BrowserProvider, Contract, formatUnits, parseUnits } from 'ethers';
-import { CHAIN, TOKENS, PULSAR_ESCROW_ABI, ERC20_ABI, ESCROW } from './chain';
+import { CHAIN, TOKENS, PULSAR_ESCROW_ABI, ERC20_ABI, ESCROW, isPaymentTokenConfigured } from './chain';
 
 export interface EscrowStatus {
   configured: boolean;
@@ -22,6 +22,13 @@ export function escrowStatus(): EscrowStatus {
       configured: false,
       escrowAddress: '',
       message: 'Escrow contract address is not configured (VITE_ESCROW_ADDRESS).',
+    };
+  }
+  if (!isPaymentTokenConfigured()) {
+    return {
+      configured: false,
+      escrowAddress: ESCROW.address,
+      message: 'Payment token is not configured for this chain (set VITE_PAYMENT_TOKEN_ADDRESS on testnet).',
     };
   }
   return {
@@ -40,6 +47,9 @@ function requireInjected(): BrowserProvider {
 function requireEscrowAddress(): string {
   if (!ESCROW.address) {
     throw new Error('Escrow address is not configured. Real-money play is disabled.');
+  }
+  if (!isPaymentTokenConfigured()) {
+    throw new Error('Payment token is not configured for this chain. Real-money play is disabled.');
   }
   return ESCROW.address;
 }

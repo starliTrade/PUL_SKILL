@@ -217,6 +217,120 @@ check(
 check("Round-trip rounds compare equal", restored.rounds == m4.rounds)
 check("Round-trip players compare equal", restored.players == m4.players)
 
+# --- 5. INDEPENDENT Solidity-parity digest check (not circular) ---------------
+# Reimplements abi.encodePacked() semantics from scratch (bytes32=32 bytes,
+# address=RAW 20 bytes, uint256=32 bytes) and asserts the oracle digest equals
+# a digest built WITHOUT using any oracle packing helper. This is the test that
+# would have caught the padded-address bug that made every signature invalid.
+def _keccak_independent(data: bytes) -> bytes:
+    from Crypto.Hash import keccak as _k
+
+    h = _k.new(digest_bits=256)
+    h.update(data)
+    return h.digest()
+
+
+_parity_match_id = "0x" + "cd" * 32
+_parity_winner = "0x" + "ab" * 20
+_parity_escrow = "0x" + "ef" * 20
+_parity_record = {
+    "status": "settled",
+    "matchId": _parity_match_id,
+    "winner": _parity_winner,
+    "winnerTimeMs": 234,
+    "loserTimeMs": 301,
+    "validatedTimes": {"a": [234], "b": [301]},
+    "deadline": 1_900_000_000,
+}
+_parity_nonce = 123456789
+
+packed_independent = b"".join(
+    [
+        bytes.fromhex(_parity_match_id[2:]),          # bytes32
+        bytes.fromhex(_parity_winner[2:]),            # address = RAW 20 bytes
+        (234).to_bytes(32, "big"),                    # uint256
+        (301).to_bytes(32, "big"),                    # uint256
+        _parity_nonce.to_bytes(32, "big"),            # uint256
+        _parity_record["deadline"].to_bytes(32, "big"),  # uint256
+        (137).to_bytes(32, "big"),                    # uint256 chainid
+        bytes.fromhex(_parity_escrow[2:]),            # address = RAW 20 bytes
+    ]
+)
+inner_independent = _keccak_independent(packed_independent)
+digest_independent = _keccak_independent(b"\x19Ethereum Signed Message:\n32" + inner_independent)
+
+digest_oracle = oracle.build_settlement_digest(
+    {
+        "matchId": _parity_record["matchId"],
+        "winner": _parity_record["winner"],
+        "winnerTimeMs": _parity_record["winnerTimeMs"],
+        "loserTimeMs": _parity_record["loserTimeMs"],
+        "deadline": _parity_record["deadline"],
+    },
+    _parity_nonce,
+    chain_id=137,
+    escrow_address=_parity_escrow,
+)
+check(
+    "Oracle digest is byte-identical to Solidity abi.encodePacked layout",
+    digest_oracle == digest_independent,
+)
+
+# And the oracle really signs: the low-s signature recovers to the oracle key
+# over an INDEPENDENTLY-built digest made from the parameters the server
+# RETURNS (serverNonce/deadline — exactly what the client submits on-chain).
+signed_parity = oracle.sign_settlement(dict(_parity_record))
+packed_returned = b"".join(
+    [
+        bytes.fromhex(_parity_match_id[2:]),
+        bytes.fromhex(_parity_winner[2:]),
+        (234).to_bytes(32, "big"),
+        (301).to_bytes(32, "big"),
+        signed_parity["serverNonce"].to_bytes(32, "big"),
+        signed_parity["deadline"].to_bytes(32, "big"),
+        (137).to_bytes(32, "big"),
+        # sign_settlement() binds ESCROW_ADDRESS from the environment — the
+        # production behavior. The independent digest must use the same value.
+        bytes.fromhex(os.environ["ESCROW_ADDRESS"].lower().removeprefix("0x")),
+    ]
+)
+digest_returned = _keccak_independent(
+    b"\x19Ethereum Signed Message:\n32" + _keccak_independent(packed_returned)
+)
+if hasattr(Account, "recover_hash"):
+    rec = Account.recover_hash(digest_returned, signature=signed_parity["signature"])
+else:
+    rec = Account._recover_hash(digest_returned, signature=signed_parity["signature"])
+rec_addr = getattr(rec, "address", rec)
+check(
+    "Oracle signature verifies over the INDEPENDENT digest (low-s, real key)",
+    str(rec_addr).lower() == signed_parity["oracleAddress"].lower(),
+)
+
+# s must be in the low half of the group order (EIP-2), or the contract rejects
+sig_s = int.from_bytes(bytes.fromhex(signed_parity["signature"][2:])[32:64], "big")
+check(
+    "Signature is canonical low-s (EIP-2)",
+    sig_s <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0,
+)
+
+# Idempotent re-enqueue: the same player polling twice must get the SAME match
+# (no orphan waiting matches, no deadlock where P1 never learns the match began).
+s5a = "a" * 40
+store5 = me.MatchStore()
+m5a = store5.enqueue(s5a, 1.0)
+m5a_again = store5.enqueue(s5a, 1.0)
+check(
+    "Re-polling the queue returns the SAME waiting match (idempotent)",
+    m5a.match_id == m5a_again.match_id,
+)
+m5b = store5.enqueue("b" * 40, 1.0)
+m5b_again = store5.enqueue("b" * 40, 1.0)
+check(
+    "Joiner also gets a stable match on re-poll",
+    m5b.match_id == m5b_again.match_id == m5a.match_id and m5b.status == "active",
+)
+
 print()
 if failures:
     print(f"FAILED: {len(failures)} -> {failures}")

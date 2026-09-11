@@ -42,7 +42,8 @@ import {
   type ServerSession,
   type MatchView,
 } from '../lib/gameServerClient';
-import { settleDuel as settleDuelOnChain, escrowStatus } from '../lib/escrowFlow';
+import { settleDuel as settleDuelOnChain, escrowStatus, approveUsdt, createDuel, joinDuel } from '../lib/escrowFlow';
+import { isEscrowConfigured } from '../lib/chain';
 import { realWeb3Manager } from '../lib/realWeb3';
 import { reportError } from '../lib/monitoring';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
@@ -214,6 +215,22 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
       if (view.status === 'waiting') throw new Error('No opponent joined within 90 seconds. Try again.');
       setServerMatch(view);
       if (view.opponent) setOpponent(view.opponent);
+
+      // P0-fix — THE ONLY place stake money moves: both players lock the
+      // stake in the PulsarEscrow contract before any round is played.
+      // Creator (queued first) deposits via createDuel; the joiner joins it.
+      // Without this step the "prize" was pure UI fiction.
+      if (!isEscrowConfigured()) {
+        throw new Error('Escrow is not configured — staked duels are disabled. Practice mode is available.');
+      }
+      const bytes32 = await matchIdToBytes32(view.matchId);
+      if (view.youAreCreator) {
+        await approveUsdt(currentStake);
+        await createDuel(bytes32, currentStake);
+      } else {
+        await joinDuel(bytes32);
+      }
+
       sounds.playMatchFound();
       setBo3State({ userScore: 0, opponentScore: 0, currentRound: 1, rounds: [], targetWins: 2, isMatchOver: false });
       setPhase('ready');

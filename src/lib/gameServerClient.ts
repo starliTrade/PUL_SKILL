@@ -165,6 +165,8 @@ export interface MatchView {
   opponentJoined: boolean;
   opponent: string | null;
   opponentSubmitted: number;
+  /** True when the caller queued first — they deposit the escrow stake via createDuel. */
+  youAreCreator: boolean;
   /** Opponent's valid times, disclosed only for rounds BOTH players submitted. */
   opponentTimes: Record<string, number>;
   myRounds: {

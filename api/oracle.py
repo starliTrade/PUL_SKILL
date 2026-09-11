@@ -88,11 +88,20 @@ def _uint256(value: int) -> bytes:
     return value.to_bytes(32, "big")
 
 
-def _address_bytes32(address: str) -> bytes:
+def _address_bytes20(address: str) -> bytes:
+    """
+    Address as its RAW 20 bytes — matches Solidity abi.encodePacked(address),
+    which packs addresses WITHOUT left-padding. (A previous version padded to
+    32 bytes here, which made every oracle signature invalid on-chain.)
+    """
     clean = address.lower().removeprefix("0x")
     if len(clean) != 40:
         raise ValueError(f"bad address: {address}")
-    return bytes.fromhex(clean).rjust(32, b"\x00")
+    return bytes.fromhex(clean)
+
+
+# Back-compat alias for callers/tests.
+_address_bytes32 = _address_bytes20
 
 
 def _match_id_bytes32(match_id: str) -> bytes:
@@ -125,16 +134,18 @@ def build_settlement_digest(
     if not escrow_address:
         raise RuntimeError("ESCROW_ADDRESS is required to bind settlements to the escrow")
 
+    # EXACT Solidity abi.encodePacked layout from PulsarEscrow.settleDuel():
+    #   bytes32 (32) | address (raw 20) | uint256 (32) x5 | address (raw 20)
     packed = b"".join(
         [
             _match_id_bytes32(str(record["matchId"])),
-            _address_bytes32(str(record["winner"])),
+            _address_bytes20(str(record["winner"])),
             _uint256(int(record["winnerTimeMs"])),
             _uint256(int(record["loserTimeMs"])),
             _uint256(int(server_nonce)),
             _uint256(int(record["deadline"])),
             _uint256(int(chain_id)),
-            _address_bytes32(escrow_address),
+            _address_bytes20(escrow_address),
         ]
     )
     inner = _keccak(packed)

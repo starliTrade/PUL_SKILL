@@ -68,6 +68,7 @@ class Match:
     status: str = "waiting"  # waiting | active | settled | void
     winner: str = ""
     settled_at: float = 0.0
+    creator: str = ""  # first player in the queue — deposits the on-chain stake first
     signed_settlement: dict[str, Any] | None = None  # replay for the other client
 
     def public_view(self, for_address: str | None = None) -> dict[str, Any]:
@@ -105,6 +106,9 @@ class Match:
         opp_addr = next((a for a in self.players if a != my_addr), None)
         # Opponent address is public on-chain data; safe to disclose.
         view["opponent"] = opp_addr
+        # Creator deposits the escrow stake first; the joiner waits for that
+        # on-chain deposit before joining. The client needs to know its role.
+        view["youAreCreator"] = bool(me and self.creator == me["address"])
         if opp_addr:
             opp_rounds = self.rounds.get(opp_addr, {}) or {}
             my_submitted = {
@@ -136,9 +140,20 @@ class MatchStore:
     def __init__(self) -> None:
         self.matches: dict[str, Match] = {}
         self.queue: dict[float, list[str]] = {}
+        # address -> live (waiting|active) match id. Makes enqueue IDEMPOTENT:
+        # re-polling the queue returns the caller's existing match instead of
+        # minting orphan waiting matches every poll (the deadlock that left
+        # the first player forever in matchmaking while P2 played alone).
+        self.player_match: dict[str, str] = {}
 
     def enqueue(self, address: str, stake: float) -> Match:
         addr = address.lower()
+        live = self.player_match.get(addr)
+        if live:
+            m = self.matches.get(live)
+            if m and m.status in ("waiting", "active"):
+                return m
+            self.player_match.pop(addr, None)
         bucket = self.queue.setdefault(stake, [])
         for other in list(bucket):
             m = self.matches.get(other)
@@ -152,6 +167,7 @@ class MatchStore:
             m.players[addr] = {"address": addr, "joinedAt": time.time()}
             m.status = "active"
             bucket.remove(other)
+            self.player_match[addr] = m.match_id
             return m
         # No opponent: create a new waiting match.
         match_id = secrets.token_hex(16)
@@ -160,9 +176,11 @@ class MatchStore:
             stake=stake,
             created_at=time.time(),
             players={addr: {"address": addr, "joinedAt": time.time()}},
+            creator=addr,
         )
         self.matches[match_id] = m
         bucket.append(match_id)
+        self.player_match[addr] = match_id
         return m
 
     def get(self, match_id: str) -> Match:

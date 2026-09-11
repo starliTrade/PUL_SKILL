@@ -30,10 +30,15 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from auth import issue_nonce, issue_session, verify_session  # verify_session used by _auth
+from match_engine import MatchError
 from oracle import sign_settlement
 from store import create_store, install_persistence
 
 app = FastAPI(title="PULSAR Game Server", version="1.1.0")
+
+# Stakes the lobby offers (src/pages/LobbyPage.tsx STAKE_TIERS). Anything else
+# is rejected, so the queue can never be polluted with arbitrary values.
+ALLOWED_STAKES = frozenset({1.0, 2.0, 5.0, 10.0})
 
 # P2.4 — server error monitoring. No-ops unless SENTRY_DSN is set in the
 # server environment. Never required for local dev.
