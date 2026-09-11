@@ -236,6 +236,12 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(e))
 
     if result.get("status") == "settled":
-        result = sign_settlement(result)
+        # Keep the public "status" field in the response: sign_settlement()
+        # returns the proof envelope without it, and the client treats a
+        # missing status as an unsettled (refundable) match. roundWins is
+        # informational Bo3 accounting carried over from the engine result.
+        envelope = sign_settlement(result)
+        envelope["roundWins"] = result.get("roundWins", {})
+        result = {"status": "settled", **envelope}
         match.signed_settlement = dict(result)
     return result
