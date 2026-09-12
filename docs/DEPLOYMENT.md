@@ -127,6 +127,16 @@ Set in Freebuff **Settings → Environment** (dev) **and** in
 | `VITE_WALLETCONNECT_PROJECT_ID` | From cloud.reown.com — needed for mobile wallets |
 | `VITE_SENTRY_DSN` (optional) | Client error monitoring |
 
+**Reown works without a domain.** The Project ID is a public client value (not a
+secret), so you can register at cloud.reown.com and create the project today —
+no domain needed. Leave the project's *Allowed Domains* list empty: the ID then
+works from any origin (localhost, the preview sandbox, anywhere), which is
+needed for the Amoy rehearsal. After the production domain is bought, just add
+it under Project → Domains in the Reown dashboard — the same Project ID keeps
+working, with zero code or env changes. WalletConnect is optional anyway: on
+desktop, users connect via injected providers (MetaMask/Rabby) without it; it
+only adds mobile-wallet support.
+
 ---
 
 ## 4. Legal review (hard gate)
