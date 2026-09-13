@@ -192,6 +192,12 @@ export interface MatchView {
 export const queueForMatch = (session: ServerSession, stake: number): Promise<MatchView> =>
   request<MatchView>("/api/queue", { stake }, session);
 
+export const claimServerUsername = (
+  session: ServerSession,
+  username: string
+): Promise<{ success: boolean; username: string }> =>
+  request("/api/profile/username", { username }, session);
+
 export const getMatch = (session: ServerSession, matchId: string): Promise<MatchView> =>
   request<MatchView>(`/api/match/${encodeURIComponent(matchId)}`, undefined, session, "GET");
 

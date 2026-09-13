@@ -6,8 +6,6 @@
 import {
   doc,
   getDoc,
-  setDoc,
-  deleteDoc,
   collection,
   query,
   where,
@@ -231,6 +229,7 @@ class RealWeb3Manager {
   }
 
   private siweVerified = false;
+  private activeProvider: any = null;
   private wcProvider: any = null;
   private wcInitPromise: Promise<any> | null = null;
   private wcConnectPromise: Promise<ConnectedAccountState> | null = null;
@@ -559,6 +558,7 @@ class RealWeb3Manager {
 
         if (accounts && accounts.length > 0) {
           this.pendingWalletName = savedProvider;
+          this.activeProvider = provider;
           return await this.setConnectedAddress(accounts[0], savedProvider, provider.chainId || CHAIN.chainId);
         } else if (savedAddr) {
           return await this.setConnectedAddress(savedAddr, savedProvider, CHAIN.chainId);
@@ -577,6 +577,7 @@ class RealWeb3Manager {
       try {
         const accounts: string[] = await injected.request({ method: 'eth_accounts' });
         if (accounts && accounts.length > 0 && accounts[0].toLowerCase() === savedAddr.toLowerCase()) {
+          this.activeProvider = injected;
           let chainId: number = CHAIN.chainId;
           try {
             const chainHex = await injected.request({ method: 'eth_chainId' });
@@ -781,6 +782,7 @@ class RealWeb3Manager {
       });
 
       if (accounts && accounts.length > 0) {
+        this.activeProvider = provider;
         let chainId: number = CHAIN.chainId;
         try {
           const chainIdHex = await provider.request({ method: 'eth_chainId' });
@@ -892,6 +894,7 @@ class RealWeb3Manager {
         });
 
         if (accounts && accounts.length > 0) {
+          this.activeProvider = injected;
           let chainId: number = CHAIN.chainId;
           try {
             const chainIdHex = await injected.request({ method: 'eth_chainId' });
@@ -999,8 +1002,7 @@ class RealWeb3Manager {
   /** EIP-1193 provider of the currently connected wallet (injected or WalletConnect). */
   public getActiveEip1193Provider(): any | null {
     if (this.wcProvider?.connected) return this.wcProvider;
-    const injected = typeof window !== 'undefined' ? (window as any).ethereum : null;
-    return injected || null;
+    return this.activeProvider;
   }
 
   public disconnect(): void {
@@ -1012,6 +1014,7 @@ class RealWeb3Manager {
       /* ignore */
     }
     this.siweVerified = false;
+    this.activeProvider = null;
     this.wcConnectPromise = null;
     this.lastWcUri = null;
     this.lastHandoff = null;
@@ -1173,7 +1176,6 @@ class RealWeb3Manager {
         local.playerId = defaultTag;
         this.saveToLocal(local);
       }
-      this.syncToFirestore(local);
       return local;
     }
 
@@ -1232,11 +1234,9 @@ class RealWeb3Manager {
   public async saveUserDataAsync(data: UserWalletData): Promise<void> {
     if (!data.address) return;
     this.saveToLocal(data);
-    if (this.currentAccount.address === data.address) {
-      this.currentAccount.balanceUSDT = data.vaultBalance;
-      this.notify();
-    }
-    await this.syncToFirestore(data);
+    // Cloud writes are server-authoritative. Client progress remains local;
+    // ranked settlements and username claims are persisted by the API using
+    // its verified wallet session and Firestore Admin credentials.
   }
 
   private saveToLocal(data: UserWalletData): void {
@@ -1251,84 +1251,6 @@ class RealWeb3Manager {
       if (raw) return JSON.parse(raw);
     } catch {}
     return null;
-  }
-
-  private async syncToFirestore(data: UserWalletData): Promise<void> {
-    try {
-      const cleanAddr = data.address.toLowerCase();
-      const userDocRef = doc(db, 'users', cleanAddr);
-      await setDoc(
-        userDocRef,
-        {
-          ...data,
-          updatedAt: Date.now(),
-        },
-        { merge: true }
-      );
-
-      // Leaderboard table updated strictly upon real matches
-      if (data.wins > 0 || data.totalMatches > 0) {
-        const lbRef = doc(db, 'leaderboard', cleanAddr);
-        const winRate = data.totalMatches > 0 ? Math.round((data.wins / data.totalMatches) * 100) : 0;
-        const tag = data.playerId || RealWeb3Manager.getPlayerTagForAddress(cleanAddr);
-        await setDoc(
-          lbRef,
-          {
-            address: cleanAddr,
-            shortAddress: `${cleanAddr.slice(0, 6)}...${cleanAddr.slice(-4)}`,
-            playerId: tag,
-            name: tag,
-            wins: data.wins,
-            totalMatches: data.totalMatches,
-            bestReactionMs: data.bestReactionMs,
-            winRate,
-            xp: data.xp || 0,
-            level: data.level || 1,
-            updatedAt: Date.now(),
-          },
-          { merge: true }
-        );
-      }
-
-      // Sync latest match to global matches ledger ONLY if it is a real USDT match (entryFee > 0)
-      if (data.history && data.history.length > 0) {
-        const latestMatch = data.history[0];
-        if (latestMatch && latestMatch.id && (latestMatch.entryFee || 0) > 0) {
-          await this.recordGlobalMatchToFirestore(latestMatch, cleanAddr);
-        }
-      }
-    } catch (e) {
-      console.warn('Firestore sync failed:', e);
-    }
-  }
-
-  public async recordGlobalMatchToFirestore(match: MatchRecord, playerAddress: string): Promise<void> {
-    try {
-      const matchDocRef = doc(db, 'matches', match.id);
-      await setDoc(
-        matchDocRef,
-        {
-          id: match.id,
-          playerAddress,
-          opponentAddress: match.opponentName || 'Arena Opponent',
-          game: match.game || 'reaction',
-          result: match.result,
-          entryFee: match.entryFee || 0,
-          prize: match.prize || 0,
-          yourTime: match.yourTime || 0,
-          opponentTime: match.opponentTime || 0,
-          timestamp: match.timestamp || Date.now(),
-          // HONESTY RULE: only persist a real signature/tx hash. Local results
-          // are stored without oracle claims — never fabricated.
-          ...(match.oracleSignature && /^0x[0-9a-fA-F]{64,65}$/.test(match.oracleSignature)
-            ? { oracleSignature: match.oracleSignature }
-            : {}),
-        },
-        { merge: true }
-      );
-    } catch (err) {
-      console.warn('Global match ledger recording notice:', err);
-    }
   }
 
   public subscribeGlobalMatches(callback: (matches: MatchRecord[]) => void): () => void {
@@ -1630,71 +1552,6 @@ class RealWeb3Manager {
     }
   }
 
-  /**
-   * Atomically claims and registers a globally unique username in Firestore for the user's wallet address.
-   */
-  public async claimUsername(
-    rawTag: string,
-    userAddress: string
-  ): Promise<{ success: boolean; cleanTag?: string; error?: string }> {
-    if (!userAddress) {
-      return { success: false, error: 'Please connect your Web3 wallet first.' };
-    }
-
-    const cleanAddr = userAddress.toLowerCase();
-    const check = await this.checkUsernameAvailability(rawTag, cleanAddr);
-
-    if (!check.available) {
-      return { success: false, error: check.error || 'Username is not available' };
-    }
-
-    const cleanTag = check.cleanTag;
-    const normalized = cleanTag.toLowerCase();
-
-    try {
-      // 1. Load current user data to see previous tag
-      const currentUserData = await this.loadUserDataAsync(cleanAddr);
-      const oldTag = currentUserData.playerId;
-
-      // 2. If user had a different registered username, release the old username document
-      if (oldTag && oldTag.toLowerCase() !== normalized) {
-        try {
-          const oldDocRef = doc(db, 'usernames', oldTag.toLowerCase());
-          const oldDoc = await getDoc(oldDocRef);
-          if (oldDoc.exists() && oldDoc.data()?.address?.toLowerCase() === cleanAddr) {
-            await deleteDoc(oldDocRef);
-          }
-        } catch (e) {
-          console.warn('Old username release notice:', e);
-        }
-      }
-
-      // 3. Register the new username in the unique usernames collection
-      const usernameDocRef = doc(db, 'usernames', normalized);
-      await setDoc(
-        usernameDocRef,
-        {
-          username: normalized,
-          tag: cleanTag,
-          address: cleanAddr,
-          updatedAt: Date.now(),
-        },
-        { merge: true }
-      );
-
-      // 4. Update the user's profile and save
-      currentUserData.playerId = cleanTag;
-      await this.saveUserDataAsync(currentUserData);
-
-      return { success: true, cleanTag };
-    } catch (err: any) {
-      console.error('Failed to claim unique username:', err);
-      return {
-        success: false,
-        error: err?.message || 'Failed to claim username on the network. Please try again.',
-      };
-    }
-  }
 }
 
 export { RealWeb3Manager };

@@ -9,6 +9,7 @@
 
 import { BrowserProvider, Contract, formatUnits, parseUnits } from 'ethers';
 import { CHAIN, TOKENS, PULSAR_ESCROW_ABI, ERC20_ABI, ESCROW, isPaymentTokenConfigured } from './chain';
+import { realWeb3Manager } from './realWeb3';
 
 export interface EscrowStatus {
   configured: boolean;
@@ -38,10 +39,10 @@ export function escrowStatus(): EscrowStatus {
   };
 }
 
-function requireInjected(): BrowserProvider {
-  const eth = (window as any).ethereum;
-  if (!eth) throw new Error('No injected wallet found. Connect a wallet first.');
-  return new BrowserProvider(eth, CHAIN.chainId);
+function requireActiveProvider(): BrowserProvider {
+  const provider = realWeb3Manager.getActiveEip1193Provider();
+  if (!provider) throw new Error('No active wallet provider found. Connect a wallet first.');
+  return new BrowserProvider(provider, CHAIN.chainId);
 }
 
 function requireEscrowAddress(): string {
@@ -55,14 +56,14 @@ function requireEscrowAddress(): string {
 }
 
 export async function getUsdtBalance(address: string): Promise<string> {
-  const provider = requireInjected();
+  const provider = requireActiveProvider();
   const token = new Contract(TOKENS.USDT, ERC20_ABI, provider);
   const raw: bigint = await token.balanceOf(address);
   return formatUnits(raw, TOKENS.USDT_DECIMALS);
 }
 
 export async function getAllowance(owner: string): Promise<string> {
-  const provider = requireInjected();
+  const provider = requireActiveProvider();
   const token = new Contract(TOKENS.USDT, ERC20_ABI, provider);
   const raw: bigint = await token.allowance(owner, requireEscrowAddress());
   return formatUnits(raw, TOKENS.USDT_DECIMALS);
@@ -70,7 +71,7 @@ export async function getAllowance(owner: string): Promise<string> {
 
 /** ERC-20 approve for the escrow to pull `stakeUsdt`. Returns real tx hash. */
 export async function approveUsdt(stakeUsdt: number): Promise<string> {
-  const provider = requireInjected();
+  const provider = requireActiveProvider();
   const signer = await provider.getSigner();
   const token = new Contract(TOKENS.USDT, ERC20_ABI, signer);
   const amount = parseUnits(String(stakeUsdt), TOKENS.USDT_DECIMALS);
@@ -80,19 +81,19 @@ export async function approveUsdt(stakeUsdt: number): Promise<string> {
 }
 
 /** Player 1 locks their stake into a new duel. Returns real tx hash. */
-export async function createDuel(matchIdBytes32: string, stakeUsdt: number): Promise<string> {
-  const provider = requireInjected();
+export async function createDuel(matchIdBytes32: string, stakeUsdt: number, expectedPlayer2: string): Promise<string> {
+  const provider = requireActiveProvider();
   const signer = await provider.getSigner();
   const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, signer);
   const amount = parseUnits(String(stakeUsdt), TOKENS.USDT_DECIMALS);
-  const tx = await escrow.createDuel(matchIdBytes32, amount);
+  const tx = await escrow.createDuel(matchIdBytes32, amount, expectedPlayer2);
   await tx.wait();
   return tx.hash as string;
 }
 
 /** Player 2 locks the matching stake. Returns real tx hash. */
 export async function joinDuel(matchIdBytes32: string): Promise<string> {
-  const provider = requireInjected();
+  const provider = requireActiveProvider();
   const signer = await provider.getSigner();
   const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, signer);
   const tx = await escrow.joinDuel(matchIdBytes32);
@@ -112,7 +113,7 @@ export interface SettlementProof {
 
 /** Submit the server-signed proof to release the pot. Returns real tx hash. */
 export async function settleDuel(proof: SettlementProof): Promise<string> {
-  const provider = requireInjected();
+  const provider = requireActiveProvider();
   const signer = await provider.getSigner();
   const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, signer);
   const tx = await escrow.settleDuel({
@@ -130,7 +131,7 @@ export async function settleDuel(proof: SettlementProof): Promise<string> {
 
 /** Anyone can trigger a timeout refund after MATCH_TIMEOUT. */
 export async function refundTimeoutMatch(matchIdBytes32: string): Promise<string> {
-  const provider = requireInjected();
+  const provider = requireActiveProvider();
   const signer = await provider.getSigner();
   const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, signer);
   const tx = await escrow.refundTimeoutMatch(matchIdBytes32);
@@ -147,7 +148,7 @@ export async function getDuelState(matchIdBytes32: string): Promise<{
   totalPool: bigint;
   winner: string;
 }> {
-  const provider = requireInjected();
+  const provider = requireActiveProvider();
   const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, provider);
   const m = await escrow.matches(matchIdBytes32);
   return {

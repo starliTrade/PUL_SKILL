@@ -128,7 +128,7 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
     uint256 public totalVolumeDistributed;
     uint256 public totalFeesCollected;
 
-    event MatchCreated(bytes32 indexed matchId, address indexed player1, uint256 stakeAmount, uint256 totalPool);
+    event MatchCreated(bytes32 indexed matchId, address indexed player1, address indexed player2, uint256 stakeAmount, uint256 totalPool);
     event MatchJoined(bytes32 indexed matchId, address indexed player2);
     event MatchSettled(bytes32 indexed matchId, address indexed winner, uint256 prizePaid, uint256 platformFee);
     event MatchCancelled(bytes32 indexed matchId, string reason);
@@ -150,8 +150,9 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         oracleSigner = _oracleSigner;
     }
 
-    function createDuel(bytes32 matchId, uint256 stakeAmount) external nonReentrant {
+    function createDuel(bytes32 matchId, uint256 stakeAmount, address expectedPlayer2) external nonReentrant {
         require(stakeAmount > 0, "Stake must be > 0");
+        require(expectedPlayer2 != address(0) && expectedPlayer2 != msg.sender, "Invalid opponent");
         require(matches[matchId].status == MatchStatus.None, "Match already exists");
 
         require(paymentToken.transferFrom(msg.sender, address(this), stakeAmount), "Deposit failed");
@@ -159,7 +160,9 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         matches[matchId] = DuelMatch({
             matchId: matchId,
             player1: msg.sender,
-            player2: address(0),
+            // Reserve the slot at creation. An observer can no longer front-run
+            // joinDuel and replace the server-matched opponent.
+            player2: expectedPlayer2,
             stakeAmount: stakeAmount,
             totalPool: stakeAmount * 2,
             createdAt: block.timestamp,
@@ -169,17 +172,16 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
             loserReactionMs: 0
         });
 
-        emit MatchCreated(matchId, msg.sender, stakeAmount, stakeAmount * 2);
+        emit MatchCreated(matchId, msg.sender, expectedPlayer2, stakeAmount, stakeAmount * 2);
     }
 
     function joinDuel(bytes32 matchId) external nonReentrant {
         DuelMatch storage duel = matches[matchId];
         require(duel.status == MatchStatus.Created, "Match not available");
-        require(duel.player1 != msg.sender, "Cannot play against self");
+        require(duel.player2 == msg.sender, "Not the matched opponent");
 
         require(paymentToken.transferFrom(msg.sender, address(this), duel.stakeAmount), "Deposit failed");
 
-        duel.player2 = msg.sender;
         duel.status = MatchStatus.Active;
 
         emit MatchJoined(matchId, msg.sender);

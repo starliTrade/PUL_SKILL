@@ -24,18 +24,51 @@ Security model:
 from __future__ import annotations
 
 import os
+import threading
+import time
+from collections import defaultdict, deque
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from auth import issue_nonce, issue_session, verify_session  # verify_session used by _auth
+from auth import EXPECTED_CHAIN_ID, issue_nonce, issue_session, verify_session
 from match_engine import MatchError, match_completed
 from oracle import sign_settlement
 from store import create_store, install_persistence
 
 app = FastAPI(title="PULSAR Game Server", version="1.1.1")
+
+_rate_lock = threading.Lock()
+_rate_windows: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+
+
+@app.middleware("http")
+async def request_limits(request: Request, call_next: Any):
+    """Bound request bodies and obvious per-IP abuse.
+
+    Production ingress should enforce a distributed limit as well; this local
+    guard prevents a single worker from accepting unbounded SIWE/result spam.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > 32_768:
+        return JSONResponse({"detail": "Request body too large"}, status_code=413)
+    if request.url.path.startswith("/api/"):
+        ip = request.client.host if request.client else "unknown"
+        group = "auth" if request.url.path.startswith("/api/auth/") else "api"
+        limit = 30 if group == "auth" else 300
+        now = time.monotonic()
+        key = (ip, group)
+        with _rate_lock:
+            window = _rate_windows[key]
+            while window and now - window[0] >= 60:
+                window.popleft()
+            if len(window) >= limit:
+                return JSONResponse({"detail": "Rate limit exceeded"}, status_code=429)
+            window.append(now)
+    return await call_next(request)
 
 # P0-fix — CORS. The frontend (static hosting) and this API are commonly on
 # different origins (docs/DEPLOYMENT.md deployment topology), so browsers send
@@ -126,12 +159,16 @@ class NonceRequest(BaseModel):
 
 
 class VerifyRequest(BaseModel):
-    message: str
-    signature: str = Field(pattern=r"^0x[0-9a-fA-F]+$")
+    message: str = Field(min_length=1, max_length=4096)
+    signature: str = Field(min_length=132, max_length=132, pattern=r"^0x[0-9a-fA-F]+$")
 
 
 class QueueRequest(BaseModel):
     stake: float
+
+
+class UsernameRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=20, pattern=r"^[A-Za-z0-9_]+$")
 
 
 class CommitRequest(BaseModel):
@@ -159,6 +196,8 @@ class ResultRequest(BaseModel):
 def auth_nonce(body: NonceRequest, request: Request) -> dict[str, str]:
     domain = _request_domain(request)
     nonce = issue_nonce(body.address, domain)
+    now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc)
+    expires = now + __import__('datetime').timedelta(minutes=5)
     message = (
         f"{domain} wants you to sign in with your Polygon account:\n"
         f"{body.address.lower()}\n"
@@ -167,9 +206,10 @@ def auth_nonce(body: NonceRequest, request: Request) -> dict[str, str]:
         "\n"
         f"URI: https://{domain}\n"
         "Version: 1\n"
-        "Chain ID: 137\n"
+        f"Chain ID: {EXPECTED_CHAIN_ID}\n"
         f"Nonce: {nonce}\n"
-        f"Issued At: {__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()}\n"
+        f"Issued At: {now.isoformat()}\n"
+        f"Expiration Time: {expires.isoformat()}\n"
     )
     return {"nonce": nonce, "message": message}
 
@@ -179,7 +219,12 @@ def auth_verify(body: VerifyRequest, request: Request) -> dict[str, str]:
     domain = _request_domain(request)
     from auth import verify_siwe
 
-    recovered = verify_siwe(body.message, body.signature, domain)
+    recovered = verify_siwe(
+        body.message,
+        body.signature,
+        domain,
+        consume_nonce=store.consume_auth_nonce,
+    )
     if not recovered:
         raise HTTPException(status_code=401, detail="SIWE verification failed")
     return {"token": issue_session(recovered), "address": recovered}
@@ -195,6 +240,17 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     return match.public_view(for_address=address)
 
 
+@app.post("/api/profile/username")
+def claim_username(body: UsernameRequest, request: Request) -> dict[str, Any]:
+    address = _auth(request)
+    reserved = {"admin", "pulsar", "official", "system", "treasury", "moderator", "support", "bot", "oracle", "escrow"}
+    if body.username.lower() in reserved:
+        raise HTTPException(status_code=400, detail="Reserved username")
+    if not store.claim_username(address, body.username):
+        raise HTTPException(status_code=409, detail="Username is already taken")
+    return {"success": True, "username": body.username}
+
+
 @app.get("/api/match/{match_id}")
 def match_view(match_id: str, request: Request) -> dict[str, Any]:
     address = _auth(request)
@@ -208,6 +264,7 @@ def match_view(match_id: str, request: Request) -> dict[str, Any]:
     # Any participant polling the view finalizes a due match (completed, or
     # grace window passed) and immediately receives the authoritative status.
     _finalize_if_due(match)
+    match = store.get(match_id)  # finalization replaces the transactional snapshot
     return match.public_view(for_address=address)
 
 
@@ -265,6 +322,8 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
                 if result and result.get("status") == "settled":
                     envelope = sign_settlement(result)
                     envelope["roundWins"] = result.get("roundWins", {})
+                    envelope["loser"] = result.get("loser", "")
+                    envelope["stake"] = result.get("stake", 0)
                     m.signed_settlement = {"status": "settled", **envelope}
                     res["settled"] = m.signed_settlement
             return res
@@ -272,6 +331,8 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
         res = store.update(body.matchId, _mutate)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    if isinstance(res.get("settled"), dict):
+        _record_settlement_best_effort(res["settled"])
     return res
 
 
@@ -280,6 +341,25 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
     envelope, persisted atomically by store.update(). Idempotent — an already
     settled/void match is replayed, never re-signed."""
     if m.status == "settled" and m.signed_settlement:
+        existing = dict(m.signed_settlement)
+        if int(existing.get("deadline", 0)) > int(time.time()) + 30:
+            return existing
+        # Expired proofs are safe to replace: the contract rejects the old
+        # deadline, and a new nonce/signature lets a failed wallet claim retry.
+        refreshed = sign_settlement(
+            {
+                "status": "settled",
+                "matchId": existing["matchId"],
+                "winner": existing["winner"],
+                "winnerTimeMs": existing["winnerTimeMs"],
+                "loserTimeMs": existing["loserTimeMs"],
+                "validatedTimes": existing["validatedTimes"],
+            }
+        )
+        refreshed["roundWins"] = existing.get("roundWins", {})
+        refreshed["loser"] = existing.get("loser", "")
+        refreshed["stake"] = existing.get("stake", 0)
+        m.signed_settlement = {"status": "settled", **refreshed}
         return dict(m.signed_settlement)
     if m.status == "void":
         return {"status": "void", "reason": "Match was voided — stakes are refundable on-chain."}
@@ -290,6 +370,8 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
     if result.get("status") == "settled":
         envelope = sign_settlement(result)
         envelope["roundWins"] = result.get("roundWins", {})
+        envelope["loser"] = result.get("loser", "")
+        envelope["stake"] = result.get("stake", 0)
         m.signed_settlement = {"status": "settled", **envelope}
         return dict(m.signed_settlement)
     return {"status": "void", "reason": result.get("reason", "stakes refund")}
@@ -303,8 +385,18 @@ def _finalize_if_due(match: Any) -> None:
     if match.status != "active" or not match_completed(match):
         return
     try:
-        store.update(match.match_id, _settle_once)
+        result = store.update(match.match_id, _settle_once)
+        if result.get("status") == "settled":
+            _record_settlement_best_effort(result)
     except (MatchError, HTTPException):
+        pass
+
+
+def _record_settlement_best_effort(result: dict[str, Any]) -> None:
+    """Public stats must never block delivery of an already-committed proof."""
+    try:
+        store.record_settlement(result)
+    except Exception:
         pass
 
 
@@ -323,4 +415,7 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
     # players on different backend replicas can no longer produce two
     # different signatures; the transaction serializes them and the loser of
     # the race replays the ONE stored proof.
-    return store.update(match_id, _settle_once)
+    result = store.update(match_id, _settle_once)
+    if result.get("status") == "settled":
+        _record_settlement_best_effort(result)
+    return result

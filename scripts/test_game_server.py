@@ -69,13 +69,13 @@ m2 = store.enqueue(opp, 1.0)
 check("Matchmaking pairs two players", m1.match_id == m2.match_id and m1.status == "active")
 
 
-def wait_out_target(match, addr, idx):
+def wait_out_target(match, addr, idx, reaction_ms=300.0):
     """Simulate wall-clock elapse of the round's target delay on the server.
     The engine reads time.time() directly, so tests rewind revealed_at by the
     full target window — identical to a client waiting honestly."""
     r = match.rounds[addr].get(idx)
     if r and r.revealed_at:
-        r.revealed_at -= r.target_ms / 1000.0
+        r.revealed_at -= (r.target_ms + reaction_ms) / 1000.0
 
 
 # playerA round flow
@@ -534,6 +534,22 @@ check(
     auth.verify_siwe(msg2, sig2, domain) == player_addr,
 )
 
+# A timestamp-shaped string is not a nonce: it must carry the server HMAC and
+# be bound to the signed wallet/domain.
+forged_nonce = "ab" * 80
+forged_msg = message.replace(f"Nonce: {nonce}", f"Nonce: {forged_nonce}")
+forged_sig2 = player.sign_message(encode_defunct(text=forged_msg)).signature.hex()
+check("A4: a nonce never issued by the server is rejected", auth.verify_siwe(forged_msg, forged_sig2, domain) is None)
+
+# Waiting longer and reporting the biological floor used to pass. The server
+# must compare the claim with its observed post-target interval.
+me.commit_intent(m7, fast, 2, "0x" + "77" * 31 + "03")
+t7c = me.reveal_target(m7, fast, 2)
+r7c = m7.rounds[fast][2]
+r7c.revealed_at = time.time() - (r7c.target_ms + 500) / 1000.0
+res7c = me.submit_result(m7, fast, 2, me.MIN_HUMAN_MS, t7c["resultProof"])
+check("A4: delayed fabricated 105ms claim is rejected", res7c["accepted"] is False and "server-observed" in res7c["reason"])
+
 # --- 6. DurableMatchStore fallback path (the CI blind spot) -------------------
 # P0-fix regression: with google-cloud-firestore INSTALLED but no credentials,
 # PULSAR_MATCH_STORE=firestore must fall back cleanly to memory AND the
@@ -553,6 +569,29 @@ check("Facade pairs two players (one FirestoreStore instance, stable ids)", fa_m
 fa_m2 = fb.enqueue("c" * 40, 2.0)
 check("Facade re-poll is idempotent (player_match map survives across calls)", fa_m2.match_id == fa_m.match_id)
 check("FirestoreStore remains importable and instantiable", FirestoreStore is not None)
+
+# In-memory update must roll back object mutation when signing fails.
+rollback_store = DurableMatchStore(backend="memory")
+rx, ry = Account.create().address.lower(), Account.create().address.lower()
+rm = rollback_store.enqueue(rx, 2.0)
+rollback_store.enqueue(ry, 2.0)
+for idx in (0, 1):
+    for addr, measured in ((rx, 180.0), (ry, 280.0)):
+        me.commit_intent(rm, addr, idx, "0x" + hashlib.sha256(f"rollback-{addr}-{idx}".encode()).hexdigest())
+        rt = me.reveal_target(rm, addr, idx)
+        wait_out_target(rm, addr, idx, measured)
+        me.submit_result(rm, addr, idx, measured, rt["resultProof"])
+
+def fail_after_settle(match, eng):
+    eng.settle(match)
+    raise RuntimeError("simulated signer outage")
+
+try:
+    rollback_store.update(rm.match_id, fail_after_settle)
+except RuntimeError:
+    pass
+rolled_back = rollback_store.get(rm.match_id)
+check("A4: memory transaction rolls back a signer failure", rolled_back.status == "active" and not rolled_back.signed_settlement)
 
 print()
 if failures:

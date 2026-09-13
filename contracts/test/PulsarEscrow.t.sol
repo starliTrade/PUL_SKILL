@@ -42,7 +42,7 @@ contract PulsarEscrowTest is Test {
 
     function _createAndJoin(bytes32 matchId) internal {
         vm.prank(p1);
-        escrow.createDuel(matchId, STAKE);
+        escrow.createDuel(matchId, STAKE, p2);
         vm.prank(p2);
         escrow.joinDuel(matchId);
     }
@@ -143,7 +143,7 @@ contract PulsarEscrowTest is Test {
         bytes32 matchId2 = keccak256("test-match-2");
         usdt.faucet(p1, STAKE);
         vm.prank(p1);
-        escrow.createDuel(matchId2, STAKE);
+        escrow.createDuel(matchId2, STAKE, p2);
         vm.prank(p2);
         escrow.joinDuel(matchId2);
 
@@ -217,9 +217,9 @@ contract PulsarEscrowTest is Test {
     function test_RefundTimeout_CancelledForCreatedDuel() public {
         bytes32 matchId = keccak256("timeout-created");
         vm.prank(p1);
-        escrow.createDuel(matchId, STAKE);
+        escrow.createDuel(matchId, STAKE, p2);
 
-        vm.warp(block.timestamp + 10 minutes + 1);
+        vm.warp(block.timestamp + 30 minutes + 1);
         escrow.refundTimeoutMatch(matchId);
 
         assertEq(uint8(escrow.matches(matchId).status), uint8(PulsarEscrow.MatchStatus.Cancelled));
@@ -231,7 +231,7 @@ contract PulsarEscrowTest is Test {
         bytes32 matchId = keccak256("timeout-active");
         _createAndJoin(matchId);
 
-        vm.warp(block.timestamp + 10 minutes + 1);
+        vm.warp(block.timestamp + 30 minutes + 1);
         escrow.refundTimeoutMatch(matchId);
 
         assertEq(uint8(escrow.matches(matchId).status), uint8(PulsarEscrow.MatchStatus.Refunded));
@@ -245,6 +245,20 @@ contract PulsarEscrowTest is Test {
         _createAndJoin(matchId);
         vm.expectRevert("Match not timed out");
         escrow.refundTimeoutMatch(matchId);
+    }
+
+    function test_RevertWhen_OutsiderFrontRunsJoin() public {
+        bytes32 matchId = keccak256("front-run");
+        address attacker = makeAddr("attacker");
+        usdt.faucet(attacker, STAKE);
+        vm.prank(attacker);
+        usdt.approve(address(escrow), type(uint256).max);
+
+        vm.prank(p1);
+        escrow.createDuel(matchId, STAKE, p2);
+        vm.prank(attacker);
+        vm.expectRevert("Not the matched opponent");
+        escrow.joinDuel(matchId);
     }
 
     function test_OnlyOwnerCanRotateSigners() public {

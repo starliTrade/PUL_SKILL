@@ -43,7 +43,8 @@ MIN_HUMAN_MS = 105.0           # below this is not humanly plausible — MUST ma
                                # the client floor (antiCheat.MIN_HUMAN_REACTION_MS = 105)
                                # so an attacker gains no threshold advantage
 MAX_HUMAN_MS = 1200.0          # above this is a disconnect / not a serious attempt
-CLOCK_TOLERANCE_MS = 250.0     # network + NTP slack for the server-clock gate
+MAX_NETWORK_SLACK_MS = 250.0   # reveal-response + result-request transit budget
+CLAIM_CLOCK_SLACK_MS = 50.0    # client duration cannot exceed server duration
 ROUND_EXPIRY_SECONDS = 60
 MATCH_EXPIRY_SECONDS = 600     # aligns with the on-chain refund horizon (30 min
                                # starts at deposit; the server gives up earlier)
@@ -326,20 +327,24 @@ def _validate_plausibility(match: Match, r: Round, measured_ms: float, now: floa
         return f"implausible: {measured_ms}ms is below human minimum"
     if measured_ms > MAX_HUMAN_MS:
         return f"implausible: {measured_ms}ms exceeds maximum plausible reaction"
-    # Timing-consistency gate (audit #3): the CLAIMED time must be supported
-    # by the SERVER-observed elapsed time since the reveal. revealed_at +
-    # target_ms is the earliest instant the target is even VISIBLE, so a
-    # reaction can never be shorter than the hidden-target delay plus the
-    # human floor. The old 0.9x rule allowed a fabricated 90ms to land BEFORE
-    # the target appeared (measured server-side) — total fairness failure.
+    # Timing-consistency gate: compare the claim to the complete interval seen
+    # by the server, not merely to a minimum delay. Server-observed reaction is
+    # expected to exceed the client measurement only by network transit. A
+    # player who waits and then submits a fabricated 105ms therefore fails.
     if r.revealed_at:
         elapsed_ms = (now - r.revealed_at) * 1000.0
-        min_claimable = r.target_ms + MIN_HUMAN_MS
-        if elapsed_ms + CLOCK_TOLERANCE_MS < min_claimable:
+        if elapsed_ms < r.target_ms:
             return (
                 "implausible: submitted before the target delay could have "
                 "elapsed on the server clock"
             )
+        observed_reaction_ms = elapsed_ms - r.target_ms
+        if observed_reaction_ms - measured_ms > MAX_NETWORK_SLACK_MS:
+            return "implausible: claimed reaction is faster than server-observed timing"
+        if measured_ms - observed_reaction_ms > CLAIM_CLOCK_SLACK_MS:
+            return "implausible: claimed reaction exceeds server-observed timing"
+        if observed_reaction_ms > ROUND_EXPIRY_SECONDS * 1000.0:
+            return "round expired before result submission"
     return ""
 
 

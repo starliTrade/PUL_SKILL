@@ -177,7 +177,13 @@ function main() {
     failed = true;
     console.error('FAIL Deploy.s.sol missing');
   } else {
-    console.log('OK Deploy.s.sol present (full compile via forge on dev machine)');
+    const deploySrc = fs.readFileSync(deployPath, 'utf8');
+    if (!deploySrc.includes('block.chainid != 137') || !deploySrc.includes('PAYMENT_TOKEN_ADDRESS required')) {
+      failed = true;
+      console.error('FAIL Deploy.s.sol lacks the Polygon-mainnet MockUSDT guard');
+    } else {
+      console.log('OK Deploy.s.sol present with Polygon-mainnet MockUSDT guard (full compile via forge on dev machine)');
+    }
   }
 
   console.log(failed ? 'COMPILE CHECK FAILED' : 'COMPILE CHECK PASSED');
@@ -186,5 +192,4 @@ function main() {
 }
 
 main();
-
 

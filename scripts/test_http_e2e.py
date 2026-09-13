@@ -56,19 +56,7 @@ def make_session(account: Account) -> tuple[str, dict]:
     addr = account.address.lower()
     r = client.post("/api/auth/nonce", json={"address": addr}, headers={"host": DOMAIN})
     assert r.status_code == 200, r.text
-    nonce = r.json()["nonce"]
-    message = (
-        f"{DOMAIN} wants you to sign in with your Polygon account:\n"
-        f"{addr}\n"
-        "\n"
-        "Prove you own this wallet. This signature grants no permission to move funds or spend tokens.\n"
-        "\n"
-        f"URI: https://{DOMAIN}\n"
-        "Version: 1\n"
-        f"Chain ID: {auth_module.EXPECTED_CHAIN_ID}\n"
-        f"Nonce: {nonce}\n"
-        f"Issued At: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
-    )
+    message = r.json()["message"]
     sig = account.sign_message(encode_defunct(text=message)).signature.hex()
     if not sig.startswith("0x"):
         sig = "0x" + sig
@@ -101,9 +89,30 @@ r = client.post(
 )
 check("SIWE rejects tampered message (401)", r.status_code == 401)
 
+# A self-signed message with an invented nonce must not authenticate.
+attacker = Account.create()
+nonce_response = client.post("/api/auth/nonce", json={"address": attacker.address}, headers={"host": DOMAIN})
+invented_message = nonce_response.json()["message"].replace(
+    f"Nonce: {nonce_response.json()['nonce']}", "Nonce: " + "ab" * 80
+)
+invented_sig = attacker.sign_message(encode_defunct(text=invented_message)).signature.hex()
+r = client.post(
+    "/api/auth/verify",
+    json={"message": invented_message, "signature": "0x" + invented_sig.removeprefix("0x")},
+    headers={"host": DOMAIN},
+)
+check("SIWE rejects a nonce that the server did not issue", r.status_code == 401)
+
 # Unauthenticated privileged route must fail
 r = client.post("/api/queue", json={"stake": 1.0})
 check("Queue requires a bearer token (401)", r.status_code == 401)
+
+# Username ownership is enforced by the authenticated backend, not public
+# Firestore client writes.
+r = client.post("/api/profile/username", json={"username": "AlicePilot"}, headers=auth_headers(token_a))
+check("Authenticated wallet can claim a username", r.status_code == 200)
+r = client.post("/api/profile/username", json={"username": "AlicePilot"}, headers=auth_headers(token_b))
+check("Another wallet cannot steal the username", r.status_code == 409)
 
 # --- 2. Stake gate (the old ALLOWED_STAKES NameError crash site) ---------------
 r = client.post("/api/queue", json={"stake": 999.0}, headers=auth_headers(token_a))
@@ -156,7 +165,7 @@ def play_round(token: str, idx: int, ms: float, honest_wait: bool, with_proof: b
             if m.match_id == match_id:
                 rr = m.rounds.get(addr, {}).get(idx)
                 if rr and rr.revealed_at:
-                    rr.revealed_at -= rr.target_ms / 1000.0
+                    rr.revealed_at -= (rr.target_ms + ms) / 1000.0
     r = client.post(
         "/api/round/result",
         json={"matchId": match_id, "roundIndex": idx, "measuredMs": ms, "resultProof": result_proof},
@@ -227,6 +236,17 @@ if s.get("status") == "settled":
 # --- 6. Idempotent settlement replay --------------------------------------------
 r2s = client.post(f"/api/match/{match_id}/settle", json={}, headers=auth_headers(token_b))
 check("Second settle call replays the SAME signature (idempotent)", r2s.status_code == 200 and r2s.json().get("signature") == s["signature"])
+
+# Expired proof must be re-signed so a wallet/RPC failure is recoverable.
+stored = server.store.memory.matches[match_id]
+stored.signed_settlement["deadline"] = int(time.time()) - 1
+r3s = client.post(f"/api/match/{match_id}/settle", json={}, headers=auth_headers(token_a))
+check(
+    "Expired settlement proof is refreshed",
+    r3s.status_code == 200
+    and r3s.json().get("deadline", 0) > time.time()
+    and r3s.json().get("signature") != s["signature"],
+)
 
 # P0-fix regression — the match view must answer BOTH verbs. The client's
 # in-game refresh previously 405'd here (POST-only helper vs GET-only route)

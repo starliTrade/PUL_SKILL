@@ -44,6 +44,8 @@ except Exception:  # pragma: no cover
 
 COLLECTION = "pulsar_matches"
 QUEUE_DOC = "pulsar_queue"
+PLAYER_MATCH_COLLECTION = "pulsar_player_matches"
+AUTH_NONCE_COLLECTION = "pulsar_auth_nonces"
 
 
 def _round_to_doc(r: Round) -> dict[str, Any]:
@@ -134,6 +136,8 @@ class InMemoryStore:
         self.queue: dict[float, list[str]] = {}
         # address -> live (waiting|active) match id (idempotent enqueue).
         self.player_match: dict[str, str] = {}
+        self._auth_nonces: dict[str, float] = {}
+        self._usernames: dict[str, str] = {}
         self._lock = threading.Lock()
 
     def enqueue(self, address: str, stake: float) -> Match:
@@ -179,12 +183,48 @@ class InMemoryStore:
             raise MatchError("Match not found")
         return m
 
+    def consume_auth_nonce(self, nonce: str) -> bool:
+        """Consume once under the same process lock; expired entries are pruned."""
+        now = time.time()
+        with self._lock:
+            for value, expires_at in list(self._auth_nonces.items()):
+                if expires_at <= now:
+                    self._auth_nonces.pop(value, None)
+            if nonce in self._auth_nonces:
+                return False
+            self._auth_nonces[nonce] = now + 600
+            return True
+
+    def claim_username(self, address: str, username: str) -> bool:
+        normalized = username.lower()
+        addr = address.lower()
+        with self._lock:
+            owner = self._usernames.get(normalized)
+            if owner and owner != addr:
+                return False
+            for tag, current_owner in list(self._usernames.items()):
+                if current_owner == addr and tag != normalized:
+                    self._usernames.pop(tag, None)
+            self._usernames[normalized] = addr
+            return True
+
+    def record_settlement(self, settlement: dict[str, Any]) -> None:
+        # Durable global ledgers do not exist in local-memory mode.
+        return None
+
     def update(self, match_id: str, mutate: Any) -> Any:
         """Single-process serialization of read-modify-write (multi-replica
-        parity with the Firestore transactional path)."""
+        parity with the Firestore transactional path). Mutate a detached copy
+        so an exception (notably signer failure) rolls back completely."""
         with self._lock:
-            m = self.get(match_id)
-            out = mutate(m)
+            current = self.matches.get(match_id)
+            if current is None:
+                raise MatchError("Match not found")
+            m = _match_from_doc(_match_to_doc(current))
+            out = mutate(m)  # commit only after the callback succeeds
+            self.matches[match_id] = m
+            for address in m.players:
+                self.player_match[address] = match_id
             return out
 
     def sweep_expired(self) -> None:
@@ -226,6 +266,9 @@ class FirestoreStore:
         # Document IDs cannot contain '.' — format stakes as integer cents.
         return self.db.collection(QUEUE_DOC).document(str(int(round(stake * 100))))
 
+    def _player_ref(self, address: str) -> Any:
+        return self.db.collection(PLAYER_MATCH_COLLECTION).document(address.lower())
+
     @staticmethod
     def _stake_from_doc_id(doc_id: str) -> float:
         return int(doc_id) / 100.0
@@ -234,15 +277,28 @@ class FirestoreStore:
 
     def enqueue(self, address: str, stake: float) -> Match:
         addr = address.lower()
-        live = self.player_match.get(addr)
-        if live:
-            m = self.local.matches.get(live)
-            if m and m.status in ("waiting", "active"):
-                return m
-            self.player_match.pop(addr, None)
+        # Do not trust the process-local cache here: another replica may have
+        # activated or settled the match. The transaction below consults the
+        # durable per-player index on every enqueue/poll.
         queue_ref = self._queue_ref(stake)
+        player_ref = self._player_ref(addr)
 
         def _txn_body(transaction: Any) -> Optional[Match]:
+            # Durable idempotency: process-local maps disappear on another
+            # replica. Resolve the player's live match before touching the
+            # shared stake queue.
+            player_snap = player_ref.get(transaction=transaction)
+            player_match_id = (
+                (player_snap.to_dict() or {}).get("matchId") if player_snap.exists else None
+            )
+            if player_match_id:
+                existing_ref = self._match_ref(str(player_match_id))
+                existing_snap = existing_ref.get(transaction=transaction)
+                if existing_snap.exists:
+                    existing = _match_from_doc(existing_snap.to_dict())
+                    if addr in existing.players and existing.status in ("waiting", "active"):
+                        return existing
+
             snap = queue_ref.get(transaction=transaction)
             waiting_id = (snap.to_dict() or {}).get("waitingMatchId") if snap.exists else None
             if waiting_id:
@@ -255,12 +311,14 @@ class FirestoreStore:
                         m.status = "active"
                         transaction.set(mref, _match_to_doc(m))
                         transaction.set(queue_ref, {"waitingMatchId": None})
+                        transaction.set(player_ref, {"matchId": m.match_id, "updatedAt": time.time()})
                         return m
                     if addr in m.players:
                         # Idempotent re-poll: the caller IS this waiting match's
                         # creator. Without this branch the queue slot was stolen
                         # from under them and every poll minted an orphan match.
                         transaction.set(queue_ref, {"waitingMatchId": waiting_id})
+                        transaction.set(player_ref, {"matchId": m.match_id, "updatedAt": time.time()})
                         return m
             # No opponent: create a fresh waiting match and claim the queue slot.
             match_id = secrets.token_hex(16)
@@ -273,6 +331,7 @@ class FirestoreStore:
             )
             transaction.set(self._match_ref(match_id), _match_to_doc(m))
             transaction.set(queue_ref, {"waitingMatchId": match_id})
+            transaction.set(player_ref, {"matchId": match_id, "updatedAt": time.time()})
             return m
 
         # P0-fix: the decorator MUST come from the imported module (aliased
@@ -298,6 +357,137 @@ class FirestoreStore:
         if not snap.exists:
             raise MatchError("Match not found")
         return _match_from_doc(snap.to_dict())
+
+    def consume_auth_nonce(self, nonce: str) -> bool:
+        """Atomically consume a nonce across all Firestore-backed replicas."""
+        nonce_id = __import__("hashlib").sha256(nonce.encode("utf-8")).hexdigest()
+        ref = self.db.collection(AUTH_NONCE_COLLECTION).document(nonce_id)
+
+        def _txn_body(transaction: Any) -> bool:
+            snap = ref.get(transaction=transaction)
+            if snap.exists:
+                return False
+            transaction.set(ref, {"consumedAt": time.time(), "expiresAt": time.time() + 600})
+            return True
+
+        txn = self.db.transaction()
+        transactional = getattr(_firestore, "transactional", None)
+        if transactional is not None:
+            return bool(transactional(_txn_body)(txn))
+        return bool(_txn_body(txn))
+
+    def claim_username(self, address: str, username: str) -> bool:
+        normalized = username.lower()
+        addr = address.lower()
+        username_ref = self.db.collection("usernames").document(normalized)
+        user_ref = self.db.collection("users").document(addr)
+
+        def _txn_body(transaction: Any) -> bool:
+            username_snap = username_ref.get(transaction=transaction)
+            user_snap = user_ref.get(transaction=transaction)
+            owner = str((username_snap.to_dict() or {}).get("address", "")).lower() if username_snap.exists else ""
+            if owner and owner != addr:
+                return False
+            old_tag = str((user_snap.to_dict() or {}).get("playerId", "")).lower() if user_snap.exists else ""
+            old_ref = self.db.collection("usernames").document(old_tag) if old_tag and old_tag != normalized else None
+            old_snap = old_ref.get(transaction=transaction) if old_ref is not None else None
+            if old_ref is not None and old_snap is not None:
+                old_owner = str((old_snap.to_dict() or {}).get("address", "")).lower() if old_snap.exists else ""
+                if old_owner == addr:
+                    transaction.delete(old_ref)
+            transaction.set(username_ref, {"username": normalized, "tag": username, "address": addr, "updatedAt": time.time()})
+            transaction.set(user_ref, {"address": addr, "playerId": username, "updatedAt": time.time()}, merge=True)
+            return True
+
+        txn = self.db.transaction()
+        transactional = getattr(_firestore, "transactional", None)
+        if transactional is not None:
+            return bool(transactional(_txn_body)(txn))
+        return bool(_txn_body(txn))
+
+    def record_settlement(self, settlement: dict[str, Any]) -> None:
+        """Idempotently project an authoritative settlement to public stats."""
+        match_id = str(settlement.get("matchId", ""))
+        winner = str(settlement.get("winner", "")).lower()
+        loser = str(settlement.get("loser", "")).lower()
+        if not match_id or not winner or not loser:
+            return
+        ledger_ref = self.db.collection("matches").document(match_id)
+        user_refs = {
+            winner: self.db.collection("users").document(winner),
+            loser: self.db.collection("users").document(loser),
+        }
+        leaderboard_refs = {
+            address: self.db.collection("leaderboard").document(address)
+            for address in (winner, loser)
+        }
+
+        def _txn_body(transaction: Any) -> None:
+            ledger_snap = ledger_ref.get(transaction=transaction)
+            if ledger_snap.exists:
+                return
+            user_snaps = {
+                address: ref.get(transaction=transaction)
+                for address, ref in user_refs.items()
+            }
+            now = time.time()
+            for address in (winner, loser):
+                existing = user_snaps[address].to_dict() or {}
+                wins = int(existing.get("wins", 0)) + (1 if address == winner else 0)
+                losses = int(existing.get("losses", 0)) + (1 if address == loser else 0)
+                total = int(existing.get("totalMatches", 0)) + 1
+                times = (settlement.get("validatedTimes") or {}).get(address, []) or []
+                candidates = [float(value) for value in times if float(value) > 0]
+                prior_best = float(existing.get("bestReactionMs", 0) or 0)
+                best = min(candidates + ([prior_best] if prior_best > 0 else []), default=0)
+                profile = {
+                    "address": address,
+                    "wins": wins,
+                    "losses": losses,
+                    "voids": int(existing.get("voids", 0)),
+                    "totalMatches": total,
+                    "bestReactionMs": best,
+                    "updatedAt": now,
+                }
+                transaction.set(user_refs[address], profile, merge=True)
+                transaction.set(
+                    leaderboard_refs[address],
+                    {
+                        **profile,
+                        "playerId": existing.get("playerId", address[:8]),
+                        "name": existing.get("playerId", address[:8]),
+                        "shortAddress": f"{address[:6]}...{address[-4:]}",
+                        "winRate": round((wins / total) * 100) if total else 0,
+                    },
+                    merge=True,
+                )
+            transaction.set(
+                ledger_ref,
+                {
+                    "id": match_id,
+                    "winner": winner,
+                    "loser": loser,
+                    "playerAddress": winner,
+                    "opponentAddress": loser,
+                    "game": "reaction",
+                    "result": "win",
+                    "entryFee": float(settlement.get("stake", 0)),
+                    "prize": float(settlement.get("stake", 0)) * 2 * 0.98,
+                    "yourTime": settlement.get("winnerTimeMs"),
+                    "opponentTime": settlement.get("loserTimeMs"),
+                    "winnerTimeMs": settlement.get("winnerTimeMs"),
+                    "loserTimeMs": settlement.get("loserTimeMs"),
+                    "oracleSignature": settlement.get("signature", ""),
+                    "timestamp": now,
+                },
+            )
+
+        txn = self.db.transaction()
+        transactional = getattr(_firestore, "transactional", None)
+        if transactional is not None:
+            transactional(_txn_body)(txn)
+        else:
+            _txn_body(txn)
 
     def update(self, match_id: str, mutate: Any) -> Any:
         """Transactional read-modify-write (audit #3): the mutation is applied
@@ -414,6 +604,22 @@ class DurableMatchStore:
             self._mirror(match)
             return match
         return self.memory.get(match_id)
+
+    def consume_auth_nonce(self, nonce: str) -> bool:
+        if self._fs_store is not None:
+            return self._fs_store.consume_auth_nonce(nonce)
+        return self.memory.consume_auth_nonce(nonce)
+
+    def claim_username(self, address: str, username: str) -> bool:
+        if self._fs_store is not None:
+            return self._fs_store.claim_username(address, username)
+        return self.memory.claim_username(address, username)
+
+    def record_settlement(self, settlement: dict[str, Any]) -> None:
+        if self._fs_store is not None:
+            self._fs_store.record_settlement(settlement)
+        else:
+            self.memory.record_settlement(settlement)
 
     def _mirror(self, match: Match) -> None:
         """Refresh the local cache + idempotency map from durable state."""

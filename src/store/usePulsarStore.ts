@@ -4,6 +4,7 @@ import { realWeb3Manager, RealWeb3Manager, UserWalletData, LeaderboardPlayer, Co
 import { EIP6963ProviderDetail } from '../lib/eip6963';
 import { XPSystem, XPSummary } from '../lib/xpSystem';
 import { loadPersistedSiweSession } from '../lib/siwe';
+import { claimServerUsername, ensureSession, gameServerConfigured } from '../lib/gameServerClient';
 
 /**
  * P0.7 — Single shared store.
@@ -282,12 +283,31 @@ const updatePlayerTag = async (newTag: string): Promise<{ success: boolean; erro
   if (!account.connected || !account.address) {
     return { success: false, error: 'Please connect your wallet first' };
   }
-  const result = await realWeb3Manager.claimUsername(newTag, account.address);
-  if (result.success) {
-    const updated = await realWeb3Manager.loadUserDataAsync(account.address);
-    setUserData(updated);
+  if (!gameServerConfigured()) {
+    return { success: false, error: 'The authoritative game server is required to claim a global username.' };
   }
-  return result;
+  try {
+    const provider = realWeb3Manager.getActiveEip1193Provider();
+    if (!provider) return { success: false, error: 'No active wallet provider.' };
+    const session = await ensureSession(account.address, async (message) => {
+      try {
+        return await provider.request({ method: 'personal_sign', params: [message, account.address] });
+      } catch (err: any) {
+        if (err?.code === -32601 || err?.code === -32602) {
+          return await provider.request({ method: 'signMessage', params: [account.address, message] });
+        }
+        throw err;
+      }
+    });
+    const claimed = await claimServerUsername(session, newTag.trim());
+    const updated = await realWeb3Manager.loadUserDataAsync(account.address);
+    updated.playerId = claimed.username;
+    await realWeb3Manager.saveUserDataAsync(updated);
+    setUserData({ ...updated });
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Username claim failed.' };
+  }
 };
 
 const checkUsernameAvailability = async (tag: string) => {

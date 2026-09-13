@@ -25,6 +25,10 @@ a built-in faucet), so the entire money path is rehearsed with zero risk.
 
 ## 1. Deploy PulsarEscrow
 
+The current ABI binds `createDuel` to the server-selected player 2 address.
+Any deployment made before this change is incompatible and must be redeployed;
+do not point this client at an older two-argument `createDuel` contract.
+
 First scaffold forge-std (one time) and run the test suite on your machine:
 
 ```bash

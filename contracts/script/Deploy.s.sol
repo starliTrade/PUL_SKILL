@@ -23,6 +23,7 @@ contract Deploy is Script {
 
         vm.startBroadcast(deployerKey);
         if (paymentToken == address(0)) {
+            require(block.chainid != 137, "PAYMENT_TOKEN_ADDRESS required on Polygon mainnet");
             MockUSDT mock = new MockUSDT();
             paymentToken = address(mock);
         }

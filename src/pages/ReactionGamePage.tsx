@@ -42,8 +42,8 @@ import {
   type ServerSession,
   type MatchView,
 } from '../lib/gameServerClient';
-import { settleDuel as settleDuelOnChain, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState } from '../lib/escrowFlow';
-import { isEscrowConfigured, CHAIN } from '../lib/chain';
+import { settleDuel as settleDuelOnChain, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState, refundTimeoutMatch } from '../lib/escrowFlow';
+import { isEscrowConfigured, CHAIN, explorerTxUrl } from '../lib/chain';
 import { realWeb3Manager } from '../lib/realWeb3';
 import { reportError } from '../lib/monitoring';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
@@ -62,10 +62,10 @@ interface ReactionGamePageProps {
 export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   onNavigate,
   opponentName,
-  stakeAmount = 1,
+  stakeAmount = 0,
 }) => {
   const { t } = useLanguage();
-  const { wallet, recordMatch, requestSignature } = usePulsarStore();
+  const { wallet, recordMatch } = usePulsarStore();
   const [phase, setPhase] = useState<GamePhase>('human-verify');
   const [countdown, setCountdown] = useState<number>(3);
   const [matchResult, setMatchResult] = useState<MatchResolution | null>(null);
@@ -82,6 +82,10 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   const [serverSession, setServerSession] = useState<ServerSession | null>(null);
   const [serverError, setServerError] = useState<string>('');
   const [settlementTxHash, setSettlementTxHash] = useState<string>('');
+  const [refundTxHash, setRefundTxHash] = useState<string>('');
+  const [claimError, setClaimError] = useState<string>('');
+  const [refundError, setRefundError] = useState<string>('');
+  const [claimBusy, setClaimBusy] = useState(false);
   const isServerMode = currentStake > 0 && gameServerConfigured();
 
   useEffect(() => {
@@ -233,8 +237,9 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
       }
       const bytes32 = await matchIdToBytes32(view.matchId);
       if (view.youAreCreator) {
+        if (!view.opponent) throw new Error('Matched opponent identity is missing.');
         await approveUsdt(currentStake);
-        await createDuel(bytes32, currentStake);
+        await createDuel(bytes32, currentStake, view.opponent);
       } else {
         // P0-fix — the joiner MUST approve before joinDuel(): the escrow pulls
         // the joiner's stake via transferFrom, which reverts without allowance
@@ -269,22 +274,22 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
       setBo3State({ userScore: 0, opponentScore: 0, currentRound: 1, rounds: [], targetWins: 2, isMatchOver: false });
       setPhase('ready');
     } catch (err: unknown) {
+      setClaimBusy(false);
       const msg = err instanceof Error ? err.message : String(err);
       setServerError(msg);
       setMatchResult({ outcome: 'void', yourTime: 0, opponentTime: 0, prize: 0, reason: msg });
       setPhase('bot-detected'); // honest error shell; reason is rendered
     }
-  }, [isServerMode, wallet.address, currentStake]);
+  }, [isServerMode, wallet.address, wallet.fullAddress, currentStake]);
 
   // Auto-start server matchmaking once on mount for staked matches.
   const serverStartRef = useRef(false);
   useEffect(() => {
-    if (currentStake > 0 && gameServerConfigured() && !serverStartRef.current) {
+    if (currentStake > 0 && wallet.address && gameServerConfigured() && !serverStartRef.current) {
       serverStartRef.current = true;
       void startServerMatch();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [currentStake, wallet.address, startServerMatch]);
 
   // Start waiting phase — practice: local randomized delay. Server mode:
   // commit this round, fetch the server's target delay, and wait exactly that
@@ -504,6 +509,8 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
       let txHash = '';
       if (iWon) {
         try {
+          setClaimBusy(true);
+          setClaimError('');
           const bytes32 = await matchIdToBytes32(result.matchId);
           txHash = await settleDuelOnChain({
             matchId: bytes32,
@@ -515,6 +522,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
             signature: result.signature,
           });
           setSettlementTxHash(txHash);
+          setClaimBusy(false);
           sounds.playWin();
           try {
             confetti({ particleCount: 90, spread: 75, origin: { y: 0.6 }, colors: ['#38bdf8', '#10b981', '#ffffff', '#eab308'] });
@@ -522,6 +530,8 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
         } catch (err: unknown) {
           // On-chain claim failed — the signed proof stays valid for 10 minutes.
           const msg = err instanceof Error ? err.message : String(err);
+          setClaimBusy(false);
+          setClaimError(msg);
           setMatchResult({
             outcome: iWon ? 'win' : 'loss',
             yourTime,
@@ -560,6 +570,8 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
         opponentTime: avgOpp,
         yourTime: avgUser,
         timestamp: Date.now(),
+        hash: txHash || undefined,
+        oracleSignature: result.signature,
       }).then((xpRes) => setXpSummary(xpRes));
 
       setPhase('result');
@@ -567,6 +579,28 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
       const msg = err instanceof Error ? err.message : String(err);
       setMatchResult({ outcome: 'void', yourTime, opponentTime: oppTime, prize: 0, reason: msg });
       setPhase('bot-detected');
+    }
+  };
+
+  const retrySettlementClaim = (): void => {
+    if (!matchResult || !serverMatch || !serverSession || claimBusy) return;
+    void finishServerMatch(
+      matchResult.rounds || bo3State.rounds,
+      matchResult.userScore ?? bo3State.userScore,
+      matchResult.opponentScore ?? bo3State.opponentScore,
+      matchResult.yourTime,
+      matchResult.opponentTime
+    );
+  };
+
+  const requestTimeoutRefund = async (): Promise<void> => {
+    if (!serverMatch) return;
+    setRefundError('');
+    try {
+      const bytes32 = await matchIdToBytes32(serverMatch.matchId);
+      setRefundTxHash(await refundTimeoutMatch(bytes32));
+    } catch (err: unknown) {
+      setRefundError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -632,10 +666,8 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
         }
 
         // Accepted. Score the round when the opponent's time is known; if the
-        // opponent hasn't submitted yet, poll for their disclosure (audit #3:
-        // a single 1.5s poll used to fabricate a 'tie' and roll into the next
-        // round, so late results never reconciled and phantom round 4 requests
-        // were rejected by the server).
+        // opponent hasn't submitted yet, poll until disclosure or an
+        // authoritative settled/void status. Missing data is never a tie.
         clearInterval(progressInterval);
         setVerifyProgress(100);
         if (oppTime == null) {
@@ -653,24 +685,25 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                   const oppMs = o2 != null ? Math.round(o2) : null;
                   if (oppMs != null) {
                     applyServerRoundOutcome(roundIndex, userTime, oppMs);
-                  } else if (pollDelay < 10000) {
+                  } else if (v2.status === 'settled' || v2.status === 'void') {
+                    // The grace-window finalizer can close an abandoned match.
+                    // Never invent a tie or advance to a non-existent round.
+                    await finishServerMatch(
+                      bo3State.rounds,
+                      bo3State.userScore,
+                      bo3State.opponentScore,
+                      userTime,
+                      0
+                    );
+                  } else {
                     pollDelay = Math.min(pollDelay * 1.5, 10000);
                     pollOpponent();
-                  } else {
-                    // ~25s of polling: the opponent is unresponsive — the
-                    // round stands as forfeit-for-them via the grace-window
-                    // settlement; show the honest undecided state.
-                    applyServerRoundOutcome(roundIndex, userTime, null);
                   }
                 } catch {
                   // Transient network error — keep polling instead of
                   // fabricating a result.
-                  if (pollDelay < 10000) {
-                    pollDelay = Math.min(pollDelay * 1.5, 10000);
-                    pollOpponent();
-                  } else {
-                    applyServerRoundOutcome(roundIndex, userTime, null);
-                  }
+                  pollDelay = Math.min(pollDelay * 1.5, 10000);
+                  pollOpponent();
                 }
               })();
             }, pollDelay);
@@ -1299,6 +1332,15 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                     {t('serverModeNote')}
                   </p>
                 )}
+                {isServerMode && serverMatch && (
+                  <div className="w-full mt-3 space-y-2">
+                    <button onClick={() => void requestTimeoutRefund()} className="w-full btn-secondary py-2.5 text-xs cursor-pointer">
+                      Request on-chain timeout refund
+                    </button>
+                    {refundError && <p className="text-[10px] text-amber-400">{refundError}</p>}
+                    {refundTxHash && <a className="text-[10px] text-sky-400 underline" href={explorerTxUrl(refundTxHash)} target="_blank" rel="noreferrer">Refund transaction ↗</a>}
+                  </div>
+                )}
 
                 <div className="linear-card p-3.5 w-full mt-5 space-y-2 text-xs">
                   <div className="flex justify-between">
@@ -1389,17 +1431,33 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                   </motion.p>
                 )}
                 {isServerMode && matchResult.outcome === 'win' && matchResult.prize > 0 && !settlementTxHash && (
-                  <p className="text-[10px] text-amber-400/90 font-mono mt-1">{t('claimingPrize')}</p>
+                  claimError ? (
+                    <div className="w-full mt-2 space-y-1">
+                      <p className="text-[10px] text-amber-400 font-mono">{claimError}</p>
+                      <button disabled={claimBusy} onClick={retrySettlementClaim} className="w-full btn-primary py-2 text-xs disabled:opacity-50 cursor-pointer">
+                        {claimBusy ? t('claimingPrize') : 'Retry on-chain claim'}
+                      </button>
+                    </div>
+                  ) : <p className="text-[10px] text-amber-400/90 font-mono mt-1">{t('claimingPrize')}</p>
                 )}
                 {settlementTxHash && (
                   <a
-                    href={`https://polygonscan.com/tx/${settlementTxHash}`}
+                    href={explorerTxUrl(settlementTxHash)}
                     target="_blank"
                     rel="noreferrer"
                     className="text-[10px] font-mono text-sky-400 hover:text-sky-300 underline mt-1 cursor-pointer"
                   >
                     {settlementTxHash.slice(0, 10)}...{settlementTxHash.slice(-8)} ↗
                   </a>
+                )}
+                {isServerMode && serverMatch && matchResult.outcome === 'void' && (
+                  <div className="w-full mt-2 space-y-1">
+                    <button onClick={() => void requestTimeoutRefund()} className="w-full btn-secondary py-2 text-xs cursor-pointer">
+                      Request on-chain timeout refund
+                    </button>
+                    {refundError && <p className="text-[10px] text-amber-400">{refundError}</p>}
+                    {refundTxHash && <a className="text-[10px] text-sky-400 underline" href={explorerTxUrl(refundTxHash)} target="_blank" rel="noreferrer">Refund transaction ↗</a>}
+                  </div>
                 )}
 
                 {/* Round by Round Breakdown */}
@@ -1561,6 +1619,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
             opponentTime: matchResult.opponentTime,
             timestamp: Date.now(),
             opponentName: opponent,
+            hash: settlementTxHash || undefined,
           }}
           playerTag={wallet.playerId}
           walletAddress={wallet.address || undefined}

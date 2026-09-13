@@ -90,7 +90,7 @@ export const ECONOMY = {
  * Do not edit here without editing the Solidity source; they are one contract.
  */
 export const PULSAR_ESCROW_ABI = [
-  'function createDuel(bytes32 matchId, uint256 stakeAmount) external',
+  'function createDuel(bytes32 matchId, uint256 stakeAmount, address expectedPlayer2) external',
   'function joinDuel(bytes32 matchId) external',
   'function settleDuel((bytes32 matchId, address winner, uint256 winnerTimeMs, uint256 loserTimeMs, uint256 nonce, uint256 deadline, bytes signature) proof) external',
   'function refundTimeoutMatch(bytes32 matchId) external',
@@ -100,7 +100,7 @@ export const PULSAR_ESCROW_ABI = [
   'function oracleSigner() view returns (address)',
   'function totalDuelsSettled() view returns (uint256)',
   'function totalVolumeDistributed() view returns (uint256)',
-  'event MatchCreated(bytes32 indexed matchId, address indexed player1, uint256 stakeAmount, uint256 totalPool)',
+  'event MatchCreated(bytes32 indexed matchId, address indexed player1, address indexed player2, uint256 stakeAmount, uint256 totalPool)',
   'event MatchJoined(bytes32 indexed matchId, address indexed player2)',
   'event MatchSettled(bytes32 indexed matchId, address indexed winner, uint256 prizePaid, uint256 platformFee)',
   'event MatchCancelled(bytes32 indexed matchId, string reason)',

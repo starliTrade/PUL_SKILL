@@ -33,6 +33,7 @@ import { LeaderboardPlayer } from '../lib/realWeb3';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
+import { explorerTxUrl } from '../lib/chain';
 
 interface DashboardPageProps {
   onNavigate: (path: string) => void;
@@ -501,7 +502,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                               <span>{t('settlementHash')}:</span>
                               {m.hash && /^0x[0-9a-fA-F]{64}$/.test(m.hash) ? (
                                 <a
-                                  href={`https://polygonscan.com/tx/${m.hash}`}
+                                  href={explorerTxUrl(m.hash)}
                                   target="_blank"
                                   rel="noreferrer"
                                   className="text-sky-400 hover:underline cursor-pointer flex items-center gap-1"

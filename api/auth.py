@@ -17,9 +17,14 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
+import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Callable
+from urllib.parse import urlparse
 
 from eth_account import Account
 from eth_account.messages import encode_defunct
@@ -33,26 +38,29 @@ NONCE_WINDOW_SECONDS = 60 * 5               # 5-minute validity window
 # accepted, so a mainnet-phished statement can never authenticate here.
 EXPECTED_CHAIN_ID = int(os.environ.get("ORACLE_CHAIN_ID", "80002"))
 
-# Audit-#3 fix: nonce single-use replay protection. The rolling-window nonce
-# alone allowed one signature to authenticate repeatedly for up to 10 minutes
-# (two adjacent windows). Each nonce now burns exactly once.
-_used_nonces: set[str] = set()
-_used_nonces_order: list[str] = []
+# Local fallback for callers that do not inject the durable nonce consumer.
+# The HTTP API injects DurableMatchStore.consume_auth_nonce(), which makes
+# consumption atomic across Firestore-backed replicas.
+_used_nonces: dict[str, float] = {}
+_used_nonces_lock = threading.Lock()
 _USED_NONCE_MAX = 4096
 
 
-def _burn_nonce(nonce: str) -> None:
-    if nonce in _used_nonces:
-        return
-    _used_nonces.add(nonce)
-    _used_nonces_order.append(nonce)
-    while len(_used_nonces_order) > _USED_NONCE_MAX:
-        _used_nonces_order.pop(0)
-        _used_nonces.discard(_used_nonces_order[0] if _used_nonces_order else "")
+def _burn_nonce(nonce: str) -> bool:
+    """Atomically consume a nonce in the single-process fallback store."""
+    now = time.time()
+    with _used_nonces_lock:
+        for value, expires_at in list(_used_nonces.items()):
+            if expires_at <= now:
+                _used_nonces.pop(value, None)
+        if nonce in _used_nonces:
+            return False
+        if len(_used_nonces) >= _USED_NONCE_MAX:
+            oldest = min(_used_nonces, key=_used_nonces.get)
+            _used_nonces.pop(oldest, None)
+        _used_nonces[nonce] = now + NONCE_WINDOW_SECONDS
+        return True
 
-
-def nonce_is_used(nonce: str) -> bool:
-    return nonce in _used_nonces
 
 _API_SECRET = os.environ.get("ORACLE_SIGNING_SECRET", "")
 if not _API_SECRET:
@@ -77,24 +85,45 @@ def _hmac_hex(payload: str) -> str:
 
 
 def issue_nonce(address: str, domain: str) -> str:
-    """Stateless, domain- and address-bound nonce with a rolling time window.
-    A random component keeps successive issuances unique, so single-use
-    enforcement can never self-DoS a legitimate re-authentication inside the
-    same window."""
-    window = int(time.time() // NONCE_WINDOW_SECONDS)
-    payload = f"siwe|{domain.lower()}|{address.lower()}|{window}|{secrets.token_hex(8)}"
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
-    return f"{window:x}-{digest}"
+    """Issue an authenticated, EIP-4361-compatible alphanumeric nonce.
+
+    The hex payload binds issue time, entropy, wallet, and domain. Its HMAC
+    proves the nonce came from this server without retaining issuance state.
+    """
+    payload = json.dumps(
+        {
+            "a": address.lower(),
+            "d": domain.lower(),
+            "iat": int(time.time()),
+            "r": secrets.token_hex(16),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8").hex()
+    return f"{payload}{_hmac_hex(f'siwe-nonce|{payload}')}"
 
 
-def nonce_is_fresh(nonce: str) -> bool:
+def nonce_is_fresh(nonce: str, address: str = "", domain: str = "") -> bool:
     try:
-        window_hex, _ = nonce.split("-", 1)
-        window = int(window_hex, 16)
-    except (ValueError, AttributeError):
+        if len(nonce) < 66 or not re.fullmatch(r"[0-9a-fA-F]+", nonce):
+            return False
+        payload_hex, supplied_mac = nonce[:-64], nonce[-64:]
+        if not hmac.compare_digest(
+            _hmac_hex(f"siwe-nonce|{payload_hex}"), supplied_mac.lower()
+        ):
+            return False
+        claims = json.loads(bytes.fromhex(payload_hex).decode("utf-8"))
+        issued_at = int(claims["iat"])
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
         return False
-    current = int(time.time() // NONCE_WINDOW_SECONDS)
-    return window in (current, current - 1)  # tolerate one window of skew
+    now = int(time.time())
+    if issued_at > now + 30 or now - issued_at > NONCE_WINDOW_SECONDS:
+        return False
+    if address and str(claims.get("a", "")).lower() != address.lower():
+        return False
+    if domain and str(claims.get("d", "")).lower() != domain.lower():
+        return False
+    return True
 
 
 @dataclass
@@ -105,6 +134,8 @@ class SiweFields:
     issued_at: str
     expiration_time: str
     chain_id: int | None
+    uri: str
+    version: str
 
 
 def parse_siwe(message: str) -> SiweFields | None:
@@ -127,10 +158,27 @@ def parse_siwe(message: str) -> SiweFields | None:
         issued_at=fields.get("Issued At", ""),
         expiration_time=fields.get("Expiration Time", ""),
         chain_id=int(fields["Chain ID"]) if fields.get("Chain ID", "").isdigit() else None,
+        uri=fields.get("URI", ""),
+        version=fields.get("Version", ""),
     )
 
 
-def verify_siwe(message: str, signature: str, expected_domain: str) -> str | None:
+def _parse_time(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def verify_siwe(
+    message: str,
+    signature: str,
+    expected_domain: str,
+    consume_nonce: Callable[[str], bool] | None = None,
+) -> str | None:
     """
     Returns the lowercase verified address, or None if anything fails:
     malformed message, wrong domain, expired, stale nonce, or bad signature.
@@ -140,19 +188,30 @@ def verify_siwe(message: str, signature: str, expected_domain: str) -> str | Non
         return None
     if fields.domain.lower() != expected_domain.lower():
         return None
-    if not nonce_is_fresh(fields.nonce):
+    if not re.fullmatch(r"0x[0-9a-fA-F]{40}", fields.address):
         return None
-    if nonce_is_used(fields.nonce):
-        return None  # replayed signature — each nonce authenticates exactly once
-    if fields.chain_id is not None and fields.chain_id != EXPECTED_CHAIN_ID:
-        return None  # statement bound to a different chain than this server
+    if not nonce_is_fresh(fields.nonce, fields.address, expected_domain):
+        return None
+    if fields.chain_id != EXPECTED_CHAIN_ID or fields.version != "1":
+        return None
+    uri = urlparse(fields.uri)
+    if (
+        uri.scheme != "https"
+        or uri.netloc.lower() != expected_domain.lower()
+        or uri.path not in ("", "/")
+        or uri.params
+        or uri.query
+        or uri.fragment
+    ):
+        return None
+    now = datetime.now(timezone.utc)
+    issued_at = _parse_time(fields.issued_at)
+    expiration = _parse_time(fields.expiration_time)
+    if issued_at is None or expiration is None:
+        return None
+    if issued_at > now + timedelta(seconds=60) or now >= expiration or expiration <= issued_at:
+        return None
     try:
-        if fields.expiration_time:
-            from datetime import datetime, timezone
-
-            expiry = datetime.fromisoformat(fields.expiration_time.replace("Z", "+00:00"))
-            if datetime.now(timezone.utc) >= expiry:
-                return None
         recovered = Account.recover_message(
             encode_defunct(text=message), signature=signature
         )
@@ -160,8 +219,11 @@ def verify_siwe(message: str, signature: str, expected_domain: str) -> str | Non
         return None
     address = getattr(recovered, "address", recovered)
     verified = str(address).lower() or None
-    if verified:
-        _burn_nonce(fields.nonce)
+    if verified != fields.address.lower():
+        return None
+    consumer = consume_nonce or _burn_nonce
+    if not consumer(fields.nonce):
+        return None
     return verified
 
 

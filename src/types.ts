@@ -31,6 +31,8 @@ export interface MatchHistoryItem {
   yourTime: number;
   timestamp: number;
   xpEarned?: number;
+  hash?: string;
+  oracleSignature?: string;
 }
 
 export interface MouseTrajectoryPoint {
@@ -92,4 +94,3 @@ export type GamePhase =
   | 'result'
   | 'bot-detected'
   | 'matchmaking';
-
