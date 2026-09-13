@@ -25,7 +25,6 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
 }) => {
   const { bestReactionMs } = usePulsarStore();
   const { t, isRTL } = useLanguage();
-  const [livePing, setLivePing] = useState<number>(14);
 
   // Interactive reflex test state
   const [testState, setTestState] = useState<'idle' | 'waiting' | 'ready' | 'result'>('idle');
@@ -36,13 +35,6 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
 
   // Background Canvas Ref for Cosmic Twinkling Stars & Pulsar Star
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setLivePing(12 + Math.floor(Math.random() * 5));
-    }, 4000);
-    return () => clearInterval(interval);
-  }, []);
 
   // Canvas animation effect for cosmic twinkling stars & pulsating pulsar star
   useEffect(() => {
@@ -273,7 +265,7 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
               style={{ direction: 'ltr' }}
             >
               <Activity className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
-              <span>{livePing}ms Global Sync</span>
+              <span>Interactive Local Demo</span>
             </div>
           </div>
 
@@ -293,7 +285,7 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
               {testState === 'idle' && (t('reflexBenchmarkTitle') || 'Sub-ms Reflex Benchmark')}
               {testState === 'waiting' && (t('reflexWaitSignal') || 'Wait for Green Flash...')}
               {testState === 'ready' && (t('reflexTapNow') || 'TAP ANYWHERE NOW!')}
-              {testState === 'result' && (t('reflexVerifiedHuman') || 'Verified Human Response')}
+              {testState === 'result' && (t('reflexVerifiedHuman') || 'Measured Local Response')}
             </div>
 
             {/* Monospace ms number with Protected LTR Layout */}
@@ -427,13 +419,12 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
           >
             <div className="flex items-center gap-1.5 text-zinc-400">
               <ShieldCheck className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
-              <span>Biometric Anti-Cheat v2.4</span>
+              <span>Server-Validated Timing</span>
             </div>
-            <span className="text-zinc-500 font-medium">Sub-ms Clock Sync</span>
+            <span className="text-zinc-500 font-medium">Browser Performance Clock</span>
           </div>
         </div>
       </div>
     </div>
   );
 };
-

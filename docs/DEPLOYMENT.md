@@ -107,7 +107,7 @@ Server environment (all **secrets** — set on the host, never in git):
 | `PULSAR_MATCH_STORE` | `firestore` (or unset for in-memory dev fallback) |
 | `FIRESTORE_PROJECT_ID` | Your Firebase project ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Service-account JSON path (or use ambient Cloud Run credentials) |
-| `CORS_ALLOW_ORIGINS` (optional) | Comma-separated allowlist; leave unset ("*") while frontend and API are on different origins |
+| `CORS_ALLOW_ORIGINS` | Exact comma-separated frontend-origin allowlist when frontend and API use different origins; default is deny-all cross-origin |
 | `SENTRY_DSN` (optional) | Server error monitoring |
 | `ALLOWED_DOMAIN` (optional) | Force the SIWE domain if behind a proxy that rewrites Host |
 

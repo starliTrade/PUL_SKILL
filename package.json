@@ -37,5 +37,9 @@
     "autoprefixer": "^10.4.21",
     "solc": "0.8.20",
     "tailwindcss": "^4.1.14"
+  },
+  "overrides": {
+    "axios": "^1.20.0",
+    "tmp": "^0.2.7"
   }
 }

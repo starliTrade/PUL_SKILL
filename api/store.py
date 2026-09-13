@@ -91,6 +91,7 @@ def _match_to_doc(m: Match) -> dict[str, Any]:
         "match_id": m.match_id,
         "stake": m.stake,
         "created_at": m.created_at,
+        "activated_at": m.activated_at,
         "players": m.players,
         # P0-fix: creator was never persisted, so after the first read the
         # queueing player lost youAreCreator=true and nobody ever sent
@@ -112,8 +113,14 @@ def _match_from_doc(d: dict[str, Any]) -> Match:
         match_id=d["match_id"],
         stake=float(d["stake"]),
         created_at=float(d["created_at"]),
+        activated_at=float(d.get("activated_at", 0.0)),
     )
     m.players = dict(d.get("players", {}))
+    if not m.activated_at and len(m.players) > 1:
+        m.activated_at = max(
+            (float(player.get("joinedAt", 0.0)) for player in m.players.values()),
+            default=m.created_at,
+        )
     # P0-fix: restore creator; for documents written before this field
     # existed, derive it (players preserves insertion order — creator first).
     m.creator = d.get("creator", "") or next(iter(m.players), "")
@@ -161,6 +168,7 @@ class InMemoryStore:
                 # Found an opponent: activate the match.
                 m.players[addr] = {"address": addr, "joinedAt": time.time()}
                 m.status = "active"
+                m.activated_at = time.time()
                 bucket.remove(other)
                 self.player_match[addr] = m.match_id
                 return m
@@ -194,6 +202,25 @@ class InMemoryStore:
                 return False
             self._auth_nonces[nonce] = now + 600
             return True
+
+    def cancel_waiting(self, address: str) -> Optional[Match]:
+        """Cancel only a one-player waiting match; never tear down an active duel."""
+        addr = address.lower()
+        with self._lock:
+            match_id = self.player_match.get(addr)
+            if not match_id:
+                return None
+            match = self.matches.get(match_id)
+            if match is None:
+                self.player_match.pop(addr, None)
+                return None
+            if match.status != "waiting" or len(match.players) != 1:
+                return match
+            match.status = "void"
+            bucket = self.queue.get(match.stake, [])
+            self.queue[match.stake] = [mid for mid in bucket if mid != match_id]
+            self.player_match.pop(addr, None)
+            return match
 
     def claim_username(self, address: str, username: str) -> bool:
         normalized = username.lower()
@@ -309,6 +336,7 @@ class FirestoreStore:
                     if m.status == "waiting" and addr not in m.players:
                         m.players[addr] = {"address": addr, "joinedAt": time.time()}
                         m.status = "active"
+                        m.activated_at = time.time()
                         transaction.set(mref, _match_to_doc(m))
                         transaction.set(queue_ref, {"waitingMatchId": None})
                         transaction.set(player_ref, {"matchId": m.match_id, "updatedAt": time.time()})
@@ -375,6 +403,39 @@ class FirestoreStore:
         if transactional is not None:
             return bool(transactional(_txn_body)(txn))
         return bool(_txn_body(txn))
+
+    def cancel_waiting(self, address: str) -> Optional[Match]:
+        addr = address.lower()
+        player_ref = self._player_ref(addr)
+
+        def _txn_body(transaction: Any) -> Optional[Match]:
+            player_snap = player_ref.get(transaction=transaction)
+            match_id = (player_snap.to_dict() or {}).get("matchId") if player_snap.exists else None
+            if not match_id:
+                return None
+            match_ref = self._match_ref(str(match_id))
+            match_snap = match_ref.get(transaction=transaction)
+            if not match_snap.exists:
+                transaction.delete(player_ref)
+                return None
+            match = _match_from_doc(match_snap.to_dict())
+            if match.status != "waiting" or len(match.players) != 1:
+                return match
+            queue_ref = self._queue_ref(match.stake)
+            queue_snap = queue_ref.get(transaction=transaction)
+            queued_id = (queue_snap.to_dict() or {}).get("waitingMatchId") if queue_snap.exists else None
+            match.status = "void"
+            transaction.set(match_ref, _match_to_doc(match))
+            if str(queued_id or "") == match.match_id:
+                transaction.set(queue_ref, {"waitingMatchId": None})
+            transaction.delete(player_ref)
+            return match
+
+        txn = self.db.transaction()
+        transactional = getattr(_firestore, "transactional", None)
+        if transactional is not None:
+            return transactional(_txn_body)(txn)
+        return _txn_body(txn)
 
     def claim_username(self, address: str, username: str) -> bool:
         normalized = username.lower()
@@ -576,7 +637,11 @@ class DurableMatchStore:
                     self._firestore = _firestore.Client(project=project)
                 self._fs_store = FirestoreStore(self._firestore)
                 self.backend_name = "firestore"
-            except Exception:
+            except Exception as exc:
+                if backend == "firestore":
+                    raise RuntimeError(
+                        "PULSAR_MATCH_STORE=firestore but Firestore initialization failed"
+                    ) from exc
                 self._firestore = None
                 self._fs_store = None
                 self.backend_name = "memory"
@@ -609,6 +674,14 @@ class DurableMatchStore:
         if self._fs_store is not None:
             return self._fs_store.consume_auth_nonce(nonce)
         return self.memory.consume_auth_nonce(nonce)
+
+    def cancel_waiting(self, address: str) -> Optional[Match]:
+        if self._fs_store is not None:
+            match = self._fs_store.cancel_waiting(address)
+            if match is not None:
+                self._mirror(match)
+            return match
+        return self.memory.cancel_waiting(address)
 
     def claim_username(self, address: str, username: str) -> bool:
         if self._fs_store is not None:

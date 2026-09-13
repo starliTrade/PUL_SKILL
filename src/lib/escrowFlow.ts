@@ -8,7 +8,17 @@
  */
 
 import { BrowserProvider, Contract, formatUnits, parseUnits } from 'ethers';
-import { CHAIN, TOKENS, PULSAR_ESCROW_ABI, ERC20_ABI, ESCROW, isPaymentTokenConfigured } from './chain';
+import {
+  CHAIN,
+  TOKENS,
+  PULSAR_ESCROW_ABI,
+  ERC20_ABI,
+  ESCROW,
+  TREASURY,
+  ORACLE_SIGNER,
+  isPaymentTokenConfigured,
+  isEscrowConfigured,
+} from './chain';
 import { realWeb3Manager } from './realWeb3';
 
 export interface EscrowStatus {
@@ -53,6 +63,34 @@ function requireEscrowAddress(): string {
     throw new Error('Payment token is not configured for this chain. Real-money play is disabled.');
   }
   return ESCROW.address;
+}
+
+/** Fail before matchmaking if frontend configuration does not describe the
+ * deployed contract. This prevents pairing an opponent and only then finding
+ * that funds would be sent to the wrong token/oracle deployment. */
+export async function validateEscrowDeployment(): Promise<void> {
+  if (!isEscrowConfigured() || !isPaymentTokenConfigured()) {
+    throw new Error('Escrow, token, treasury, and oracle addresses must all be configured.');
+  }
+  const provider = requireActiveProvider();
+  const network = await provider.getNetwork();
+  if (Number(network.chainId) !== CHAIN.chainId) {
+    throw new Error(`Wallet is on chain ${network.chainId}; switch to ${CHAIN.name}.`);
+  }
+  const escrowAddress = requireEscrowAddress();
+  if ((await provider.getCode(escrowAddress)) === '0x') {
+    throw new Error('No escrow contract is deployed at VITE_ESCROW_ADDRESS on this chain.');
+  }
+  const escrow = new Contract(escrowAddress, PULSAR_ESCROW_ABI, provider);
+  const [paymentToken, treasury, oracle] = await Promise.all([
+    escrow.paymentToken(),
+    escrow.treasuryWallet(),
+    escrow.oracleSigner(),
+  ]);
+  const same = (left: string, right: string) => left.toLowerCase() === right.toLowerCase();
+  if (!same(paymentToken, TOKENS.USDT)) throw new Error('Configured payment token does not match the escrow contract.');
+  if (!same(treasury, TREASURY.address)) throw new Error('Configured treasury does not match the escrow contract.');
+  if (!same(oracle, ORACLE_SIGNER.address)) throw new Error('Configured oracle does not match the escrow contract.');
 }
 
 export async function getUsdtBalance(address: string): Promise<string> {
@@ -146,6 +184,7 @@ export async function getDuelState(matchIdBytes32: string): Promise<{
   player2: string;
   stakeAmount: bigint;
   totalPool: bigint;
+  createdAt: bigint;
   winner: string;
 }> {
   const provider = requireActiveProvider();
@@ -157,6 +196,69 @@ export async function getDuelState(matchIdBytes32: string): Promise<{
     player2: m.player2,
     stakeAmount: m.stakeAmount,
     totalPool: m.totalPool,
+    createdAt: m.createdAt,
     winner: m.winner,
   };
+}
+
+/** Idempotently fund the matched duel and wait until both deposits are on
+ * chain. Safe across page refreshes: already-created/already-active duels are
+ * validated and resumed instead of submitting duplicate transactions. */
+export async function ensureDuelActive(
+  matchIdBytes32: string,
+  stakeUsdt: number,
+  currentAddress: string,
+  opponentAddress: string,
+  isCreator: boolean
+): Promise<void> {
+  await validateEscrowDeployment();
+  const me = currentAddress.toLowerCase();
+  const opponent = opponentAddress.toLowerCase();
+  const expectedPlayer1 = isCreator ? me : opponent;
+  const expectedPlayer2 = isCreator ? opponent : me;
+  const expectedStake = parseUnits(String(stakeUsdt), TOKENS.USDT_DECIMALS);
+  const deadline = Date.now() + 120_000;
+
+  const validateExisting = (state: Awaited<ReturnType<typeof getDuelState>>) => {
+    if (state.status === 0) return;
+    if (state.player1.toLowerCase() !== expectedPlayer1 || state.player2.toLowerCase() !== expectedPlayer2) {
+      throw new Error('On-chain duel participants do not match the server match.');
+    }
+    if (state.stakeAmount !== expectedStake || state.totalPool !== expectedStake * 2n) {
+      throw new Error('On-chain duel stake does not match the server match.');
+    }
+    if (state.status > 2) throw new Error('This on-chain duel is already closed.');
+  };
+
+  let state = await getDuelState(matchIdBytes32);
+  validateExisting(state);
+
+  if (isCreator && state.status === 0) {
+    await approveUsdt(stakeUsdt);
+    await createDuel(matchIdBytes32, stakeUsdt, opponentAddress);
+    state = await getDuelState(matchIdBytes32);
+    validateExisting(state);
+  }
+
+  while (!isCreator && state.status === 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    state = await getDuelState(matchIdBytes32);
+    validateExisting(state);
+  }
+
+  if (!isCreator && state.status === 1) {
+    await approveUsdt(stakeUsdt);
+    await joinDuel(matchIdBytes32);
+    state = await getDuelState(matchIdBytes32);
+    validateExisting(state);
+  }
+
+  while (state.status !== 2 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    state = await getDuelState(matchIdBytes32);
+    validateExisting(state);
+  }
+  if (state.status !== 2) {
+    throw new Error('Both escrow deposits were not confirmed within two minutes.');
+  }
 }

@@ -47,6 +47,18 @@ client = TestClient(server.app)
 # blocked every cross-origin JSON+Authorization request at preflight.
 _mw_names = [getattr(m, "cls", type(m)).__name__ for m in server.app.user_middleware]
 check("CORSMiddleware is installed", "CORSMiddleware" in _mw_names)
+preflight = client.options(
+    "/api/auth/nonce",
+    headers={
+        "origin": "https://evil.example",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type",
+    },
+)
+check(
+    "CORS defaults to denying unconfigured cross-origin callers",
+    preflight.headers.get("access-control-allow-origin") is None,
+)
 
 DOMAIN = "pulsar.test"
 
@@ -106,6 +118,20 @@ check("SIWE rejects a nonce that the server did not issue", r.status_code == 401
 # Unauthenticated privileged route must fail
 r = client.post("/api/queue", json={"stake": 1.0})
 check("Queue requires a bearer token (401)", r.status_code == 401)
+
+# A timed-out/abandoned queue must not pin the wallet to the same waiting match
+# for ten minutes. Cancellation only applies before an opponent joins.
+carol = Account.create()
+token_c, _ = make_session(carol)
+first_wait = client.post("/api/queue", json={"stake": 10}, headers=auth_headers(token_c)).json()
+cancelled = client.post("/api/queue/cancel", json={}, headers=auth_headers(token_c))
+second_wait = client.post("/api/queue", json={"stake": 10}, headers=auth_headers(token_c)).json()
+check(
+    "Waiting queue can be cancelled and re-entered with a fresh match",
+    cancelled.status_code == 200
+    and cancelled.json().get("cancelled") is True
+    and first_wait.get("matchId") != second_wait.get("matchId"),
+)
 
 # Username ownership is enforced by the authenticated backend, not public
 # Firestore client writes.

@@ -145,6 +145,12 @@ view = m1.public_view(for_address=player_addr)
 check("Opponent address disclosed", view["opponent"] == opp)
 check("Mutual submission discloses opponent time", abs(view["opponentTimes"].get("0", -1) - 300.0) < 0.01)
 check("Opponent round counter tracks submissions", view["opponentSubmitted"] == me.ROUNDS)
+reverse_view = m1.public_view(for_address=opp)
+check(
+    "Invalid opponent submission is distinguishable from a missing result",
+    reverse_view["opponentRounds"].get("0") == {"submitted": True, "valid": False}
+    and "0" not in reverse_view["opponentTimes"],
+)
 
 # --- 3. Clean settlement + oracle signature ----------------------------------
 m3 = store.enqueue(Account.create().address.lower(), 2.0)
@@ -215,6 +221,7 @@ check(
     and restored.rounds == m4.rounds
     and restored.players == m4.players,
 )
+check("Round-trip preserves activation time", restored.activated_at == m4.activated_at)
 check("Round-trip rounds compare equal", restored.rounds == m4.rounds)
 check("Round-trip players compare equal", restored.players == m4.players)
 # P0-fix regression: creator must survive persistence. Its loss made every
@@ -417,29 +424,24 @@ for idx in range(me.ROUNDS):
     wait_out_target(m5, opp5, idx)
     me.submit_result(m5, opp5, idx, 240.0, t5["resultProof"])
 # Attack replay: the CHEATER commits, then submits a valid-looking time WITHOUT
-# ever revealing. Under the old engine this exact sequence settled 3-0. Now the
-# submission must be rejected at one of the protocol gates (unrevealed target
-# OR missing proof — either rejection kills the attack).
-for idx in range(me.ROUNDS):
-    me.commit_intent(m5, cheater, idx, "0x" + "de" * 31 + "ad")
-    try:
-        me.submit_result(m5, cheater, idx, 90.0)  # no proof at all
-        check("P0.2-regression: unproofed result rejected", False)
-        break
-    except me.MatchError:
-        continue  # correctly refused — attack blocked
-    except Exception:
-        check("P0.2-regression: unproofed result rejected", False)
-        break
-else:
+# revealing. A single rejection is sufficient; strict round ordering now also
+# prevents pre-committing later rounds before this one is submitted.
+me.commit_intent(m5, cheater, 0, "0x" + "de" * 31 + "ad")
+try:
+    me.submit_result(m5, cheater, 0, 90.0)
+    check("P0.2-regression: unproofed result rejected", False)
+except me.MatchError:
     check("P0.2-regression: unproofed result rejected (the 3-0 cheat now fails)", True)
-# Cross-player proof reuse must also fail: reveal the (already committed)
-# round 2, then submit carrying the OPPONENT's proof (the exact theft the
-# binding exists to stop).
-me.reveal_target(m5, cheater, 2)
+try:
+    me.commit_intent(m5, cheater, 1, "0x" + "de" * 31 + "ae")
+    check("A5: later rounds cannot be pre-revealed", False)
+except me.MatchError as e:
+    check("A5: later rounds cannot be pre-revealed", "Previous round" in str(e))
+# Cross-player proof reuse must also fail on the revealed round.
+me.reveal_target(m5, cheater, 0)
 cheat_r = m5.rounds[opp5][0]
 try:
-    me.submit_result(m5, cheater, 2, 240.0, cheat_r.result_proof)
+    me.submit_result(m5, cheater, 0, 240.0, cheat_r.result_proof)
     check("P0.2-regression: cross-player proof reuse rejected", False)
 except me.MatchError as e:
     check("P0.2-regression: cross-player proof reuse rejected", "proof" in str(e))
@@ -455,6 +457,8 @@ except me.MatchError:
 # BOTH mutually-decided rounds -> Bo3 majority -> early settlement is legit,
 # exactly mirroring the client's 2-0 finish.
 for idx in (0, 1):
+    if idx not in m5.rounds.get(cheater, {}):
+        me.commit_intent(m5, cheater, idx, "0x" + hashlib.sha256(f"c5-{idx}".encode()).hexdigest())
     me.reveal_target(m5, cheater, idx)
     wait_out_target(m5, cheater, idx)
     r_c = m5.rounds[cheater][idx]
@@ -474,7 +478,7 @@ for idx in range(me.ROUNDS):
     t6 = me.reveal_target(m6, w6, idx)
     wait_out_target(m6, w6, idx)
     me.submit_result(m6, w6, idx, 220.0, t6["resultProof"])
-m6.created_at = time.time() - 10_000  # push past the settle grace window
+m6.activated_at = time.time() - 10_000  # push past the settle grace window
 res6 = me.settle(m6)
 check("P0.4-regression: grace-window forfeit settles", res6["status"] == "settled")
 check(

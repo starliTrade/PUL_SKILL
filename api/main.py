@@ -74,11 +74,12 @@ async def request_limits(request: Request, call_next: Any):
 # different origins (docs/DEPLOYMENT.md deployment topology), so browsers send
 # preflights for the JSON + Authorization requests the client makes. Without
 # this middleware every cross-origin call died in the browser. Origins are
-# env-configured; "*" (default) allows credentialess public play from any
-# origin — this API is bearer-token authenticated, never cookie-authenticated,
-# so wildcard origins are safe.
+# env-configured. Default-deny is intentional: a malicious site must not be
+# allowed to drive SIWE + wager API calls from a victim's browser. Same-origin
+# deployments need no CORS entry; split frontend/API deployments must list the
+# exact frontend origins explicitly.
 _cors_origins = [
-    o.strip() for o in os.environ.get("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()
+    o.strip() for o in os.environ.get("CORS_ALLOW_ORIGINS", "").split(",") if o.strip()
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -238,6 +239,20 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     store.sweep_expired()
     match = store.enqueue(address, body.stake)
     return match.public_view(for_address=address)
+
+
+@app.post("/api/queue/cancel")
+def cancel_queue(request: Request) -> dict[str, Any]:
+    """Release a waiting queue slot. A pairing race fails safe: once a second
+    player joined, the active match is returned and is never cancelled."""
+    address = _auth(request)
+    match = store.cancel_waiting(address)
+    if match is None:
+        return {"cancelled": True, "match": None}
+    return {
+        "cancelled": match.status == "void",
+        "match": match.public_view(for_address=address),
+    }
 
 
 @app.post("/api/profile/username")

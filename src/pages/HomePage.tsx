@@ -213,17 +213,6 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate }) => {
           </div>
         </motion.div>
 
-        {/* Live Match Activity Bar */}
-        <div className="mt-3.5 flex items-center justify-between px-3.5 py-2.5 rounded-xl linear-card text-[11px] hover:border-white/[0.1] transition-colors">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-zinc-400 font-mono text-[10px]">{t('liveFeed')}</span>
-          </div>
-          <div className="flex items-center gap-1.5 font-mono text-[11px]">
-            <span className="text-zinc-300">PulseHunter</span>
-            <span className="text-emerald-400 font-bold">+$1.90 USDT</span>
-          </div>
-        </div>
       </main>
     </div>
   );

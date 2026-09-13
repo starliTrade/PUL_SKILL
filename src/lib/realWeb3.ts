@@ -311,6 +311,7 @@ class RealWeb3Manager {
         }
       }
       if (accounts && accounts.length > 0) {
+        this.activeProvider = provider;
         void this.setConnectedAddress(accounts[0], this.pendingWalletName || 'WalletConnect', provider.chainId || CHAIN.chainId);
       }
     });
@@ -323,6 +324,7 @@ class RealWeb3Manager {
       if (!accounts || accounts.length === 0) {
         this.disconnect();
       } else {
+        this.activeProvider = provider;
         this.setConnectedAddress(accounts[0], this.pendingWalletName || 'WalletConnect', CHAIN.chainId);
       }
     });
@@ -560,14 +562,9 @@ class RealWeb3Manager {
           this.pendingWalletName = savedProvider;
           this.activeProvider = provider;
           return await this.setConnectedAddress(accounts[0], savedProvider, provider.chainId || CHAIN.chainId);
-        } else if (savedAddr) {
-          return await this.setConnectedAddress(savedAddr, savedProvider, CHAIN.chainId);
         }
       } catch (err) {
         console.warn('[Pulsar Web3] WalletConnect session recovery fallback:', err);
-        if (savedAddr) {
-          return await this.setConnectedAddress(savedAddr, savedProvider, CHAIN.chainId);
-        }
       }
     }
 
@@ -636,6 +633,7 @@ class RealWeb3Manager {
     this.wcConnectPromise = (async () => {
       try {
         const provider = await this.ensureWcProvider();
+        this.activeProvider = provider;
 
         if (provider.session && provider.accounts?.length) {
           return await this.setConnectedAddress(
@@ -696,6 +694,7 @@ class RealWeb3Manager {
         throw new Error('No accounts selected in your wallet.');
       } catch (err: any) {
         this.wcConnectPromise = null;
+        if (this.activeProvider === this.wcProvider) this.activeProvider = null;
         throw this.mapWcError(err, providerName);
       }
     })();
@@ -1001,8 +1000,7 @@ class RealWeb3Manager {
 
   /** EIP-1193 provider of the currently connected wallet (injected or WalletConnect). */
   public getActiveEip1193Provider(): any | null {
-    if (this.wcProvider?.connected) return this.wcProvider;
-    return this.activeProvider;
+    return this.activeProvider || (this.wcProvider?.connected ? this.wcProvider : null);
   }
 
   public disconnect(): void {
@@ -1049,6 +1047,13 @@ class RealWeb3Manager {
         const polWei = await provider.getBalance(address);
         const pol = parseFloat(ethers.formatEther(polWei));
 
+        if (!TOKENS.USDT) {
+          return {
+            usdt: 0,
+            pol: isNaN(pol) ? 0 : Math.round(pol * 10000) / 10000,
+          };
+        }
+
         const usdtContract = new ethers.Contract(
           TOKENS.USDT,
           ['function balanceOf(address) view returns (uint256)'],
@@ -1082,7 +1087,7 @@ class RealWeb3Manager {
   private async setConnectedAddress(
     address: string,
     providerName: string,
-    chainId: number = 137
+    chainId: number = CHAIN.chainId
   ): Promise<ConnectedAccountState> {
     const formatted = address.toLowerCase();
     const short = `${formatted.slice(0, 6)}...${formatted.slice(-4)}`;
@@ -1104,7 +1109,7 @@ class RealWeb3Manager {
       address: formatted,
       shortAddress: short,
       chainId,
-      networkName: chainId === 137 ? 'Polygon Mainnet' : chainId === 1 ? 'Ethereum Mainnet' : chainId === 56 ? 'BNB Chain' : 'EVM Network',
+      networkName: chainId === CHAIN.chainId ? CHAIN.name : chainId === 1 ? 'Ethereum Mainnet' : chainId === 56 ? 'BNB Chain' : 'EVM Network',
       // P1.16: start at zero; the REAL on-chain USDT balance arrives from
       // fetchLiveOnChainBalances(). Never seed from the profile record.
       balanceUSDT: 0,

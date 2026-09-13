@@ -24,7 +24,9 @@ export default function App() {
   const [legalTab, setLegalTab] = useState<LegalTab>('tos');
 
   const [activeOpponent, setActiveOpponent] = useState<string | undefined>(undefined);
-  const [activeStake, setActiveStake] = useState<number>(1);
+  // A direct URL load/refresh has no explicit wager intent. Defaulting this to
+  // $1 silently entered real matchmaking as soon as a wallet restored.
+  const [activeStake, setActiveStake] = useState<number>(0);
 
   useEffect(() => {
     const handlePopState = () => {

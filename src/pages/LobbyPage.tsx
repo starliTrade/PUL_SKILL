@@ -29,6 +29,7 @@ import { escrowStatus } from '../lib/escrowFlow';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
 import { gameServerConfigured } from '../lib/gameServerClient';
+import { CHAIN } from '../lib/chain';
 
 interface LobbyPageProps {
   onNavigate: (path: string, opponent?: string, stake?: number) => void;
@@ -320,7 +321,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                   <ShieldCheck className="w-3 h-3 text-emerald-400 shrink-0" />
                   <span>{t('biometricEntropy')}</span>
                 </div>
-                <span className="text-zinc-500 font-mono">Polygon Mainnet</span>
+                <span className="text-zinc-500 font-mono">{CHAIN.name}</span>
               </div>
             </>
           ) : (

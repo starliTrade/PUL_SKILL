@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -55,9 +56,20 @@ COMMIT_WINDOW_SECONDS = 30     # per-round intent-binding window
 # refuses so nobody can race ahead of their opponent (or void a fresh match).
 MATCH_SETTLE_GRACE_SECONDS = 480  # 8 minutes after activation
 
-# Secret used to MAC result proofs. Rotating it invalidates in-flight proofs
-# (they simply fail validation) — safe to restart.
-_PROOF_SECRET = secrets.token_bytes(32)
+# Result proofs must survive process restarts and must validate on every API
+# replica. A process-random key made a reveal handled by worker A impossible
+# to submit through worker B. Derive a domain-separated key from a deployment
+# secret shared by all workers (a dedicated secret is preferred).
+_PROOF_SECRET_SOURCE = os.environ.get("RESULT_PROOF_SECRET") or os.environ.get(
+    "ORACLE_SIGNING_SECRET", ""
+)
+if not _PROOF_SECRET_SOURCE:
+    raise RuntimeError(
+        "RESULT_PROOF_SECRET or ORACLE_SIGNING_SECRET is required for round proofs"
+    )
+_PROOF_SECRET = hashlib.sha256(
+    f"pulsar-round-proof-v1|{_PROOF_SECRET_SOURCE}".encode("utf-8")
+).digest()
 
 
 class MatchError(Exception):
@@ -86,6 +98,7 @@ class Match:
     match_id: str
     stake: float
     created_at: float
+    activated_at: float = 0.0
     players: dict[str, dict[str, Any]] = field(default_factory=dict)
     rounds: dict[str, dict[int, Round]] = field(default_factory=dict)
     status: str = "waiting"  # waiting | active | settled | void
@@ -145,11 +158,23 @@ class Match:
                 for idx, r in opp_rounds.items()
                 if idx in my_submitted and r.result_ms is not None and r.valid
             }
+            # Once I have submitted a round, disclosing whether the opponent's
+            # result exists and passed validation cannot help me change mine.
+            # The client needs this distinction to advance past double-invalid
+            # rounds; absence from opponentTimes alone previously meant both
+            # "not submitted yet" and "submitted but invalid", causing an
+            # infinite polling deadlock.
+            view["opponentRounds"] = {
+                str(idx): {"submitted": r.result_ms is not None, "valid": r.valid}
+                for idx, r in opp_rounds.items()
+                if idx in my_submitted
+            }
             view["opponentSubmitted"] = sum(
                 1 for r in opp_rounds.values() if r.result_ms is not None
             )
         else:
             view["opponentTimes"] = {}
+            view["opponentRounds"] = {}
             view["opponentSubmitted"] = 0
         return view
 
@@ -189,6 +214,7 @@ class MatchStore:
             # Found an opponent: activate the match.
             m.players[addr] = {"address": addr, "joinedAt": time.time()}
             m.status = "active"
+            m.activated_at = time.time()
             bucket.remove(other)
             self.player_match[addr] = m.match_id
             return m
@@ -240,6 +266,18 @@ def commit_intent(match: Match, address: str, round_index: int, intent_hash: str
     rounds = match.rounds.setdefault(address.lower(), {})
     r = rounds.get(round_index) or Round(index=round_index)
     now = time.time()
+    # Rounds are sequential per player. Without this gate a scripted client
+    # could pre-reveal all three targets and schedule parallel submissions.
+    for previous_index in range(round_index):
+        previous = rounds.get(previous_index)
+        if previous is None or previous.result_ms is None:
+            raise MatchError("Previous round must be submitted first")
+    if r.result_ms is not None:
+        raise MatchError("Result already submitted")
+    if r.revealed:
+        if r.commit_hash == intent_hash.lower():
+            return
+        raise MatchError("Round already revealed")
     if r.commit_hash and now - r.commit_at < COMMIT_WINDOW_SECONDS:
         if r.commit_hash != intent_hash.lower():
             raise MatchError("Round already committed")
@@ -423,7 +461,11 @@ def match_completed(match: Match) -> bool:
         mine = match.rounds.get(addr, {}) or {}
         if any(mine.get(i) is None or mine[i].result_ms is None for i in range(ROUNDS)):
             # Every round past the grace deadline is a forfeit round.
-            if time.time() - match.created_at <= MATCH_SETTLE_GRACE_SECONDS:
+            # Queue waiting time is not play time. Starting the grace clock at
+            # match creation let a player who waited for ~8 minutes be forfeited
+            # almost immediately after an opponent joined.
+            started_at = match.activated_at or match.created_at
+            if time.time() - started_at <= MATCH_SETTLE_GRACE_SECONDS:
                 return False
     return True
 

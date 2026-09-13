@@ -122,9 +122,16 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
   };
 
   const handleChallenge = (player: FriendProfile) => {
-    sounds.playGo();
-    onClose();
-    onStartDuel(player.playerId || player.shortAddress, selectedStake);
+    // There is no invitation/directed-match protocol yet. Routing this button
+    // into the public stake queue made users wager against a random opponent
+    // while the UI claimed they had challenged this friend.
+    void player;
+    void onStartDuel;
+    sounds.playError();
+    setToastMsg({
+      text: 'Direct friend challenges are not live yet. No wager was started.',
+      type: 'warn',
+    });
   };
 
   const handleCopy = (address: string) => {

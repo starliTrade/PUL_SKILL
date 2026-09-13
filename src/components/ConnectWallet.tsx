@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { usePulsarStore } from '../store/usePulsarStore';
-import { explorerAddressUrl } from '../lib/chain';
+import { CHAIN, explorerAddressUrl } from '../lib/chain';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
@@ -743,8 +743,8 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                       <ArrowDownLeft className="w-4 h-4" />
                     </div>
                     <div>
-                      <h4 className="text-sm font-bold text-white">Receive Polygon USDT</h4>
-                      <p className="text-[11px] text-zinc-400">Non-Custodial Polygon (137) Deposit</p>
+                      <h4 className="text-sm font-bold text-white">Receive {CHAIN.name} USDT</h4>
+                      <p className="text-[11px] text-zinc-400">Non-custodial {CHAIN.name} deposit</p>
                     </div>
                   </div>
                   <button

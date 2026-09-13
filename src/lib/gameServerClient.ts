@@ -178,6 +178,8 @@ export interface MatchView {
   youAreCreator: boolean;
   /** Opponent's valid times, disclosed only for rounds BOTH players submitted. */
   opponentTimes: Record<string, number>;
+  /** Submission/validation state, disclosed only after our same round is submitted. */
+  opponentRounds: Record<string, { submitted: boolean; valid: boolean }>;
   myRounds: {
     index: number;
     committed: boolean;
@@ -191,6 +193,11 @@ export interface MatchView {
 /** Enter the matchmaking queue for a stake. Resolves when paired (server side). */
 export const queueForMatch = (session: ServerSession, stake: number): Promise<MatchView> =>
   request<MatchView>("/api/queue", { stake }, session);
+
+export const cancelQueue = (
+  session: ServerSession
+): Promise<{ cancelled: boolean; match: MatchView | null }> =>
+  request("/api/queue/cancel", {}, session);
 
 export const claimServerUsername = (
   session: ServerSession,
