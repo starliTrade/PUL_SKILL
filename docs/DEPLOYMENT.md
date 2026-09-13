@@ -65,9 +65,12 @@ When moving to mainnet (137): set `PAYMENT_TOKEN_ADDRESS=0xc2132D05D31c914a87C66
 give it only signing authority. Consider moving production signing to AWS KMS
 or GCP KMS (the signing surface in `api/oracle.py` is designed for it).
 
----
+⚠️ Chain binding: `ORACLE_CHAIN_ID` on the server **must equal** `VITE_CHAIN_ID`
+on the client. `settleDuel()` hashes `block.chainid`, so a mismatch makes every
+settlement signature invalid on-chain (the oracle defaults to 80002 = Amoy,
+matching the client default).
 
-## 1. Deploy PulsarEscrow
+## 2. Generate the oracle key
 
 Generate the oracle key (run ONCE, on a secure machine):
 
@@ -77,13 +80,9 @@ cast wallet new
 # → store the address    as VITE_ORACLE_WALLET_ADDRESS (public, baked into contract)
 ```
 
-⚠️ The oracle key signs real payouts. Use a dedicated key holding no funds;
-give it only signing authority. Consider moving production signing to AWS KMS
-or GCP KMS (the signing surface in `api/oracle.py` is designed for it).
-
 ---
 
-## 2. Host the game server (FastAPI, `api/`)
+## 3. Host the game server (FastAPI, `api/`)
 
 Any Python host works (Fly.io, Railway, Google Cloud Run, a VPS). The server
 is stateless except for match persistence, which now lives in Firestore.
@@ -99,10 +98,12 @@ Server environment (all **secrets** — set on the host, never in git):
 |---|---|
 | `ORACLE_SIGNING_SECRET` | HMAC secret for SIWE nonces + session tokens (any long random string) |
 | `ORACLE_PRIVATE_KEY` | The oracle signer (matches the contract's `oracleSigner`) |
+| `ORACLE_CHAIN_ID` | **Must equal `VITE_CHAIN_ID`** (default 80002). The escrow hashes `block.chainid` — a mismatch invalidates every settlement signature |
 | `ESCROW_ADDRESS` | Deployed contract address (binds settlement signatures) |
 | `PULSAR_MATCH_STORE` | `firestore` (or unset for in-memory dev fallback) |
 | `FIRESTORE_PROJECT_ID` | Your Firebase project ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Service-account JSON path (or use ambient Cloud Run credentials) |
+| `CORS_ALLOW_ORIGINS` (optional) | Comma-separated allowlist; leave unset ("*") while frontend and API are on different origins |
 | `SENTRY_DSN` (optional) | Server error monitoring |
 | `ALLOWED_DOMAIN` (optional) | Force the SIWE domain if behind a proxy that rewrites Host |
 
@@ -111,7 +112,7 @@ Smoke-test the deployment: `GET https://<server>/api/health` must return
 
 ---
 
-## 3. Configure the web client
+## 4. Configure the web client
 
 Set in Freebuff **Settings → Environment** (dev) **and** in
 `freebuff-deploy env` (production):
@@ -139,7 +140,7 @@ only adds mobile-wallet support.
 
 ---
 
-## 4. Legal review (hard gate)
+## 5. Legal review (hard gate)
 
 The pack in `src/pages/LegalPage.tsx` + `EligibilityGate.tsx` is a structured
 template. Before enabling real-money mode:
@@ -153,7 +154,7 @@ template. Before enabling real-money mode:
 
 ---
 
-## 5. Real-Money Readiness Checklist
+## 6. Real-Money Readiness Checklist
 
 - [ ] Contract deployed, verified on Polygonscan, constructor args correct
 - [ ] Oracle key generated, stored as server secret, public address set in contract

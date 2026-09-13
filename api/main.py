@@ -24,9 +24,11 @@ Security model:
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from auth import issue_nonce, issue_session, verify_session  # verify_session used by _auth
@@ -34,11 +36,33 @@ from match_engine import MatchError
 from oracle import sign_settlement
 from store import create_store, install_persistence
 
-app = FastAPI(title="PULSAR Game Server", version="1.1.0")
+app = FastAPI(title="PULSAR Game Server", version="1.1.1")
+
+# P0-fix — CORS. The frontend (static hosting) and this API are commonly on
+# different origins (docs/DEPLOYMENT.md deployment topology), so browsers send
+# preflights for the JSON + Authorization requests the client makes. Without
+# this middleware every cross-origin call died in the browser. Origins are
+# env-configured; "*" (default) allows credentialess public play from any
+# origin — this API is bearer-token authenticated, never cookie-authenticated,
+# so wildcard origins are safe.
+_cors_origins = [
+    o.strip() for o in os.environ.get("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+    max_age=86400,
+)
 
 # Stakes the lobby offers (src/pages/LobbyPage.tsx STAKE_TIERS). Anything else
 # is rejected, so the queue can never be polluted with arbitrary values.
 ALLOWED_STAKES = frozenset({1.0, 2.0, 5.0, 10.0})
+
+# Serializes the settle→sign→persist sequence (see settle_match).
+_settle_lock = threading.Lock()
 
 # P2.4 — server error monitoring. No-ops unless SENTRY_DSN is set in the
 # server environment. Never required for local dev.
@@ -183,6 +207,15 @@ def match_view(match_id: str, request: Request) -> dict[str, Any]:
     return match.public_view(for_address=address)
 
 
+# P0-fix — POST alias for GET /api/match/{id}. The client's generic `request`
+# helper sent POST for every call including getMatch(), which 405'd here and
+# cut the in-game refresh at ReactionGamePage. Both verbs share one handler so
+# the client and the HTTP suite can never drift again.
+@app.post("/api/match/{match_id}")
+def match_view_post(match_id: str, request: Request) -> dict[str, Any]:
+    return match_view(match_id, request)
+
+
 @app.post("/api/round/commit")
 def round_commit(body: CommitRequest, request: Request) -> dict[str, Any]:
     address = _auth(request)
@@ -224,24 +257,36 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
     except MatchError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    # Idempotent: when both clients race to settle, the first signs and the
-    # second receives the SAME oracle signature (never a second signature over
-    # a new nonce, which would break the contract's replay binding).
-    if match.status == "settled" and match.signed_settlement:
-        return dict(match.signed_settlement)
+    # P0-fix — single-flight settlement. Two concurrent requests both saw an
+    # active match and each called settle()+sign_settlement(), producing two
+    # different signatures over different nonces; the contract's replay
+    # binding accepts only the first one on-chain, so the other player's proof
+    # would revert. The lock makes settle→sign→persist atomic; any later
+    # caller (including the other client) hits the idempotent replay branch
+    # and receives the ONE stored proof.
+    with _settle_lock:
+        if match.status == "settled" and match.signed_settlement:
+            return dict(match.signed_settlement)
 
-    try:
-        result = settle(match)
-    except MatchError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        try:
+            result = settle(match)
+        except MatchError as e:
+            raise HTTPException(status_code=409, detail=str(e))
 
-    if result.get("status") == "settled":
-        # Keep the public "status" field in the response: sign_settlement()
-        # returns the proof envelope without it, and the client treats a
-        # missing status as an unsettled (refundable) match. roundWins is
-        # informational Bo3 accounting carried over from the engine result.
-        envelope = sign_settlement(result)
-        envelope["roundWins"] = result.get("roundWins", {})
-        result = {"status": "settled", **envelope}
-        match.signed_settlement = dict(result)
-    return result
+        if result.get("status") == "settled":
+            # Keep the public "status" field in the response: sign_settlement()
+            # returns the proof envelope without it, and the client treats a
+            # missing status as an unsettled (refundable) match. roundWins is
+            # informational Bo3 accounting carried over from the engine result.
+            envelope = sign_settlement(result)
+            envelope["roundWins"] = result.get("roundWins", {})
+            result = {"status": "settled", **envelope}
+            match.signed_settlement = dict(result)
+            # P0-fix — persist the proof envelope in the SAME save pass as the
+            # settled status. The persistence hook inside settle() ran BEFORE
+            # the signature existed, so a recycled instance (or any later
+            # store.get) saw a settled match with no signature — unrecoverable,
+            # since re-signing with a fresh nonce would violate the contract's
+            # replay binding.
+            store.put(match)
+        return result

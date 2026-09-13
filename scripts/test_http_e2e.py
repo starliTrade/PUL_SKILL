@@ -41,6 +41,12 @@ def check(name, cond):
 
 client = TestClient(server.app)
 
+# P0-fix regression — CORS must be present. The frontend and this API deploy
+# on different origins (docs/DEPLOYMENT.md); without the middleware browsers
+# blocked every cross-origin JSON+Authorization request at preflight.
+_mw_names = [getattr(m, "cls", type(m)).__name__ for m in server.app.user_middleware]
+check("CORSMiddleware is installed", "CORSMiddleware" in _mw_names)
+
 DOMAIN = "pulsar.test"
 
 
@@ -202,6 +208,14 @@ if s.get("status") == "settled":
 # --- 6. Idempotent settlement replay --------------------------------------------
 r2s = client.post(f"/api/match/{match_id}/settle", json={}, headers=auth_headers(token_b))
 check("Second settle call replays the SAME signature (idempotent)", r2s.status_code == 200 and r2s.json().get("signature") == s["signature"])
+
+# P0-fix regression — the match view must answer BOTH verbs. The client's
+# in-game refresh previously 405'd here (POST-only helper vs GET-only route)
+# and the whole round flow died at the first getMatch().
+r_get = client.get(f"/api/match/{match_id}", headers=auth_headers(token_a))
+r_post = client.post(f"/api/match/{match_id}", json={}, headers=auth_headers(token_a))
+check("Match view answers GET (200)", r_get.status_code == 200)
+check("Match view answers POST identically (client compat, no 405)", r_post.status_code == 200 and r_post.json()["matchId"] == r_get.json()["matchId"])
 
 # Non-participant cannot settle
 carol = Account.create()

@@ -122,18 +122,27 @@ export const ensureSession = async (address: string, signMessage: SignMessageFn)
 
 // --- Authenticated request helper -------------------------------------------
 
+// P0-fix — typed request method. The old helper sent POST for EVERY call,
+// including getMatch(), which the server only exposes as GET → 405
+// Method Not Allowed on the first in-game refresh, cutting the round flow.
+// Verbs are now explicit per call so client/server can never drift again.
+type RequestMethod = "GET" | "POST";
+
 const request = async <T>(
   path: string,
   body: unknown,
-  session: ServerSession
+  session: ServerSession,
+  method: RequestMethod = "POST"
 ): Promise<T> => {
   const res = await fetch(`${SERVER_URL}${path}`, {
-    method: "POST",
+    method,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${session.token}`,
     },
-    body: JSON.stringify(body ?? {}),
+    // GET requests must carry no body (a GET body is dropped/forbidden and
+    // made this call fail some proxies before the 405 was even fixed).
+    body: method === "GET" ? undefined : JSON.stringify(body ?? {}),
   });
   if (res.status === 401) {
     clearServerSession();
@@ -184,7 +193,7 @@ export const queueForMatch = (session: ServerSession, stake: number): Promise<Ma
   request<MatchView>("/api/queue", { stake }, session);
 
 export const getMatch = (session: ServerSession, matchId: string): Promise<MatchView> =>
-  request<MatchView>(`/api/match/${encodeURIComponent(matchId)}`, {}, session);
+  request<MatchView>(`/api/match/${encodeURIComponent(matchId)}`, undefined, session, "GET");
 
 export const commitRound = (
   session: ServerSession,

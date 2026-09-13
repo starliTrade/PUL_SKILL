@@ -29,7 +29,12 @@ _EIP191_PREFIX = b"\x19Ethereum Signed Message:\n32"
 SETTLEMENT_DEADLINE_SECONDS = 600  # 10 minutes
 
 _KMS_KEY_ENV = "ORACLE_PRIVATE_KEY"
-_DEFAULT_CHAIN_ID = 137
+# P0-fix: the signing chain id MUST match the chain the CLIENT plays on, not
+# a hardcoded mainnet value. settleDuel() hashes block.chainid, so a signature
+# minted for 137 is rejected on Amoy (80002) and vice versa. The deploy env
+# sets ORACLE_CHAIN_ID to the target chain; the default follows the client
+# default (src/lib/chain.ts → Amoy testnet) so rehearsal works out of the box.
+_DEFAULT_CHAIN_ID = int(os.environ.get("ORACLE_CHAIN_ID", "80002"))
 
 
 def _load_signer() -> Account:
@@ -119,6 +124,9 @@ def build_settlement_digest(
     chain_id: int = _DEFAULT_CHAIN_ID,
     escrow_address: str = "",
 ) -> bytes:
+    # `chain_id` defaults to the env-configured deployment chain (see
+    # _DEFAULT_CHAIN_ID above). Never hardcode 137 at call sites — the client
+    # (src/lib/chain.ts) and this signer must always agree.
     """
     EXACT digest preimage verified by PulsarEscrow.settleDuel():
 
@@ -152,10 +160,12 @@ def build_settlement_digest(
     return _keccak(_EIP191_PREFIX + inner)
 
 
-def sign_settlement(record: dict[str, Any]) -> dict[str, Any]:
+def sign_settlement(record: dict[str, Any], chain_id: int | None = None) -> dict[str, Any]:
     """
     Sign one engine-produced settlement. The record MUST come from
-    match_engine.settle(), not from client input.
+    match_engine.settle(), not from client input. `chain_id` overrides the
+    env-configured deployment chain (used by tests); production callers omit
+    it so the signer and the deployed escrow always share ORACLE_CHAIN_ID.
     """
     if record.get("status") != "settled":
         raise ValueError("Refusing to sign: settlement status is not 'settled'")
@@ -180,6 +190,7 @@ def sign_settlement(record: dict[str, Any]) -> dict[str, Any]:
             "deadline": deadline,
         },
         server_nonce,
+        chain_id=_DEFAULT_CHAIN_ID if chain_id is None else int(chain_id),
     )
     signed = _sign_hash_bytes(_load_signer(), digest)
     raw_sig = bytes(signed.signature) if not isinstance(signed.signature, bytes) else signed.signature

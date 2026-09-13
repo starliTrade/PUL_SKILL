@@ -228,7 +228,11 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
         await approveUsdt(currentStake);
         await createDuel(bytes32, currentStake);
       } else {
-        // The joiner must WAIT for the creator's createDuel to confirm
+        // P0-fix — the joiner MUST approve before joinDuel(): the escrow pulls
+        // the joiner's stake via transferFrom, which reverts without allowance
+        // (its usual result: the creator's deposit locked for 30 minutes).
+        await approveUsdt(currentStake);
+        // The joiner then WAITS for the creator's createDuel to confirm
         // on-chain — calling joinDuel earlier reverts ("Match not available")
         // while the approval was already spent on gas. Poll the duel state
         // (status 1 = Created) before joining. Nothing is taken from the

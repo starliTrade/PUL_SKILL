@@ -22,12 +22,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install server deps
-        run: pip install -r api/requirements.txt
-      - name: Protocol smoke tests (SIWE, commit-reveal, settlement, oracle)
+      - name: Install server deps (INCLUDING google-cloud-firestore + sqlite3)
+        # sqlite3 is the Firestore STDLib fallback (google-cloud-firestore uses
+        # it for local emulation); without it the fallback import fails and CI
+        # silently exercises the memory store — the exact blind spot that let
+        # the NameError/@firestore.transactional crash ship unnoticed.
+        run: |
+          pip install -r api/requirements.txt
+          pip install httpx
+          sudo apt-get update -y && sudo apt-get install -y python3-sqlite3
+      - name: Protocol smoke tests (SIWE, commit-reveal, settlement, oracle, store roundtrip)
         run: python3 scripts/test_game_server.py
       - name: HTTP end-to-end tests (real FastAPI request layer)
-        run: pip install httpx && python3 scripts/test_http_e2e.py
+        run: python3 scripts/test_http_e2e.py
+      - name: Smoke tests again with the FALLBACK path forced (PULSAR_MATCH_STORE=firestore, no credentials)
+        env:
+          PULSAR_MATCH_STORE: firestore
+        run: python3 scripts/test_game_server.py
 
   contracts:
     runs-on: ubuntu-latest

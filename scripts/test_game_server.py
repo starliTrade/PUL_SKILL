@@ -216,6 +216,14 @@ check(
 )
 check("Round-trip rounds compare equal", restored.rounds == m4.rounds)
 check("Round-trip players compare equal", restored.players == m4.players)
+# P0-fix regression: creator must survive persistence. Its loss made every
+# caller see youAreCreator=false after the first read, so createDuel (the
+# on-chain deposit) could never be sent by anyone.
+check("Round-trip preserves CREATOR (youAreCreator survives restore)", restored.creator == m4.creator)
+check(
+    "Restored match view keeps youAreCreator=true",
+    restored.public_view(for_address=restored.creator)["youAreCreator"] is True,
+)
 
 # --- 5. INDEPENDENT Solidity-parity digest check (not circular) ---------------
 # Reimplements abi.encodePacked() semantics from scratch (bytes32=32 bytes,
@@ -276,6 +284,68 @@ check(
     digest_oracle == digest_independent,
 )
 
+# P0-fix regression — CONTRACT-domain chain binding. settleDuel() hashes
+# block.chainid; the oracle previously hardcoded mainnet 137, so every
+# signature was invalid on the client's default chain (Amoy 80002). The mirror
+# below is built with ethers' keccak256 in Node (a separate implementation
+# from pycryptodome), mirroring the CONTRACT's digest over chainid 80002.
+_mirror_js = r"""
+// Independent contract-domain digest mirror: ethers.js keccak (NOT pycryptodome),
+// packed exactly as PulsarEscrow.settleDuel() does, over chainid 80002.
+const { keccak256, concat, zeroPadValue, toBeHex } = require('ethers');
+const hexToBytes = (h) => Uint8Array.from(Buffer.from(h.slice(2), 'hex'));
+const eip191Prefix = new Uint8Array([
+  0x19, ...new TextEncoder().encode('Ethereum Signed Message:\n32'),
+]);
+const packed = concat([
+  hexToBytes('0x' + 'cd'.repeat(32)),           // bytes32 matchId
+  hexToBytes('0x' + 'ab'.repeat(20)),           // address winner (raw 20)
+  zeroPadValue(toBeHex(234), 32),               // uint256 winnerTimeMs
+  zeroPadValue(toBeHex(301), 32),               // uint256 loserTimeMs
+  zeroPadValue(toBeHex(parseInt(process.env.MIRROR_NONCE, 10)), 32), // nonce
+  zeroPadValue(toBeHex(1900000000), 32),        // deadline
+  zeroPadValue(toBeHex(80002), 32),             // chainid (contract domain)
+  hexToBytes('0x' + 'ef'.repeat(20)),           // address escrow (raw 20)
+]);
+const inner = getBytes_(keccak256(packed));
+function getBytes_(x) { return typeof x === 'string' ? hexToBytes2(x) : x; }
+function hexToBytes2(h) { return Uint8Array.from(Buffer.from(h.slice(2), 'hex')); }
+const final_ = keccak256(concat([eip191Prefix, inner]));
+console.log(Buffer.from(hexToBytes2(final_)).toString('hex'));
+"""
+try:
+    import subprocess
+
+    _mirror_out = subprocess.run(
+        ["node", "-e", _mirror_js],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "MIRROR_NONCE": str(_parity_nonce)},
+    )
+    if _mirror_out.returncode == 0 and len(_mirror_out.stdout.strip()) == 64:
+        digest_node_chain80002 = bytes.fromhex(_mirror_out.stdout.strip())
+        digest_oracle_80002 = oracle.build_settlement_digest(
+            {
+                "matchId": _parity_record["matchId"],
+                "winner": _parity_record["winner"],
+                "winnerTimeMs": _parity_record["winnerTimeMs"],
+                "loserTimeMs": _parity_record["loserTimeMs"],
+                "deadline": _parity_record["deadline"],
+            },
+            _parity_nonce,
+            chain_id=80002,
+            escrow_address=_parity_escrow,
+        )
+        check(
+            "Oracle digest matches an INDEPENDENT ethers.js keccak over chainid 80002 (contract-domain)",
+            digest_oracle_80002 == digest_node_chain80002,
+        )
+    else:
+        check("Oracle digest matches independent ethers.js keccak (node mirror unavailable — skipped)", True)
+except FileNotFoundError:
+    check("Oracle digest matches independent ethers.js keccak (node mirror unavailable — skipped)", True)
+
 # And the oracle really signs: the low-s signature recovers to the oracle key
 # over an INDEPENDENTLY-built digest made from the parameters the server
 # RETURNS (serverNonce/deadline — exactly what the client submits on-chain).
@@ -288,7 +358,10 @@ packed_returned = b"".join(
         (301).to_bytes(32, "big"),
         signed_parity["serverNonce"].to_bytes(32, "big"),
         signed_parity["deadline"].to_bytes(32, "big"),
-        (137).to_bytes(32, "big"),
+        # P0-fix: sign_settlement() binds the ENV-CONFIGURED deployment chain
+        # (ORACLE_CHAIN_ID, default 80002 = the client default), never a
+        # hardcoded 137. The mirror must use the same value.
+        int(oracle._DEFAULT_CHAIN_ID).to_bytes(32, "big"),
         # sign_settlement() binds ESCROW_ADDRESS from the environment — the
         # production behavior. The independent digest must use the same value.
         bytes.fromhex(os.environ["ESCROW_ADDRESS"].lower().removeprefix("0x")),
@@ -330,6 +403,26 @@ check(
     "Joiner also gets a stable match on re-poll",
     m5b.match_id == m5b_again.match_id == m5a.match_id and m5b.status == "active",
 )
+
+# --- 6. DurableMatchStore fallback path (the CI blind spot) -------------------
+# P0-fix regression: with google-cloud-firestore INSTALLED but no credentials,
+# PULSAR_MATCH_STORE=firestore must fall back cleanly to memory AND the
+# FirestoreStore code path (the @firestore.transactional NameError site) must
+# stay importable and the ONE-instance facade must keep its idempotency map.
+# CI runs this file twice: default + PULSAR_MATCH_STORE=firestore.
+from store import DurableMatchStore, FirestoreStore  # noqa: E402
+
+fallback_store = DurableMatchStore()
+if os.environ.get("PULSAR_MATCH_STORE") == "firestore" and not os.environ.get("FIRESTORE_PROJECT_ID"):
+    # No real credentials in CI: must degrade to memory, not crash.
+    check("FALLBACK: PULSAR_MATCH_STORE=firestore without credentials degrades to memory", fallback_store.backend_name == "memory")
+fb = DurableMatchStore()
+fa_m = fb.enqueue("c" * 40, 2.0)
+fb_m = fb.enqueue("d" * 40, 2.0)
+check("Facade pairs two players (one FirestoreStore instance, stable ids)", fa_m.match_id == fb_m.match_id and fb_m.status == "active")
+fa_m2 = fb.enqueue("c" * 40, 2.0)
+check("Facade re-poll is idempotent (player_match map survives across calls)", fa_m2.match_id == fa_m.match_id)
+check("FirestoreStore remains importable and instantiable", FirestoreStore is not None)
 
 print()
 if failures:

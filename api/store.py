@@ -84,6 +84,10 @@ def _match_to_doc(m: Match) -> dict[str, Any]:
         "stake": m.stake,
         "created_at": m.created_at,
         "players": m.players,
+        # P0-fix: creator was never persisted, so after the first read the
+        # queueing player lost youAreCreator=true and nobody ever sent
+        # createDuel — the on-chain deposit step could never happen.
+        "creator": m.creator,
         "rounds": {
             addr: {str(idx): _round_to_doc(r) for idx, r in per_player.items()}
             for addr, per_player in m.rounds.items()
@@ -102,6 +106,9 @@ def _match_from_doc(d: dict[str, Any]) -> Match:
         created_at=float(d["created_at"]),
     )
     m.players = dict(d.get("players", {}))
+    # P0-fix: restore creator; for documents written before this field
+    # existed, derive it (players preserves insertion order — creator first).
+    m.creator = d.get("creator", "") or next(iter(m.players), "")
     m.rounds = {
         addr: {int(idx): _round_from_doc(r) for idx, r in per_player.items()}
         for addr, per_player in (d.get("rounds", {}) or {}).items()
@@ -221,8 +228,7 @@ class FirestoreStore:
             self.player_match.pop(addr, None)
         queue_ref = self._queue_ref(stake)
 
-        @firestore.transactional  # type: ignore[name-defined]
-        def _txn_enqueue(transaction: Any) -> Optional[Match]:
+        def _txn_body(transaction: Any) -> Optional[Match]:
             snap = queue_ref.get(transaction=transaction)
             waiting_id = (snap.to_dict() or {}).get("waitingMatchId") if snap.exists else None
             if waiting_id:
@@ -254,6 +260,17 @@ class FirestoreStore:
             transaction.set(self._match_ref(match_id), _match_to_doc(m))
             transaction.set(queue_ref, {"waitingMatchId": match_id})
             return m
+
+        # P0-fix: the decorator MUST come from the imported module (aliased
+        # `_firestore`). The old `@firestore.transactional` referenced an
+        # undefined name and raised NameError on the very first Firestore
+        # enqueue — invisible to CI because every test ran the memory store.
+        # Without the real module (unit tests with fake clients) run the body
+        # directly so matchmaking stays testable.
+        if _FIRESTORE_AVAILABLE:
+            _txn_enqueue = _firestore.transactional(_txn_body)  # type: ignore[union-attr]
+        else:
+            _txn_enqueue = _txn_body
 
         transaction = self.db.transaction()
         match = _txn_enqueue(transaction)
@@ -305,6 +322,12 @@ class DurableMatchStore:
         backend = backend or os.environ.get("PULSAR_MATCH_STORE", "auto")
         self.backend_name = "memory"
         self._firestore: Any = None
+        # P0-fix: ONE FirestoreStore for the process lifetime. The old code
+        # constructed a fresh FirestoreStore (with its own empty player_match
+        # map and cache) for EVERY enqueue/get/put, so the idempotent re-poll
+        # logic never engaged across requests and post-activation re-polls
+        # minted orphan waiting matches.
+        self._fs_store: Any = None
         self.memory = InMemoryStore()
 
         if backend in ("firestore", "auto") and _FIRESTORE_AVAILABLE:
@@ -318,9 +341,11 @@ class DurableMatchStore:
                 else:
                     # Application Default Credentials (Cloud Run / Freebuff)
                     self._firestore = _firestore.Client(project=project)
+                self._fs_store = FirestoreStore(self._firestore)
                 self.backend_name = "firestore"
             except Exception:
                 self._firestore = None
+                self._fs_store = None
                 self.backend_name = "memory"
         elif backend == "firestore":
             raise RuntimeError(
@@ -334,28 +359,34 @@ class DurableMatchStore:
         return self.backend_name == "firestore"
 
     def enqueue(self, address: str, stake: float) -> Match:
-        if self._firestore is not None:
-            match = FirestoreStore(self._firestore).enqueue(address, stake)
-            self.memory.put(match)
+        if self._fs_store is not None:
+            match = self._fs_store.enqueue(address, stake)
+            self._mirror(match)
             return match
         return self.memory.enqueue(address, stake)
 
     def get(self, match_id: str) -> Match:
-        if self._firestore is not None:
-            match = FirestoreStore(self._firestore).get(match_id)
-            self.memory.put(match)
+        if self._fs_store is not None:
+            match = self._fs_store.get(match_id)
+            self._mirror(match)
             return match
         return self.memory.get(match_id)
 
+    def _mirror(self, match: Match) -> None:
+        """Refresh the local cache + idempotency map from durable state."""
+        self.memory.put(match)
+        for addr in match.players:
+            self.memory.player_match[addr] = match.match_id
+
     def sweep_expired(self) -> None:
-        if self._firestore is not None:
-            FirestoreStore(self._firestore).sweep_expired()
+        if self._fs_store is not None:
+            self._fs_store.sweep_expired()
         self.memory.sweep_expired()
 
     def put(self, match: Match) -> None:
         """Persist after a mutation (commit/reveal/submit/settle)."""
-        if self._firestore is not None:
-            FirestoreStore(self._firestore).put(match)
+        if self._fs_store is not None:
+            self._fs_store.put(match)
         self.memory.put(match)
 
 
