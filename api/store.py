@@ -32,6 +32,7 @@ from match_engine import (
     MatchError,
     Round,
 )
+import match_engine as _default_engine  # engine fns for transactional mutations
 
 try:  # optional dependency — absent in local dev until credentials exist
     from google.cloud import firestore as _firestore  # type: ignore
@@ -178,6 +179,14 @@ class InMemoryStore:
             raise MatchError("Match not found")
         return m
 
+    def update(self, match_id: str, mutate: Any) -> Any:
+        """Single-process serialization of read-modify-write (multi-replica
+        parity with the Firestore transactional path)."""
+        with self._lock:
+            m = self.get(match_id)
+            out = mutate(m)
+            return out
+
     def sweep_expired(self) -> None:
         now = time.time()
         for mid in list(self.matches):
@@ -290,6 +299,32 @@ class FirestoreStore:
             raise MatchError("Match not found")
         return _match_from_doc(snap.to_dict())
 
+    def update(self, match_id: str, mutate: Any) -> Any:
+        """Transactional read-modify-write (audit #3): the mutation is applied
+        to a freshly-read match INSIDE a Firestore transaction, so concurrent
+        replicas (or two players hitting different backends) can no longer
+        overwrite each other's rounds or settle/sign past one another."""
+        db = self.db
+
+        def _txn_body(transaction: Any) -> Any:
+            snap = self._match_ref(match_id).get(transaction=transaction)
+            if not snap.exists:
+                raise MatchError("Match not found")
+            m = _match_from_doc(snap.to_dict())
+            out = mutate(m)
+            transaction.set(self._match_ref(match_id), _match_to_doc(m))
+            return out
+
+        txn = db.transaction()
+        transactional = getattr(_firestore, "transactional", None)
+        if transactional is not None:
+            return transactional(_txn_body)(txn)
+        snap = self._match_ref(match_id).get()
+        m = _match_from_doc(snap.to_dict())
+        out = mutate(m)
+        self._match_ref(match_id).set(_match_to_doc(m))
+        return out
+
     def sweep_expired(self) -> None:
         """Void expired matches and clear stale queue slots (best effort)."""
         now = time.time()
@@ -333,6 +368,9 @@ class DurableMatchStore:
         # logic never engaged across requests and post-activation re-polls
         # minted orphan waiting matches.
         self._fs_store: Any = None
+        # Original (un-hooked) engine functions, injected by
+        # install_persistence() so transactional mutations never double-save.
+        self._orig_engine: Any = None
         self.memory = InMemoryStore()
 
         if backend in ("firestore", "auto") and _FIRESTORE_AVAILABLE:
@@ -394,6 +432,29 @@ class DurableMatchStore:
             self._fs_store.put(match)
         self.memory.put(match)
 
+    def update(self, match_id: str, mutate: Any) -> Any:
+        """Transactional read-modify-write. ``mutate(m, engine)`` runs against
+        a freshly-read match with the ORIGINAL (un-hooked) engine functions,
+        so nothing persists outside the transaction. On Firestore this is a
+        real transaction (concurrent replicas can no longer clobber each
+        other's rounds); in memory it is lock-serialized."""
+        eng = self._orig_engine or _default_engine
+
+        def _one_arg(m: Match) -> Any:
+            return mutate(m, eng)
+
+        if self._fs_store is not None:
+            out = self._fs_store.update(match_id, _one_arg)
+            self._mirror_idempotent(match_id)
+            return out
+        return self.memory.update(match_id, _one_arg)
+
+    def _mirror_idempotent(self, match_id: str) -> None:
+        try:
+            self._mirror(self._fs_store.get(match_id))
+        except MatchError:
+            pass
+
 
 def install_persistence(store: DurableMatchStore, engine_module: Any) -> None:
     """
@@ -424,6 +485,17 @@ def install_persistence(store: DurableMatchStore, engine_module: Any) -> None:
 
     def settle(match: Match):
         return _save(original_settle, match)
+
+    # Transactional mutations: expose the ORIGINAL engine functions to
+    # DurableMatchStore.update so mutate(m, engine) runs hook-free inside the
+    # transaction and the store persists exactly once, atomically.
+    store._orig_engine = type("_OriginalEngine", (), {
+        "commit_intent": staticmethod(original_commit),
+        "reveal_target": staticmethod(original_reveal),
+        "submit_result": staticmethod(original_submit),
+        "settle": staticmethod(original_settle),
+        "match_completed": staticmethod(engine_module.match_completed),
+    })()
 
     engine_module.commit_intent = commit_intent
     engine_module.reveal_target = reveal_target

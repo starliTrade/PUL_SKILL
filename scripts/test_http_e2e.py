@@ -29,6 +29,7 @@ from eth_account.messages import encode_defunct  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import main as server  # noqa: E402
+import auth as auth_module  # noqa: E402
 
 failures = []
 
@@ -64,7 +65,7 @@ def make_session(account: Account) -> tuple[str, dict]:
         "\n"
         f"URI: https://{DOMAIN}\n"
         "Version: 1\n"
-        "Chain ID: 137\n"
+        f"Chain ID: {auth_module.EXPECTED_CHAIN_ID}\n"
         f"Nonce: {nonce}\n"
         f"Issued At: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
     )

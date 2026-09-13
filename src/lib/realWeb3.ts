@@ -971,7 +971,10 @@ class RealWeb3Manager {
     if (typeof window === 'undefined') {
       throw new Error('SIWE is only available in the browser.');
     }
-    return buildSiweMessage(address.toLowerCase(), window.location.host);
+    // Audit-#3 fix: the SIWE statement MUST bind the chain the app actually
+    // runs on (the server validates it); a hardcoded mainnet ID mismatches
+    // the Amoy deployment and every EIP-4361 client would reject the message.
+    return buildSiweMessage(address.toLowerCase(), window.location.host, CHAIN.chainId);
   }
 
   /**

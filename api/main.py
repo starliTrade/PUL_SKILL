@@ -24,7 +24,6 @@ Security model:
 from __future__ import annotations
 
 import os
-import threading
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -60,9 +59,6 @@ app.add_middleware(
 # Stakes the lobby offers (src/pages/LobbyPage.tsx STAKE_TIERS). Anything else
 # is rejected, so the queue can never be polluted with arbitrary values.
 ALLOWED_STAKES = frozenset({1.0, 2.0, 5.0, 10.0})
-
-# Serializes the settle→sign→persist sequence (see settle_match).
-_settle_lock = threading.Lock()
 
 # P2.4 — server error monitoring. No-ops unless SENTRY_DSN is set in the
 # server environment. Never required for local dev.
@@ -228,8 +224,12 @@ def match_view_post(match_id: str, request: Request) -> dict[str, Any]:
 def round_commit(body: CommitRequest, request: Request) -> dict[str, Any]:
     address = _auth(request)
     try:
-        match = store.get(body.matchId)
-        commit_intent(match, address, body.roundIndex, body.intentHash)
+        # Audit-#3 fix: round mutations run inside a store transaction
+        # (read-modify-write) so concurrent replicas cannot clobber rounds.
+        def _mutate(m: Any, eng: Any) -> None:
+            eng.commit_intent(m, address, body.roundIndex, body.intentHash)
+
+        store.update(body.matchId, _mutate)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {"ok": True}
@@ -239,8 +239,10 @@ def round_commit(body: CommitRequest, request: Request) -> dict[str, Any]:
 def round_target(body: TargetRequest, request: Request) -> dict[str, Any]:
     address = _auth(request)
     try:
-        match = store.get(body.matchId)
-        return reveal_target(match, address, body.roundIndex)
+        def _mutate(m: Any, eng: Any) -> dict[str, Any]:
+            return eng.reveal_target(m, address, body.roundIndex)
+
+        return store.update(body.matchId, _mutate)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
@@ -249,38 +251,47 @@ def round_target(body: TargetRequest, request: Request) -> dict[str, Any]:
 def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
     address = _auth(request)
     try:
-        match = store.get(body.matchId)
-        res = submit_result(match, address, body.roundIndex, body.measuredMs, body.resultProof)
-    except MatchError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    # P0-fix (audit #2/#3): when the last round lands, settle+sign
-    # IMMEDIATELY under the settle lock. Nobody can race a premature
-    # settle and the very request that completes the match carries the
-    # oracle envelope back to its caller.
-    if match.status == "active" and match_completed(match):
-        with _settle_lock:
-            if match.status == "active":
+        # Transactional submission: validated + stored atomically against the
+        # authoritative document, then (when it completes the match) settled
+        # and signed in the SAME transaction so no concurrent writer can
+        # wedge the match between settle and sign.
+        def _mutate(m: Any, eng: Any) -> dict[str, Any]:
+            res = eng.submit_result(m, address, body.roundIndex, body.measuredMs, body.resultProof)
+            if m.status == "active" and eng.match_completed(m):
                 try:
-                    result = settle(match)
+                    result = eng.settle(m)
                 except MatchError:
                     result = None
-                if result:
-                    res["settled"] = _sign_and_persist(result, match)
+                if result and result.get("status") == "settled":
+                    envelope = sign_settlement(result)
+                    envelope["roundWins"] = result.get("roundWins", {})
+                    m.signed_settlement = {"status": "settled", **envelope}
+                    res["settled"] = m.signed_settlement
+            return res
+
+        res = store.update(body.matchId, _mutate)
+    except MatchError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     return res
 
 
-def _sign_and_persist(result: dict[str, Any], match: Any) -> dict[str, Any]:
-    """Common settlement tail: sign settled output → attach the proof envelope
-    → persist IN THE SAME PASS (the persistence hook inside settle() runs
-    before the signature exists). Must be called under _settle_lock."""
+def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
+    """Shared transactional settlement body: settle → sign → attach the proof
+    envelope, persisted atomically by store.update(). Idempotent — an already
+    settled/void match is replayed, never re-signed."""
+    if m.status == "settled" and m.signed_settlement:
+        return dict(m.signed_settlement)
+    if m.status == "void":
+        return {"status": "void", "reason": "Match was voided — stakes are refundable on-chain."}
+    try:
+        result = eng.settle(m)
+    except MatchError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if result.get("status") == "settled":
         envelope = sign_settlement(result)
         envelope["roundWins"] = result.get("roundWins", {})
-        settled = {"status": "settled", **envelope}
-        match.signed_settlement = dict(settled)
-        store.put(match)
-        return settled
-    store.put(match)  # void — persist so the refundable state is durable
+        m.signed_settlement = {"status": "settled", **envelope}
+        return dict(m.signed_settlement)
     return {"status": "void", "reason": result.get("reason", "stakes refund")}
 
 
@@ -291,14 +302,10 @@ def _finalize_if_due(match: Any) -> None:
     Idempotent: an already-settled/void match is left untouched."""
     if match.status != "active" or not match_completed(match):
         return
-    with _settle_lock:
-        if match.status != "active":
-            return
-        try:
-            result = settle(match)
-        except MatchError:
-            return
-        _sign_and_persist(result, match)
+    try:
+        store.update(match.match_id, _settle_once)
+    except (MatchError, HTTPException):
+        pass
 
 
 @app.post("/api/match/{match_id}/settle")
@@ -311,22 +318,9 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
     except MatchError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    # P0-fix — single-flight settlement. Two concurrent requests both saw an
-    # active match and each called settle()+sign_settlement(), producing two
-    # different signatures over different nonces; the contract's replay
-    # binding accepts only the first one on-chain, so the other player's proof
-    # would revert. The lock makes settle→sign→persist atomic; any later
-    # caller (including the other client) hits the idempotent replay branch
-    # and receives the ONE stored proof.
-    with _settle_lock:
-        if match.status == "settled" and match.signed_settlement:
-            return dict(match.signed_settlement)
-        if match.status == "void":
-            return {"status": "void", "reason": "Match was voided — stakes are refundable on-chain."}
-
-        try:
-            result = settle(match)
-        except MatchError as e:
-            raise HTTPException(status_code=409, detail=str(e))
-
-        return _sign_and_persist(result, match)
+    # P0-fix — single-flight settlement, now CROSS-REPLICA (audit #3): the
+    # settle→sign→persist sequence runs inside a store transaction, so two
+    # players on different backend replicas can no longer produce two
+    # different signatures; the transaction serializes them and the loser of
+    # the race replays the ONE stored proof.
+    return store.update(match_id, _settle_once)

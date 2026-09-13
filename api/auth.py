@@ -17,6 +17,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import time
 from dataclasses import dataclass
 
@@ -25,6 +26,33 @@ from eth_account.messages import encode_defunct
 
 SESSION_TTL_SECONDS = 60 * 60 * 24          # 24h
 NONCE_WINDOW_SECONDS = 60 * 5               # 5-minute validity window
+
+# Audit-#3 fix: the SIWE statement must carry the chain the app actually runs
+# on (the client builds it with CHAIN.chainId — Amoy 80002 by default). A
+# message signed for a different chain is rejected instead of silently
+# accepted, so a mainnet-phished statement can never authenticate here.
+EXPECTED_CHAIN_ID = int(os.environ.get("ORACLE_CHAIN_ID", "80002"))
+
+# Audit-#3 fix: nonce single-use replay protection. The rolling-window nonce
+# alone allowed one signature to authenticate repeatedly for up to 10 minutes
+# (two adjacent windows). Each nonce now burns exactly once.
+_used_nonces: set[str] = set()
+_used_nonces_order: list[str] = []
+_USED_NONCE_MAX = 4096
+
+
+def _burn_nonce(nonce: str) -> None:
+    if nonce in _used_nonces:
+        return
+    _used_nonces.add(nonce)
+    _used_nonces_order.append(nonce)
+    while len(_used_nonces_order) > _USED_NONCE_MAX:
+        _used_nonces_order.pop(0)
+        _used_nonces.discard(_used_nonces_order[0] if _used_nonces_order else "")
+
+
+def nonce_is_used(nonce: str) -> bool:
+    return nonce in _used_nonces
 
 _API_SECRET = os.environ.get("ORACLE_SIGNING_SECRET", "")
 if not _API_SECRET:
@@ -49,9 +77,12 @@ def _hmac_hex(payload: str) -> str:
 
 
 def issue_nonce(address: str, domain: str) -> str:
-    """Stateless, domain- and address-bound nonce with a rolling time window."""
+    """Stateless, domain- and address-bound nonce with a rolling time window.
+    A random component keeps successive issuances unique, so single-use
+    enforcement can never self-DoS a legitimate re-authentication inside the
+    same window."""
     window = int(time.time() // NONCE_WINDOW_SECONDS)
-    payload = f"siwe|{domain.lower()}|{address.lower()}|{window}"
+    payload = f"siwe|{domain.lower()}|{address.lower()}|{window}|{secrets.token_hex(8)}"
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
     return f"{window:x}-{digest}"
 
@@ -111,6 +142,10 @@ def verify_siwe(message: str, signature: str, expected_domain: str) -> str | Non
         return None
     if not nonce_is_fresh(fields.nonce):
         return None
+    if nonce_is_used(fields.nonce):
+        return None  # replayed signature — each nonce authenticates exactly once
+    if fields.chain_id is not None and fields.chain_id != EXPECTED_CHAIN_ID:
+        return None  # statement bound to a different chain than this server
     try:
         if fields.expiration_time:
             from datetime import datetime, timezone
@@ -124,7 +159,10 @@ def verify_siwe(message: str, signature: str, expected_domain: str) -> str | Non
     except Exception:
         return None
     address = getattr(recovered, "address", recovered)
-    return str(address).lower() or None
+    verified = str(address).lower() or None
+    if verified:
+        _burn_nonce(fields.nonce)
+    return verified
 
 
 def issue_session(address: str) -> str:

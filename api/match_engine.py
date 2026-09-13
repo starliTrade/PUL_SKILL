@@ -39,8 +39,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 ROUNDS = 3
-MIN_HUMAN_MS = 90.0            # below this is not humanly plausible
+MIN_HUMAN_MS = 105.0           # below this is not humanly plausible — MUST match
+                               # the client floor (antiCheat.MIN_HUMAN_REACTION_MS = 105)
+                               # so an attacker gains no threshold advantage
 MAX_HUMAN_MS = 1200.0          # above this is a disconnect / not a serious attempt
+CLOCK_TOLERANCE_MS = 250.0     # network + NTP slack for the server-clock gate
 ROUND_EXPIRY_SECONDS = 60
 MATCH_EXPIRY_SECONDS = 600     # aligns with the on-chain refund horizon (30 min
                                # starts at deposit; the server gives up earlier)
@@ -323,15 +326,20 @@ def _validate_plausibility(match: Match, r: Round, measured_ms: float, now: floa
         return f"implausible: {measured_ms}ms is below human minimum"
     if measured_ms > MAX_HUMAN_MS:
         return f"implausible: {measured_ms}ms exceeds maximum plausible reaction"
-    # Timing floor: the submission cannot arrive meaningfully before the
-    # revealed target delay has elapsed on the SERVER clock. This kills two
-    # client cheats at once: submitting a fabricated time instantly after the
-    # reveal, and clicking early then reporting a fast "reaction".
-    if r.revealed_at and now - r.revealed_at < (r.target_ms / 1000.0) * 0.9:
-        return (
-            f"implausible: submitted before the {r.target_ms:.0f}ms target "
-            "delay had elapsed on the server clock"
-        )
+    # Timing-consistency gate (audit #3): the CLAIMED time must be supported
+    # by the SERVER-observed elapsed time since the reveal. revealed_at +
+    # target_ms is the earliest instant the target is even VISIBLE, so a
+    # reaction can never be shorter than the hidden-target delay plus the
+    # human floor. The old 0.9x rule allowed a fabricated 90ms to land BEFORE
+    # the target appeared (measured server-side) — total fairness failure.
+    if r.revealed_at:
+        elapsed_ms = (now - r.revealed_at) * 1000.0
+        min_claimable = r.target_ms + MIN_HUMAN_MS
+        if elapsed_ms + CLOCK_TOLERANCE_MS < min_claimable:
+            return (
+                "implausible: submitted before the target delay could have "
+                "elapsed on the server clock"
+            )
     return ""
 
 
@@ -342,11 +350,70 @@ def _ensure_active(match: Match, address: str) -> None:
         raise MatchError("Not a participant of this match")
 
 
+def _round_winner(mine: dict[int, Round], theirs: dict[int, Round], idx: int) -> str:
+    """'a' (mine wins) | 'b' (theirs wins) | '' (undecided) for one round."""
+    ra = mine.get(idx)
+    rb = theirs.get(idx)
+    va = ra.result_ms if (ra and ra.valid and ra.result_ms is not None) else None
+    vb = rb.result_ms if (rb and rb.valid and rb.result_ms is not None) else None
+    if va is None and vb is None:
+        return ""
+    if vb is None:
+        return "a"
+    if va is None:
+        return "b"
+    if va < vb:
+        return "a"
+    if vb < va:
+        return "b"
+    return ""
+
+
+def _round_decidable(mine: dict[int, Round], theirs: dict[int, Round], idx: int) -> bool:
+    """A round is decidable only when BOTH players have submitted a result
+    (valid or flagged). One-sided submissions must never decide a round: the
+    client UI only scores mutually-disclosed rounds, so a fast player cannot
+    race a slow-but-active opponent into a premature forfeit (audit #3)."""
+    ra = mine.get(idx)
+    rb = theirs.get(idx)
+    return (
+        ra is not None and ra.result_ms is not None and
+        rb is not None and rb.result_ms is not None
+    )
+
+
+def _majority_reached(match: Match) -> bool:
+    """True once a player has mathematically secured the best-of-three
+    majority from the mutually-decided rounds already played — mirroring the
+    client UI, which ends the match at 2-0/2-1 and requests settlement
+    immediately (audit #3: the server used to demand all three rounds from
+    both players, so the NATURAL outcome could never settle and the claim
+    flow died on a 409)."""
+    a, b = sorted(match.players)
+    rounds_a = match.rounds.get(a, {}) or {}
+    rounds_b = match.rounds.get(b, {}) or {}
+    wins_needed = ROUNDS // 2 + 1
+    wins_a = wins_b = 0
+    for idx in range(ROUNDS):
+        if not _round_decidable(rounds_a, rounds_b, idx):
+            continue
+        w = _round_winner(rounds_a, rounds_b, idx)
+        if w == "a":
+            wins_a += 1
+        elif w == "b":
+            wins_b += 1
+    return wins_a >= wins_needed or wins_b >= wins_needed
+
+
 def match_completed(match: Match) -> bool:
-    """True when both players finished all rounds (or the grace window passed,
-    after which unplayed rounds settle as forfeits)."""
+    """True when the best-of-three is decidable: a player already holds the
+    round-win majority from MUTUALLY-decided rounds, OR both players finished
+    all rounds, OR the grace window passed (after which unplayed rounds
+    settle as forfeits)."""
     if len(match.players) < 2:
         return False
+    if _majority_reached(match):
+        return True
     for addr in match.players:
         mine = match.rounds.get(addr, {}) or {}
         if any(mine.get(i) is None or mine[i].result_ms is None for i in range(ROUNDS)):

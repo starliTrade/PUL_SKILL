@@ -43,7 +43,7 @@ import {
   type MatchView,
 } from '../lib/gameServerClient';
 import { settleDuel as settleDuelOnChain, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState } from '../lib/escrowFlow';
-import { isEscrowConfigured } from '../lib/chain';
+import { isEscrowConfigured, CHAIN } from '../lib/chain';
 import { realWeb3Manager } from '../lib/realWeb3';
 import { reportError } from '../lib/monitoring';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
@@ -632,25 +632,50 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
         }
 
         // Accepted. Score the round when the opponent's time is known; if the
-        // opponent hasn't submitted yet, show the honest wait state.
+        // opponent hasn't submitted yet, poll for their disclosure (audit #3:
+        // a single 1.5s poll used to fabricate a 'tie' and roll into the next
+        // round, so late results never reconciled and phantom round 4 requests
+        // were rejected by the server).
         clearInterval(progressInterval);
         setVerifyProgress(100);
         if (oppTime == null) {
           setPhase('round-transition');
-          // Poll briefly for the opponent's disclosure, then continue.
-          roundTransitionTimeoutRef.current = setTimeout(() => {
-            void (async () => {
-              try {
-                const v2 = await getMatch(serverSession, serverMatch.matchId);
-                setServerMatch(v2);
-                const o2 = v2.opponentTimes[String(roundIndex)];
-                const oppMs = o2 != null ? Math.round(o2) : null;
-                applyServerRoundOutcome(roundIndex, userTime, oppMs);
-              } catch {
-                applyServerRoundOutcome(roundIndex, userTime, null);
-              }
-            })();
-          }, 1500);
+          // Poll for the opponent's disclosure with backoff — the opponent
+          // may still be playing this round. Never fabricate a tie.
+          let pollDelay = 1500;
+          const pollOpponent = () => {
+            roundTransitionTimeoutRef.current = setTimeout(() => {
+              void (async () => {
+                try {
+                  const v2 = await getMatch(serverSession, serverMatch.matchId);
+                  setServerMatch(v2);
+                  const o2 = v2.opponentTimes[String(roundIndex)];
+                  const oppMs = o2 != null ? Math.round(o2) : null;
+                  if (oppMs != null) {
+                    applyServerRoundOutcome(roundIndex, userTime, oppMs);
+                  } else if (pollDelay < 10000) {
+                    pollDelay = Math.min(pollDelay * 1.5, 10000);
+                    pollOpponent();
+                  } else {
+                    // ~25s of polling: the opponent is unresponsive — the
+                    // round stands as forfeit-for-them via the grace-window
+                    // settlement; show the honest undecided state.
+                    applyServerRoundOutcome(roundIndex, userTime, null);
+                  }
+                } catch {
+                  // Transient network error — keep polling instead of
+                  // fabricating a result.
+                  if (pollDelay < 10000) {
+                    pollDelay = Math.min(pollDelay * 1.5, 10000);
+                    pollOpponent();
+                  } else {
+                    applyServerRoundOutcome(roundIndex, userTime, null);
+                  }
+                }
+              })();
+            }, pollDelay);
+          };
+          pollOpponent();
           return;
         }
         applyServerRoundOutcome(roundIndex, userTime, oppTime);

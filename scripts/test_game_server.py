@@ -44,7 +44,7 @@ message = (
     "\n"
     f"URI: https://{domain}\n"
     "Version: 1\n"
-    "Chain ID: 137\n"
+    f"Chain ID: {auth.EXPECTED_CHAIN_ID}\n"
     f"Nonce: {nonce}\n"
     f"Issued At: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
     f"Expiration Time: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() + 600))}\n"
@@ -443,12 +443,27 @@ try:
     check("P0.2-regression: cross-player proof reuse rejected", False)
 except me.MatchError as e:
     check("P0.2-regression: cross-player proof reuse rejected", "proof" in str(e))
-# Premature settle: the honest player finished, the cheater submitted nothing.
+# One-sided rounds never decide a majority: the honest player submitted all
+# three rounds but the cheater none, so settling must still be refused here
+# (a fast player cannot race a slow-but-active opponent into a forfeit).
 try:
     me.settle(m5)
-    check("P0.3-regression: settle refused before completion/grace", False)
+    check("P0.3-regression: one-sided rounds never decide a majority", False)
 except me.MatchError:
-    check("P0.3-regression: settle refused before completion/grace", True)
+    check("P0.3-regression: one-sided rounds never decide a majority", True)
+# The cheater now plays two rounds honestly (slower): the honest player wins
+# BOTH mutually-decided rounds -> Bo3 majority -> early settlement is legit,
+# exactly mirroring the client's 2-0 finish.
+for idx in (0, 1):
+    me.reveal_target(m5, cheater, idx)
+    wait_out_target(m5, cheater, idx)
+    r_c = m5.rounds[cheater][idx]
+    me.submit_result(m5, cheater, idx, 260.0, r_c.result_proof)
+res_early = me.settle(m5)
+check(
+    "P0.3-regression: mutually-decided 2-0 majority settles early",
+    res_early.get("status") == "settled" and res_early.get("winner") == opp5,
+)
 
 # --- 5c. Forfeit-only settlement must be SIGNABLE (no stuck stake) -----------
 m6 = store.enqueue(Account.create().address.lower(), 2.0)
@@ -471,6 +486,53 @@ try:
     check("P0.4-regression: oracle signs the forfeit settlement (no stuck stake)", signed6["signature"].startswith("0x"))
 except ValueError:
     check("P0.4-regression: oracle signs the forfeit settlement (no stuck stake)", False)
+
+# --- 5d. Audit-#3 regressions: server-observed timing + threshold parity ------
+m7 = store.enqueue(Account.create().address.lower(), 2.0)
+fast = Account.create().address.lower()
+store.enqueue(fast, 2.0)
+me.commit_intent(m7, fast, 0, "0x" + "77" * 31 + "01")
+t7 = me.reveal_target(m7, fast, 0)
+r7 = m7.rounds[fast][0]
+r7.revealed_at = time.time() - (r7.target_ms * 0.1) / 1000.0  # only 10% elapsed
+res7 = me.submit_result(m7, fast, 0, me.MIN_HUMAN_MS, t7["resultProof"])
+check(
+    "A3: fabricated floor time rejected while the target is still hidden",
+    res7["accepted"] is False and "server clock" in res7["reason"],
+)
+check(
+    "A3: server floor matches the client floor (105ms, no attacker advantage)",
+    me.MIN_HUMAN_MS == 105.0,
+)
+# The plausibility rejection consumed round 0 — an honest retry lands on a
+# fresh round, where a claim made AFTER the target delay is accepted.
+me.commit_intent(m7, fast, 1, "0x" + "77" * 31 + "02")
+t7b = me.reveal_target(m7, fast, 1)
+r7b = m7.rounds[fast][1]
+r7b.revealed_at = time.time() - (r7b.target_ms + 200) / 1000.0
+res7b = me.submit_result(m7, fast, 1, me.MIN_HUMAN_MS + 40, t7b["resultProof"])
+check("A3: honest submission after the target delay is accepted", res7b["accepted"] is True)
+
+# --- 5e. Audit-#3 regressions: SIWE chain binding + nonce single-use ----------
+msg_wrong_chain = message.replace(
+    f"Chain ID: {auth.EXPECTED_CHAIN_ID}", "Chain ID: 999999"
+)
+sig_wrong_chain = player.sign_message(encode_defunct(text=msg_wrong_chain)).signature.hex()
+check(
+    "A3: SIWE bound to a foreign chain is rejected",
+    auth.verify_siwe(msg_wrong_chain, sig_wrong_chain, domain) is None,
+)
+check(
+    "A3: replaying the SAME nonce+signature is rejected (single-use)",
+    auth.verify_siwe(message, sig, domain) is None,
+)
+nonce2 = auth.issue_nonce(player_addr, domain)
+msg2 = message.replace(f"Nonce: {nonce}", f"Nonce: {nonce2}")
+sig2 = player.sign_message(encode_defunct(text=msg2)).signature.hex()
+check(
+    "A3: fresh nonce still authenticates",
+    auth.verify_siwe(msg2, sig2, domain) == player_addr,
+)
 
 # --- 6. DurableMatchStore fallback path (the CI blind spot) -------------------
 # P0-fix regression: with google-cloud-firestore INSTALLED but no credentials,
