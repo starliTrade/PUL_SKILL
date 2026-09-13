@@ -32,7 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from auth import issue_nonce, issue_session, verify_session  # verify_session used by _auth
-from match_engine import MatchError
+from match_engine import MatchError, match_completed
 from oracle import sign_settlement
 from store import create_store, install_persistence
 
@@ -153,6 +153,10 @@ class ResultRequest(BaseModel):
     matchId: str
     roundIndex: int
     measuredMs: float = Field(gt=0, le=5000)
+    # P0-fix (audit #2): unforgeable per-player proof issued at reveal. Without
+    # it the stored result was disconnected from its commit (any 90ms claim
+    # after any commit was accepted).
+    resultProof: str = ""
 
 
 @app.post("/api/auth/nonce")
@@ -204,6 +208,10 @@ def match_view(match_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(e))
     if address not in match.players:
         raise HTTPException(status_code=403, detail="Not a participant")
+    # P0-fix (audit #2): settlement must never depend on a background worker.
+    # Any participant polling the view finalizes a due match (completed, or
+    # grace window passed) and immediately receives the authoritative status.
+    _finalize_if_due(match)
     return match.public_view(for_address=address)
 
 
@@ -242,9 +250,55 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
     address = _auth(request)
     try:
         match = store.get(body.matchId)
-        return submit_result(match, address, body.roundIndex, body.measuredMs)
+        res = submit_result(match, address, body.roundIndex, body.measuredMs, body.resultProof)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    # P0-fix (audit #2/#3): when the last round lands, settle+sign
+    # IMMEDIATELY under the settle lock. Nobody can race a premature
+    # settle and the very request that completes the match carries the
+    # oracle envelope back to its caller.
+    if match.status == "active" and match_completed(match):
+        with _settle_lock:
+            if match.status == "active":
+                try:
+                    result = settle(match)
+                except MatchError:
+                    result = None
+                if result:
+                    res["settled"] = _sign_and_persist(result, match)
+    return res
+
+
+def _sign_and_persist(result: dict[str, Any], match: Any) -> dict[str, Any]:
+    """Common settlement tail: sign settled output → attach the proof envelope
+    → persist IN THE SAME PASS (the persistence hook inside settle() runs
+    before the signature exists). Must be called under _settle_lock."""
+    if result.get("status") == "settled":
+        envelope = sign_settlement(result)
+        envelope["roundWins"] = result.get("roundWins", {})
+        settled = {"status": "settled", **envelope}
+        match.signed_settlement = dict(settled)
+        store.put(match)
+        return settled
+    store.put(match)  # void — persist so the refundable state is durable
+    return {"status": "void", "reason": result.get("reason", "stakes refund")}
+
+
+def _finalize_if_due(match: Any) -> None:
+    """Lazy finalizer: when a match is complete (both players finished, or the
+    grace window passed making missing rounds forfeits), settle+sign it.
+    Called from read paths so settlement never depends on a background worker.
+    Idempotent: an already-settled/void match is left untouched."""
+    if match.status != "active" or not match_completed(match):
+        return
+    with _settle_lock:
+        if match.status != "active":
+            return
+        try:
+            result = settle(match)
+        except MatchError:
+            return
+        _sign_and_persist(result, match)
 
 
 @app.post("/api/match/{match_id}/settle")
@@ -267,26 +321,12 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
     with _settle_lock:
         if match.status == "settled" and match.signed_settlement:
             return dict(match.signed_settlement)
+        if match.status == "void":
+            return {"status": "void", "reason": "Match was voided — stakes are refundable on-chain."}
 
         try:
             result = settle(match)
         except MatchError as e:
             raise HTTPException(status_code=409, detail=str(e))
 
-        if result.get("status") == "settled":
-            # Keep the public "status" field in the response: sign_settlement()
-            # returns the proof envelope without it, and the client treats a
-            # missing status as an unsettled (refundable) match. roundWins is
-            # informational Bo3 accounting carried over from the engine result.
-            envelope = sign_settlement(result)
-            envelope["roundWins"] = result.get("roundWins", {})
-            result = {"status": "settled", **envelope}
-            match.signed_settlement = dict(result)
-            # P0-fix — persist the proof envelope in the SAME save pass as the
-            # settled status. The persistence hook inside settle() ran BEFORE
-            # the signature existed, so a recycled instance (or any later
-            # store.get) saw a settled match with no signature — unrecoverable,
-            # since re-signing with a fresh nonce would violate the contract's
-            # replay binding.
-            store.put(match)
-        return result
+        return _sign_and_persist(result, match)

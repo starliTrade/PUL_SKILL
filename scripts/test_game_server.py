@@ -83,6 +83,7 @@ intent = hashlib.sha256(b"my-intent").hexdigest()
 me.commit_intent(m1, player_addr, 0, "0x" + intent)
 target = me.reveal_target(m1, player_addr, 0)
 check("Target revealed after commit", target["targetMs"] >= 1200)
+check("Reveal issues a per-player result proof", bool(target.get("resultProof")))
 wait_out_target(m1, player_addr, 0)
 
 # Reveal without commit must fail
@@ -94,7 +95,7 @@ except me.MatchError:
 
 # implausible submission rejected (and the round is burned — one attempt
 # per committed round, so implausible values cannot be re-rolled)
-res = me.submit_result(m1, player_addr, 0, 42.0)
+res = me.submit_result(m1, player_addr, 0, 42.0, target["resultProof"])
 check("Superhuman time rejected", res["accepted"] is False and "below human minimum" in res["reason"])
 
 # re-submission blocked — the anti-reroll guarantee
@@ -107,15 +108,15 @@ except me.MatchError:
 # plausible submission accepted (on a fresh round)
 # instant submission after reveal must be REJECTED (timing floor)
 me.commit_intent(m1, player_addr, 1, "0x" + hashlib.sha256(b"i1").hexdigest())
-me.reveal_target(m1, player_addr, 1)
-res = me.submit_result(m1, player_addr, 1, 250.0)
+target1 = me.reveal_target(m1, player_addr, 1)
+res = me.submit_result(m1, player_addr, 1, 250.0, target1["resultProof"])
 check("Instant submit after reveal rejected", res["accepted"] is False and "target" in res["reason"])
 
 # honest wait then submit accepted (fresh round — 1 was burned by the floor)
 me.commit_intent(m1, player_addr, 2, "0x" + hashlib.sha256(b"i2").hexdigest())
-me.reveal_target(m1, player_addr, 2)
+target2 = me.reveal_target(m1, player_addr, 2)
 wait_out_target(m1, player_addr, 2)
-res = me.submit_result(m1, player_addr, 2, 250.0)
+res = me.submit_result(m1, player_addr, 2, 250.0, target2["resultProof"])
 check("Plausible time accepted", res["accepted"] is True)
 
 # double submission blocked
@@ -128,9 +129,9 @@ except me.MatchError:
 # complete opponent's rounds; playerA has rounds 0 (invalid) + 1 (valid)
 for idx in range(me.ROUNDS):
     me.commit_intent(m1, opp, idx, "0x" + hashlib.sha256(f"o{idx}".encode()).hexdigest())
-    me.reveal_target(m1, opp, idx)
+    t_opp = me.reveal_target(m1, opp, idx)
     wait_out_target(m1, opp, idx)
-    me.submit_result(m1, opp, idx, 300.0 + idx * 5)
+    me.submit_result(m1, opp, idx, 300.0 + idx * 5, t_opp["resultProof"])
 # Bo3 semantics: a forfeited (invalid) round is LOST. playerA burned rounds
 # 0 and 1, won only round 2 (245<310) -> opponent wins 2-1. Anti-cheat has
 # real teeth: cheating costs rounds, not just a warning.
@@ -152,9 +153,9 @@ m3b = store.enqueue(w_addr, 2.0)
 for idx in range(me.ROUNDS):
     for addr, base in ((m3.players and list(m3.players)[0], 220.0), (w_addr, 280.0)):
         me.commit_intent(m3, addr, idx, "0x" + hashlib.sha256(f"{addr}{idx}".encode()).hexdigest())
-        me.reveal_target(m3, addr, idx)
+        t3 = me.reveal_target(m3, addr, idx)
         wait_out_target(m3, addr, idx)
-        me.submit_result(m3, addr, idx, base + idx * 3)
+        me.submit_result(m3, addr, idx, base + idx * 3, t3["resultProof"])
 
 result = me.settle(m3)
 check("Clean match settles", result["status"] == "settled")
@@ -199,9 +200,9 @@ store.enqueue(opp4, 5.0)
 for idx in range(me.ROUNDS):
     for addr, base in ((list(m4.players)[0], 210.0), (opp4, 260.0)):
         me.commit_intent(m4, addr, idx, "0x" + hashlib.sha256(f"{addr}{idx}".encode()).hexdigest())
-        me.reveal_target(m4, addr, idx)
+        t4 = me.reveal_target(m4, addr, idx)
         wait_out_target(m4, addr, idx)
-        me.submit_result(m4, addr, idx, base + idx * 4)
+        me.submit_result(m4, addr, idx, base + idx * 4, t4["resultProof"])
 me.settle(m4)
 m4.signed_settlement = {"signature": "0x" + "77" * 65}
 
@@ -403,6 +404,73 @@ check(
     "Joiner also gets a stable match on re-poll",
     m5b.match_id == m5b_again.match_id == m5a.match_id and m5b.status == "active",
 )
+
+# --- 5b. Audit-#2 P0 regressions: commit-reveal MUST bind the result ---------
+m5 = store.enqueue(Account.create().address.lower(), 2.0)
+cheater = list(m5.players)[0]           # participant #1 (the queued creator)
+opp5 = Account.create().address.lower()  # participant #2 (the honest joiner)
+store.enqueue(opp5, 2.0)
+# Honest joiner completes all rounds first.
+for idx in range(me.ROUNDS):
+    me.commit_intent(m5, opp5, idx, "0x" + hashlib.sha256(f"f5-{idx}".encode()).hexdigest())
+    t5 = me.reveal_target(m5, opp5, idx)
+    wait_out_target(m5, opp5, idx)
+    me.submit_result(m5, opp5, idx, 240.0, t5["resultProof"])
+# Attack replay: the CHEATER commits, then submits a valid-looking time WITHOUT
+# ever revealing. Under the old engine this exact sequence settled 3-0. Now the
+# submission must be rejected at one of the protocol gates (unrevealed target
+# OR missing proof — either rejection kills the attack).
+for idx in range(me.ROUNDS):
+    me.commit_intent(m5, cheater, idx, "0x" + "de" * 31 + "ad")
+    try:
+        me.submit_result(m5, cheater, idx, 90.0)  # no proof at all
+        check("P0.2-regression: unproofed result rejected", False)
+        break
+    except me.MatchError:
+        continue  # correctly refused — attack blocked
+    except Exception:
+        check("P0.2-regression: unproofed result rejected", False)
+        break
+else:
+    check("P0.2-regression: unproofed result rejected (the 3-0 cheat now fails)", True)
+# Cross-player proof reuse must also fail: reveal the (already committed)
+# round 2, then submit carrying the OPPONENT's proof (the exact theft the
+# binding exists to stop).
+me.reveal_target(m5, cheater, 2)
+cheat_r = m5.rounds[opp5][0]
+try:
+    me.submit_result(m5, cheater, 2, 240.0, cheat_r.result_proof)
+    check("P0.2-regression: cross-player proof reuse rejected", False)
+except me.MatchError as e:
+    check("P0.2-regression: cross-player proof reuse rejected", "proof" in str(e))
+# Premature settle: the honest player finished, the cheater submitted nothing.
+try:
+    me.settle(m5)
+    check("P0.3-regression: settle refused before completion/grace", False)
+except me.MatchError:
+    check("P0.3-regression: settle refused before completion/grace", True)
+
+# --- 5c. Forfeit-only settlement must be SIGNABLE (no stuck stake) -----------
+m6 = store.enqueue(Account.create().address.lower(), 2.0)
+w6 = Account.create().address.lower()
+store.enqueue(w6, 2.0)
+for idx in range(me.ROUNDS):
+    me.commit_intent(m6, w6, idx, "0x" + hashlib.sha256(f"w6-{idx}".encode()).hexdigest())
+    t6 = me.reveal_target(m6, w6, idx)
+    wait_out_target(m6, w6, idx)
+    me.submit_result(m6, w6, idx, 220.0, t6["resultProof"])
+m6.created_at = time.time() - 10_000  # push past the settle grace window
+res6 = me.settle(m6)
+check("P0.4-regression: grace-window forfeit settles", res6["status"] == "settled")
+check(
+    "P0.4-regression: forfeit winner keeps >=1 validated time",
+    bool(res6["validatedTimes"].get(res6["winner"])) and bool(res6["validatedTimes"].get(res6["loser"]))
+)
+try:
+    signed6 = oracle.sign_settlement(res6)
+    check("P0.4-regression: oracle signs the forfeit settlement (no stuck stake)", signed6["signature"].startswith("0x"))
+except ValueError:
+    check("P0.4-regression: oracle signs the forfeit settlement (no stuck stake)", False)
 
 # --- 6. DurableMatchStore fallback path (the CI blind spot) -------------------
 # P0-fix regression: with google-cloud-firestore INSTALLED but no credentials,

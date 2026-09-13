@@ -137,7 +137,8 @@ check("Exactly one live match exists (no orphans)", len(live) == 1)
 match_id = m1["matchId"]
 
 
-def play_round(token: str, idx: int, ms: float, honest_wait: bool) -> dict:
+def play_round(token: str, idx: int, ms: float, honest_wait: bool, with_proof: bool = True) -> dict:
+    addr = addr_a if token == token_a else addr_b
     intent = "0x" + hashlib.sha256(f"intent-{token[:8]}-{idx}-{ms}".encode()).hexdigest()
     r = client.post("/api/round/commit", json={"matchId": match_id, "roundIndex": idx, "intentHash": intent}, headers=auth_headers(token))
     if r.status_code != 200:
@@ -145,14 +146,21 @@ def play_round(token: str, idx: int, ms: float, honest_wait: bool) -> dict:
     r = client.post("/api/round/target", json={"matchId": match_id, "roundIndex": idx}, headers=auth_headers(token))
     if r.status_code != 200:
         return {"http": r.status_code, "detail": r.json().get("detail")}
+    result_proof = r.json().get("resultProof", "")
+    if not with_proof:
+        result_proof = ""  # simulate the audit cheat: submit without the proof
     if honest_wait:
         # Simulate the wall-clock wait on the server object (test clock control).
         for m in server.store.memory.matches.values():
             if m.match_id == match_id:
-                rr = m.rounds.get(addr_a if token == token_a else addr_b, {}).get(idx)
+                rr = m.rounds.get(addr, {}).get(idx)
                 if rr and rr.revealed_at:
                     rr.revealed_at -= rr.target_ms / 1000.0
-    r = client.post("/api/round/result", json={"matchId": match_id, "roundIndex": idx, "measuredMs": ms}, headers=auth_headers(token))
+    r = client.post(
+        "/api/round/result",
+        json={"matchId": match_id, "roundIndex": idx, "measuredMs": ms, "resultProof": result_proof},
+        headers=auth_headers(token),
+    )
     return r.json() if r.status_code == 200 else {"http": r.status_code, "detail": r.json().get("detail")}
 
 
@@ -160,19 +168,29 @@ def play_round(token: str, idx: int, ms: float, honest_wait: bool) -> dict:
 r = client.post("/api/round/target", json={"matchId": match_id, "roundIndex": 0}, headers=auth_headers(token_a))
 check("Reveal before commit rejected (409)", r.status_code == 409)
 
-res = play_round(token_a, 0, 250.0, honest_wait=False)
-check("Anti-cheat: instant submission after reveal is REJECTED", res.get("accepted") is False)
-
-# Burned round: resubmission must 409
-r = client.post("/api/round/result", json={"matchId": match_id, "roundIndex": 0, "measuredMs": 250.0}, headers=auth_headers(token_a))
-check("Rejected round cannot be re-rolled (409)", r.status_code == 409)
+# Commit without a result proof must be rejected outright (audit-#2 cheat).
+res = play_round(token_a, 0, 250.0, honest_wait=False, with_proof=False)
+check("Result without the per-player proof is rejected", res.get("detail") is not None and "proof" in str(res.get("detail", "")))
+# The proof-less attempt stored nothing (the proof gate runs before the round
+# is consumed), so round 0 is recoverable — completing it WITH the real proof
+# must now succeed.
+res = play_round(token_a, 0, 250.0, honest_wait=True)
+check("Round 0 recoverable after the rejected proof-less attempt", res.get("accepted") is True)
+# Honest play on fresh rounds: instant submission is now a protocol failure.
+res = play_round(token_a, 1, 240.0, honest_wait=False)
+check("Instant submission without the target wait fails", res.get("detail") is not None or res.get("accepted") is False)
 
 # Bob plays all rounds honestly & fast; Alice burned round 0 (forfeit), wins 1&2? No:
 # honest plays: alice rounds 1,2 valid; bob all valid faster on r1, slower r2.
-res = play_round(token_a, 1, 240.0, honest_wait=True)
-check("Round 1 accepted for Alice after honest wait", res.get("accepted") is True)
-res = play_round(token_a, 2, 260.0, honest_wait=True)
-check("Round 2 accepted for Alice", res.get("accepted") is True)
+# Premature settle MUST be refused: honest play for Alice first, then settle
+# before Bob has played a single round (audit #2: this settled 3-0 before).
+for idx, ms in ((1, 240.0), (2, 260.0)):
+    play_round(token_a, idx, ms, honest_wait=True)
+r = client.post(f"/api/match/{match_id}/settle", json={}, headers=auth_headers(token_a))
+check("Premature settle refused while opponent silent (409)", r.status_code == 409)
+
+# Bob now plays honestly; the settle that COMPLETES the match succeeds and
+# every future call replays the same oracle signature.
 for idx, ms in ((0, 300.0), (1, 300.0), (2, 300.0)):
     res = play_round(token_b, idx, ms, honest_wait=True)
     check(f"Round {idx} accepted for Bob", res.get("accepted") is True)
@@ -217,11 +235,11 @@ r_post = client.post(f"/api/match/{match_id}", json={}, headers=auth_headers(tok
 check("Match view answers GET (200)", r_get.status_code == 200)
 check("Match view answers POST identically (client compat, no 405)", r_post.status_code == 200 and r_post.json()["matchId"] == r_get.json()["matchId"])
 
-# Non-participant cannot settle
+# Outsiders cannot settle a match they are not part of.
 carol = Account.create()
 token_c, _ = make_session(carol)
 r = client.post(f"/api/match/{match_id}/settle", json={}, headers=auth_headers(token_c))
-check("Non-participant settle rejected (404/403)", r.status_code in (403, 404))
+check("Outsider settle rejected (403)", r.status_code == 403)
 
 print()
 if failures:

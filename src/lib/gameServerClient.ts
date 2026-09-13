@@ -205,6 +205,8 @@ export const commitRound = (
 export interface RevealTarget {
   targetMs: number;
   proof: string;
+  /** P0-fix (audit #2): per-player proof that MUST accompany the result submission. */
+  resultProof: string;
   deadline: number;
 }
 
@@ -223,8 +225,10 @@ export const submitRoundResult = (
   session: ServerSession,
   matchId: string,
   roundIndex: number,
-  measuredMs: number
-): Promise<SubmitResult> => request("/api/round/result", { matchId, roundIndex, measuredMs }, session);
+  measuredMs: number,
+  resultProof?: string
+): Promise<SubmitResult> =>
+  request("/api/round/result", { matchId, roundIndex, measuredMs, resultProof }, session);
 
 export interface SettledMatch {
   matchId: string;

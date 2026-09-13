@@ -59,6 +59,10 @@ def _round_to_doc(r: Round) -> dict[str, Any]:
         "submitted_at": r.submitted_at,
         "valid": r.valid,
         "reject_reason": r.reject_reason,
+        # P0-fix (audit #2): the per-player result proof must survive
+        # persistence, otherwise a recycled instance can't validate the
+        # submission that follows a reveal.
+        "result_proof": r.result_proof,
     }
 
 
@@ -75,6 +79,7 @@ def _round_from_doc(d: dict[str, Any]) -> Round:
     r.submitted_at = float(d.get("submitted_at", 0.0))
     r.valid = bool(d.get("valid", False))
     r.reject_reason = d.get("reject_reason", "")
+    r.result_proof = d.get("result_proof", "")
     return r
 
 
@@ -414,8 +419,8 @@ def install_persistence(store: DurableMatchStore, engine_module: Any) -> None:
     def reveal_target(match: Match, address: str, round_index: int):
         return _save(original_reveal, match, address, round_index)
 
-    def submit_result(match: Match, address: str, round_index: int, measured_ms: float):
-        return _save(original_submit, match, address, round_index, measured_ms)
+    def submit_result(match: Match, address: str, round_index: int, measured_ms: float, result_proof: str = ""):
+        return _save(original_submit, match, address, round_index, measured_ms, result_proof)
 
     def settle(match: Match):
         return _save(original_settle, match)

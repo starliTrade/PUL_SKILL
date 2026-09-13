@@ -7,16 +7,26 @@ Round protocol (serverless-compatible, polling based):
   2. POST /api/round/commit   client pre-commits an intent hash BEFORE seeing
                               the round target (binds the client to one
                               attempt per round; prevents re-rolling results)
-  3. POST /api/round/target   server reveals the round target delay (signed,
-                              unguessable until committed)
+  3. POST /api/round/target   server reveals the round target delay together
+                              with a per-player result proof
   4. POST /api/round/result   client submits its measured reaction time;
-                              server validates plausibility and stores it
+                              the server validates plausibility AND the
+                              per-player result proof, then stores the time
+                              bound to that round's commit
   5. server settles: best validated time over 3 rounds wins; settlement
      record carries the referee signature for on-chain settlement.
 
-The client measures its own reaction time locally (millisecond precision
-requires client clocks), but the server refuses impossible values via
-plausibility gates and binds each attempt to a per-round commit.
+Anti-cheat model (audit #2):
+- A submitted result is only accepted when it carries the unforgeable
+  result proof issued to THAT player for THAT round after their commit.
+  Replayed, cross-player, guessed, or pre-generated proofs are rejected.
+- Settlement requires the match to be genuinely complete: either both
+  players finished all rounds, or a participant requested settlement after
+  the server's own match deadline — never "whenever a player feels like it".
+- A forfeit winner keeps at least one engine-validated time, so the oracle
+  can always sign the settlement the contract can verify. (The oracle
+  refuses empty time arrays; an unsigned settled match is unrecoverable
+  and would lock the stake forever.)
 """
 
 from __future__ import annotations
@@ -25,17 +35,25 @@ import hashlib
 import hmac
 import secrets
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Any
 
 ROUNDS = 3
 MIN_HUMAN_MS = 90.0            # below this is not humanly plausible
 MAX_HUMAN_MS = 1200.0          # above this is a disconnect / not a serious attempt
 ROUND_EXPIRY_SECONDS = 60
-MATCH_EXPIRY_SECONDS = 600     # aligns with MATCH_TIMEOUT (10 minutes) on-chain
+MATCH_EXPIRY_SECONDS = 600     # aligns with the on-chain refund horizon (30 min
+                               # starts at deposit; the server gives up earlier)
+COMMIT_WINDOW_SECONDS = 30     # per-round intent-binding window
 
-# Per-round intent-binding: commit must precede target reveal.
-COMMIT_WINDOW_SECONDS = 30
+# P0-fix (audit #2): after this long past activation, a participant may settle
+# an unfinished match — missing rounds become forfeits. Before that, settle()
+# refuses so nobody can race ahead of their opponent (or void a fresh match).
+MATCH_SETTLE_GRACE_SECONDS = 480  # 8 minutes after activation
+
+# Secret used to MAC result proofs. Rotating it invalidates in-flight proofs
+# (they simply fail validation) — safe to restart.
+_PROOF_SECRET = secrets.token_bytes(32)
 
 
 class MatchError(Exception):
@@ -56,6 +74,7 @@ class Round:
     submitted_at: float = 0.0
     valid: bool = False
     reject_reason: str = ""
+    result_proof: str = ""  # per-player MAC binding result submission to this round
 
 
 @dataclass
@@ -64,7 +83,7 @@ class Match:
     stake: float
     created_at: float
     players: dict[str, dict[str, Any]] = field(default_factory=dict)
-    rounds: dict[int, dict[str, Round]] = field(default_factory=dict)
+    rounds: dict[str, dict[int, Round]] = field(default_factory=dict)
     status: str = "waiting"  # waiting | active | settled | void
     winner: str = ""
     settled_at: float = 0.0
@@ -202,6 +221,13 @@ class MatchStore:
             ]
 
 
+def _result_proof(match_id: str, address: str, round_index: int, commit_hash: str, target_ms: int) -> str:
+    """Unforgeable per-player round proof: unguessable before the commit +
+    reveal, and unusable by any other player or round."""
+    payload = f"{match_id}|{address}|{round_index}|{commit_hash}|{target_ms}".encode()
+    return hmac.new(_PROOF_SECRET, payload, hashlib.sha256).hexdigest()
+
+
 def commit_intent(match: Match, address: str, round_index: int, intent_hash: str) -> None:
     """Player binds this round to one intent hash before seeing the target."""
     _ensure_active(match, address)
@@ -211,7 +237,12 @@ def commit_intent(match: Match, address: str, round_index: int, intent_hash: str
     r = rounds.get(round_index) or Round(index=round_index)
     now = time.time()
     if r.commit_hash and now - r.commit_at < COMMIT_WINDOW_SECONDS:
-        raise MatchError("Round already committed")
+        if r.commit_hash != intent_hash.lower():
+            raise MatchError("Round already committed")
+        # Idempotent retry of the SAME intent (e.g. a dropped HTTP response on
+        # the first commit). Returns without error so a rejected submission can
+        # be retried — the target/proof stay bound to this one commit.
+        return
     r.commit_hash = intent_hash.lower()
     r.commit_at = now
     rounds[round_index] = r
@@ -220,8 +251,7 @@ def commit_intent(match: Match, address: str, round_index: int, intent_hash: str
 def reveal_target(match: Match, address: str, round_index: int) -> dict[str, Any]:
     """
     Reveal the round target only after a commit exists, and return it together
-    with an HMAC proof the client can display but cannot forge or predict
-    before committing.
+    with the per-player result proof the client must present when submitting.
     """
     _ensure_active(match, address)
     rounds = match.rounds.setdefault(address.lower(), {})
@@ -239,14 +269,32 @@ def reveal_target(match: Match, address: str, round_index: int) -> dict[str, Any
         ).hexdigest()
         r.revealed = True
         r.revealed_at = now
-    proof = hmac.new(
-        r.target_salt.encode(), f"reveal|{r.target_ms:.0f}".encode(), hashlib.sha256
-    ).hexdigest()
-    return {"targetMs": r.target_ms, "proof": proof, "roundIndex": round_index}
+        # P0-fix (audit #2): bind THIS player's result submission to THIS
+        # round's commit + revealed target. Issued here so the client cannot
+        # pre-generate it and no other player can reuse it.
+        r.result_proof = _result_proof(
+            match.match_id, address.lower(), round_index, r.commit_hash, int(r.target_ms)
+        )
+    return {
+        "targetMs": r.target_ms,
+        "proof": r.target_hash,
+        "resultProof": r.result_proof,
+        "roundIndex": round_index,
+    }
 
 
-def submit_result(match: Match, address: str, round_index: int, measured_ms: float) -> dict[str, Any]:
-    """Validate one submitted time and store it for settlement."""
+def submit_result(
+    match: Match,
+    address: str,
+    round_index: int,
+    measured_ms: float,
+    result_proof: str = "",
+) -> dict[str, Any]:
+    """
+    Validate one submitted time and store it for settlement. The submission
+    MUST carry the per-player result proof from reveal_target — a commit that
+    was never followed by an honest reveal cannot produce a valid result.
+    """
     _ensure_active(match, address)
     rounds = match.rounds.setdefault(address.lower(), {})
     r = rounds.get(round_index)
@@ -254,6 +302,10 @@ def submit_result(match: Match, address: str, round_index: int, measured_ms: flo
         raise MatchError("Round target not revealed")
     if r.result_ms is not None:
         raise MatchError("Result already submitted")
+    # P0-fix (audit #2): the commit is no longer decorative. A result is only
+    # stored when it carries the proof bound to this player's commit+reveal.
+    if not result_proof or not hmac.compare_digest(result_proof, r.result_proof):
+        raise MatchError("Invalid result proof for this round")
     now = time.time()
     reason = _validate_plausibility(match, r, measured_ms, now)
     r.result_ms = measured_ms
@@ -290,6 +342,20 @@ def _ensure_active(match: Match, address: str) -> None:
         raise MatchError("Not a participant of this match")
 
 
+def match_completed(match: Match) -> bool:
+    """True when both players finished all rounds (or the grace window passed,
+    after which unplayed rounds settle as forfeits)."""
+    if len(match.players) < 2:
+        return False
+    for addr in match.players:
+        mine = match.rounds.get(addr, {}) or {}
+        if any(mine.get(i) is None or mine[i].result_ms is None for i in range(ROUNDS)):
+            # Every round past the grace deadline is a forfeit round.
+            if time.time() - match.created_at <= MATCH_SETTLE_GRACE_SECONDS:
+                return False
+    return True
+
+
 def settle(match: Match) -> dict[str, Any]:
     """
     Deterministically settle as Best-of-3 round wins, matching the client UI:
@@ -300,6 +366,15 @@ def settle(match: Match) -> dict[str, Any]:
     """
     if match.status != "active":
         raise MatchError("Match is not active")
+    # P0-fix (audit #2): a participant could settle mid-game (or void a
+    # zero-progress match instantly). Settlement only happens on explicit
+    # completion, or after the grace window (then unplayed rounds forfeit).
+    if not match_completed(match):
+        raise MatchError(
+            "Match is not complete yet — both players must finish all rounds "
+            f"or the {MATCH_SETTLE_GRACE_SECONDS // 60}-minute grace window must pass"
+        )
+
     a, b = sorted(match.players)
     rounds_a = match.rounds.get(a, {})
     rounds_b = match.rounds.get(b, {})
@@ -337,12 +412,20 @@ def settle(match: Match) -> dict[str, Any]:
 
     winner = a if wins_a >= wins_needed else b
     loser = b if winner == a else a
+    # P0-fix (audit #4): the oracle refuses settlements whose time arrays are
+    # empty — and main.py has no fallback, so a forfeit-only winner used to
+    # strand the stake in a settled-without-signature state forever. Reserve
+    # at least one engine-validated time (the max plausible value) so every
+    # settled match is signable. Applied to the RETURNED arrays, not just the
+    # signed scalars, so validatedTimes always matches the signed digest.
+    if not times_a:
+        times_a = [float(MAX_HUMAN_MS)]
+    if not times_b:
+        times_b = [float(MAX_HUMAN_MS)]
     winner_times = times_a if winner == a else times_b
     loser_times = times_b if winner == a else times_a
-    # A player can win by forfeit with no valid time of their own; record the
-    # max plausible time so the on-chain proof still has real uint256 values.
-    winner_ms = int(round(min(winner_times))) if winner_times else int(MAX_HUMAN_MS)
-    loser_ms = int(round(min(loser_times))) if loser_times else int(MAX_HUMAN_MS)
+    winner_ms = int(round(min(winner_times)))
+    loser_ms = int(round(min(loser_times)))
     match.winner = winner
     match.status = "settled"
     match.settled_at = time.time()

@@ -118,6 +118,9 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   const reactionTimeRef = useRef<number>(0);
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const targetRevealRef = useRef<number>(0); // when this round's server target appeared
+  // P0-fix (audit #2): per-round proof from the reveal step. Every result
+  // submission must carry it — the server rejects results without it.
+  const resultProofRef = useRef<string>('');
 
   // Randomize calibration target for human latency check
   const randomizeCalibrationTarget = useCallback(() => {
@@ -192,13 +195,18 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
     try {
       const provider = realWeb3Manager.getActiveEip1193Provider();
       if (!provider) throw new Error('No active wallet to sign in with.');
-      const session = await ensureSession(wallet.address, async (message: string) => {
+      // P0-fix (audit #2): the SIWE identity MUST be the full 40-hex address.
+      // The display value (wallet.address) is `0x1234…abcd`; the server's
+      // nonce endpoint requires ^0x[0-9a-fA-F]{40}$ and rejected it with 422,
+      // so ranked duels died at the very first step.
+      const fullAddr = wallet.fullAddress || wallet.address;
+      const session = await ensureSession(fullAddr, async (message: string) => {
         try {
-          return await provider.request({ method: 'personal_sign', params: [message, wallet.address] });
+          return await provider.request({ method: 'personal_sign', params: [message, fullAddr] });
         } catch (e: unknown) {
           const code = (e as { code?: number })?.code;
           if (code === -32601 || code === -32602) {
-            return await provider.request({ method: 'signMessage', params: [wallet.address, message] });
+            return await provider.request({ method: 'signMessage', params: [fullAddr, message] });
           }
           throw e;
         }
@@ -291,19 +299,21 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
       void (async () => {
         try {
           let targetMs: number;
+          let resultProof: string;
           try {
             // First attempt this round: bind a fresh intent, then get the target.
             const intent = crypto.getRandomValues(new Uint8Array(32));
             const intentHex = Array.from(intent).map((b) => b.toString(16).padStart(2, '0')).join('');
             await commitRound(serverSession, serverMatch.matchId, roundIndex, `0x${intentHex}`);
-            ({ targetMs } = await revealRoundTarget(serverSession, serverMatch.matchId, roundIndex));
+            ({ targetMs, resultProof } = await revealRoundTarget(serverSession, serverMatch.matchId, roundIndex));
           } catch {
             // False-start re-entry (or page refresh): this round is already
-            // committed. Re-revealing returns the SAME target — the server
-            // never re-rolls a committed round, so no exploit exists. The
-            // previous code re-committed here and crashed the round.
-            ({ targetMs } = await revealRoundTarget(serverSession, serverMatch.matchId, roundIndex));
+            // committed. Re-revealing returns the SAME target AND the SAME
+            // per-player result proof — the server never re-rolls a committed
+            // round, so no exploit exists.
+            ({ targetMs, resultProof } = await revealRoundTarget(serverSession, serverMatch.matchId, roundIndex));
           }
+          resultProofRef.current = resultProof;
           waitTimeoutRef.current = setTimeout(() => {
             const target = AntiCheat.generateTargetSpawn();
             setSpawnConfig(target);
@@ -484,7 +494,10 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
         setPhase('result');
         return;
       }
-      const iWon = result.winner.toLowerCase() === wallet.address?.toLowerCase();
+      // P0-fix (audit #2): compare against the FULL wallet identity — the
+      // truncated display address can never equal the settlement's winner.
+      const myFull = (wallet.fullAddress || wallet.address || '').toLowerCase();
+      const iWon = result.winner.toLowerCase() === myFull;
       const prize = iWon ? Math.round(currentStake * 2 * 0.98 * 100) / 100 : 0;
 
       // Winner submits the oracle-signed proof to release the pot.
@@ -570,7 +583,9 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
     if (isServerMode && serverSession && serverMatch) {
       const roundIndex = bo3State.currentRound - 1;
       try {
-        const res = await submitRoundResult(serverSession, serverMatch.matchId, roundIndex, userTime);
+        // P0-fix (audit #2): the result MUST carry the per-player proof issued
+        // at reveal — without it the server rejects the submission outright.
+        const res = await submitRoundResult(serverSession, serverMatch.matchId, roundIndex, userTime, resultProofRef.current || undefined);
         // Refresh the authoritative view (includes mutually-disclosed
         // opponent time for this round, if both have submitted).
         const view = await getMatch(serverSession, serverMatch.matchId);
