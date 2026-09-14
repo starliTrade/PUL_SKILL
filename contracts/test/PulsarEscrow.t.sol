@@ -255,4 +255,148 @@ contract PulsarEscrowTest is Test {
         escrow.setOracleSigner(makeAddr("newOracle"));
         assertEq(escrow.oracleSigner(), makeAddr("newOracle"));
     }
+
+    // ---------- fuzz / property tests (audit #5, item 6) ----------
+
+    /// The fee split is EXACT for every pool: fee + prize == pool, escrow ends
+    /// empty, and no wei... no unit of token is ever created or lost.
+    function testFuzz_FeeMathIsExact(uint256 stake) public {
+        stake = bound(stake, 1, 1_000e6);
+        usdt.faucet(p1, stake);
+        usdt.faucet(p2, stake);
+        vm.prank(p1);
+        usdt.approve(address(escrow), stake);
+        vm.prank(p2);
+        usdt.approve(address(escrow), stake);
+
+        bytes32 matchId = keccak256(abi.encodePacked("fuzz-exact", stake));
+        vm.prank(p1);
+        escrow.createDuel(matchId, stake);
+        vm.prank(p2);
+        escrow.joinDuel(matchId);
+
+        (bytes memory sig,) = _sign(matchId, p1, 200, 300, 1, block.timestamp + 10 minutes);
+        _settle(matchId, p1, 200, 300, 1, block.timestamp + 10 minutes, sig);
+
+        uint256 pool = stake * 2;
+        uint256 fee = (pool * 200) / 10_000;
+        assertEq(usdt.balanceOf(treasury), fee, "fee");
+        assertEq(usdt.balanceOf(p1), pool - fee, "prize");
+        assertEq(usdt.balanceOf(address(escrow)), 0, "escrow must be empty");
+        assertEq(usdt.balanceOf(p2), 0, "loser paid everything");
+    }
+
+    /// A settled duel can NEVER be settled, joined, or re-created.
+    function testFuzz_SettledIsTerminal(uint8 action, uint256 stake) public {
+        stake = bound(stake, 1, 1_000e6);
+        usdt.faucet(p1, stake);
+        usdt.faucet(p2, stake);
+        vm.prank(p1);
+        usdt.approve(address(escrow), stake);
+        vm.prank(p2);
+        usdt.approve(address(escrow), stake);
+
+        bytes32 matchId = keccak256(abi.encodePacked("fuzz-terminal", stake));
+        vm.prank(p1);
+        escrow.createDuel(matchId, stake);
+        vm.prank(p2);
+        escrow.joinDuel(matchId);
+        (bytes memory sig,) = _sign(matchId, p2, 150, 400, 1, block.timestamp + 10 minutes);
+        _settle(matchId, p2, 150, 400, 1, block.timestamp + 10 minutes, sig);
+
+        action = uint8(bound(action, 0, 2));
+        if (action == 0) {
+            vm.prank(p1);
+            vm.expectRevert("Match already exists");
+            escrow.createDuel(matchId, stake);
+        } else if (action == 1) {
+            vm.prank(p1);
+            vm.expectRevert("Match not available");
+            escrow.joinDuel(matchId);
+        } else {
+            vm.expectRevert("Match is not active");
+            _settle(matchId, p1, 100, 500, 2, block.timestamp + 10 minutes, sig);
+        }
+    }
+
+    /// joinDuel only ever transitions Created → Active; player1 can never join
+    /// their own duel for any stake.
+    function testFuzz_SelfJoinAndGhostJoinRevert(uint256 stake, uint8 state) public {
+        stake = bound(stake, 1, 1_000e6);
+        usdt.faucet(p1, stake);
+        vm.prank(p1);
+        usdt.approve(address(escrow), stake);
+        bytes32 matchId = keccak256(abi.encodePacked("fuzz-join", stake));
+
+        state = uint8(bound(state, 0, 2));
+        if (state == 0) {
+            // Ghost join: never created.
+            vm.prank(p1);
+            vm.expectRevert("Match not available");
+            escrow.joinDuel(matchId);
+        } else if (state == 1) {
+            vm.prank(p1);
+            escrow.createDuel(matchId, stake);
+            vm.prank(p1);
+            vm.expectRevert("Cannot play against self");
+            escrow.joinDuel(matchId);
+        } else {
+            // Cancelled (timeout refund) duel cannot be joined.
+            vm.prank(p1);
+            escrow.createDuel(matchId, stake);
+            vm.warp(block.timestamp + 10 minutes + 1);
+            escrow.refundTimeoutMatch(matchId);
+            vm.prank(p1);
+            vm.expectRevert("Match not available");
+            escrow.joinDuel(matchId);
+        }
+    }
+
+    /// Zero/negative-equivalent stakes are impossible; every accepted stake
+    /// locks exactly 2×stake in the escrow pool.
+    function testFuzz_StakeGateAndPoolAccounting(uint96 stake) public {
+        if (stake == 0) {
+            vm.prank(p1);
+            vm.expectRevert("Stake must be > 0");
+            escrow.createDuel(keccak256("zero"), 0);
+            return;
+        }
+        vm.assume(stake <= 1_000e6);
+        usdt.faucet(p1, stake);
+        usdt.faucet(p2, stake);
+        vm.prank(p1);
+        usdt.approve(address(escrow), stake);
+        vm.prank(p2);
+        usdt.approve(address(escrow), stake);
+
+        bytes32 matchId = keccak256(abi.encodePacked("fuzz-pool", stake));
+        vm.prank(p1);
+        escrow.createDuel(matchId, stake);
+        assertEq(escrow.matches(matchId).totalPool, stake * 2);
+        assertEq(usdt.balanceOf(address(escrow)), stake);
+        vm.prank(p2);
+        escrow.joinDuel(matchId);
+        assertEq(usdt.balanceOf(address(escrow)), stake * 2, "both stakes locked");
+    }
+
+    /// A non-participant can never be declared winner, for any signature.
+    function testFuzz_OutsiderWinnerImpossible(uint256 stake) public {
+        stake = bound(stake, 1, 1_000e6);
+        usdt.faucet(p1, stake);
+        usdt.faucet(p2, stake);
+        vm.prank(p1);
+        usdt.approve(address(escrow), stake);
+        vm.prank(p2);
+        usdt.approve(address(escrow), stake);
+        bytes32 matchId = keccak256(abi.encodePacked("fuzz-outsider", stake));
+        vm.prank(p1);
+        escrow.createDuel(matchId, stake);
+        vm.prank(p2);
+        escrow.joinDuel(matchId);
+
+        address outsider = makeAddr("fuzz-outsider");
+        (bytes memory sig,) = _sign(matchId, outsider, 100, 600, 1, block.timestamp + 10 minutes);
+        vm.expectRevert("Winner not participant");
+        _settle(matchId, outsider, 100, 600, 1, block.timestamp + 10 minutes, sig);
+    }
 }

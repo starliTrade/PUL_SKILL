@@ -95,6 +95,9 @@ def _match_to_doc(m: Match) -> dict[str, Any]:
         # queueing player lost youAreCreator=true and nobody ever sent
         # createDuel — the on-chain deposit step could never happen.
         "creator": m.creator,
+        # Audit #5: persist the joiner role — the client needs youAreJoiner
+        # before the creator's deposit is visible on-chain.
+        "joiner": m.joiner,
         "rounds": {
             addr: {str(idx): _round_to_doc(r) for idx, r in per_player.items()}
             for addr, per_player in m.rounds.items()
@@ -116,6 +119,10 @@ def _match_from_doc(d: dict[str, Any]) -> Match:
     # P0-fix: restore creator; for documents written before this field
     # existed, derive it (players preserves insertion order — creator first).
     m.creator = d.get("creator", "") or next(iter(m.players), "")
+    # Audit #5: restore joiner; derive it for legacy docs (2nd player).
+    m.joiner = d.get("joiner", "") or (
+        list(m.players)[1] if len(m.players) > 1 else ""
+    )
     m.rounds = {
         addr: {int(idx): _round_from_doc(r) for idx, r in per_player.items()}
         for addr, per_player in (d.get("rounds", {}) or {}).items()
@@ -158,6 +165,7 @@ class InMemoryStore:
                 # Found an opponent: activate the match.
                 m.players[addr] = {"address": addr, "joinedAt": time.time()}
                 m.status = "active"
+                m.joiner = addr
                 bucket.remove(other)
                 self.player_match[addr] = m.match_id
                 return m
@@ -262,6 +270,7 @@ class FirestoreStore:
                     if m.status == "waiting" and addr not in m.players:
                         m.players[addr] = {"address": addr, "joinedAt": time.time()}
                         m.status = "active"
+                        m.joiner = addr
                         transaction.set(mref, _match_to_doc(m))
                         transaction.set(queue_ref, {"waitingMatchId": None})
                         return m

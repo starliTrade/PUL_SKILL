@@ -100,6 +100,7 @@ Server environment (all **secrets** — set on the host, never in git):
 | `ORACLE_PRIVATE_KEY` | The oracle signer (matches the contract's `oracleSigner`) |
 | `ORACLE_CHAIN_ID` | **Must equal `VITE_CHAIN_ID`** (default 80002). The escrow hashes `block.chainid` — a mismatch invalidates every settlement signature |
 | `ESCROW_ADDRESS` | Deployed contract address (binds settlement signatures) |
+| `ESCROW_RPC_URL` | JSON-RPC endpoint for the deposit gate (e.g. an Alchemy/Infura Amoy URL). **Required in production**: with `ESCROW_ADDRESS` + `ESCROW_RPC_URL` set, the server independently verifies BOTH stakes are locked on-chain (read-only `eth_call`) before every round — fail-closed if the RPC is down. Unset = gate inactive (practice mode only) |
 | `PULSAR_MATCH_STORE` | `firestore` (or unset for in-memory dev fallback) |
 | `FIRESTORE_PROJECT_ID` | Your Firebase project ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Service-account JSON path (or use ambient Cloud Run credentials) |
@@ -157,6 +158,7 @@ template. Before enabling real-money mode:
 ## 6. Real-Money Readiness Checklist
 
 - [ ] Contract deployed, verified on Polygonscan, constructor args correct
+- [ ] `ESCROW_RPC_URL` set on the server (activates the on-chain deposit gate — commit/target/result refuse to run unless the escrow holds both stakes)
 - [ ] Oracle key generated, stored as server secret, public address set in contract
 - [ ] Game server live, `/api/health` shows `matchStore: "firestore"`
 - [ ] `ESCROW_ADDRESS` on server **matches** `VITE_ESCROW_ADDRESS` on client

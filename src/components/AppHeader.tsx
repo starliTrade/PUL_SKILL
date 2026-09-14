@@ -1,8 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { lazy, Suspense, useState, useEffect } from 'react';
 import { PulsarStarIcon } from './PulsarLogo';
 import { LanguageSelector } from './LanguageSelector';
-import { ConnectWallet } from './ConnectWallet';
 import { cn } from '../lib/utils';
+
+// Audit-#5 item 10: the wallet stack (Reown/AppKit + ethers) is ~1MB gzipped
+// and was loaded on EVERY page via the header. Lazy-load it so the initial
+// bundle carries only a tiny placeholder; the real button streams in when the
+// chunk resolves.
+const ConnectWallet = lazy(() =>
+  import('./ConnectWallet').then((m) => ({ default: m.ConnectWallet }))
+);
+const WalletSlotFallback = () => (
+  <div className="h-9 w-24 rounded-full bg-white/5 animate-pulse" aria-hidden="true" />
+);
 
 interface AppHeaderProps {
   onNavigate: (path: string) => void;
@@ -90,7 +100,9 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
           <span>{pingMs}ms</span>
         </div>
 
-        <ConnectWallet compact />
+        <Suspense fallback={<WalletSlotFallback />}>
+          <ConnectWallet compact />
+        </Suspense>
       </div>
     </header>
   );

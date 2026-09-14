@@ -98,6 +98,11 @@ class Match:
     settled_at: float = 0.0
     creator: str = ""  # first player in the queue — deposits the on-chain stake first
     signed_settlement: dict[str, Any] | None = None  # replay for the other client
+    # Audit #5: the joiner must know its role BEFORE the creator's deposit is
+    # visible on-chain (the creator deposits first by protocol design), so
+    # role is persisted and restored with the match instead of being inferred
+    # from an on-chain read that cannot succeed yet.
+    joiner: str = ""  # second player — deposits after the creator's deposit is visible
 
     def public_view(self, for_address: str | None = None) -> dict[str, Any]:
         """Round data is per-player secret; only summaries are public."""
@@ -127,6 +132,15 @@ class Match:
                         "rejectReason": r.reject_reason if r else "",
                     }
                 )
+            # Audit-#5 refresh recovery: a page reload wipes the client's local
+            # scoreboard. The player's own valid times (their data) plus the
+            # mutually-disclosed opponentTimes below let the client rebuild
+            # the exact score and resume at the right round.
+            view["myTimes"] = {
+                str(idx): r.result_ms
+                for idx, r in mine.items()
+                if r.result_ms is not None and r.valid
+            }
         view["myRounds"] = my_rounds
         # Progress-only opponent info (never their times): lets clients know
         # when the match is complete and settlement is safe to request.
@@ -137,6 +151,7 @@ class Match:
         # Creator deposits the escrow stake first; the joiner waits for that
         # on-chain deposit before joining. The client needs to know its role.
         view["youAreCreator"] = bool(me and self.creator == me["address"])
+        view["youAreJoiner"] = bool(me and self.joiner == me["address"])
         if opp_addr:
             opp_rounds = self.rounds.get(opp_addr, {}) or {}
             my_submitted = {
@@ -194,6 +209,7 @@ class MatchStore:
             # Found an opponent: activate the match.
             m.players[addr] = {"address": addr, "joinedAt": time.time()}
             m.status = "active"
+            m.joiner = addr
             bucket.remove(other)
             self.player_match[addr] = m.match_id
             return m

@@ -24,6 +24,8 @@ Security model:
 from __future__ import annotations
 
 import os
+import threading
+import time
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -40,8 +42,93 @@ from store import create_store, install_persistence
 # statement, the oracle digest and the client (VITE_CHAIN_ID → CHAIN.chainId)
 # must all agree — the audit regression was main.py hardcoding 137 while
 # auth.py verified against 80002, so signing the server's OWN message 401'd.
+import onchain
 from auth import EXPECTED_CHAIN_ID as _CHAIN_ID
 from auth import NONCE_WINDOW_SECONDS as _NONCE_WINDOW
+
+# --- Distributed rate limiting (audit #5, item 8) ----------------------------
+# The audit asked for distributed limiting; there was NO limiter at all. This
+# one is Firestore-backed (any replica sees the same window) with a per-process
+# fallback for memory mode. Applied only to expensive/abusable endpoints.
+_rl_lock = threading.Lock()
+_rl_window: dict[str, list[float]] = {}
+RL_WINDOW_SECONDS = 60.0
+RL_QUEUE_MAX = 20        # queue calls per minute per address
+RL_COMMIT_MAX = 40       # round commits per minute per address
+RL_AUTH_MAX = 10         # SIWE handshakes per minute per address
+
+
+def _rl_check(bucket: str, address: str, limit: int) -> None:
+    """Count one hit for (bucket, address) and refuse when over `limit`.
+
+    Firestore mode uses a transactional read-modify-write on a rate_limits
+    document so EVERY replica enforces the SAME window; memory mode is
+    per-process. A Firestore outage degrades to in-process limiting instead of
+    taking the endpoint down (fail-open for availability, never for money —
+    the deposit gate below is fail-closed)."""
+    fs = getattr(store, "_fs_store", None)
+    if onchain.escrow_configured() and fs is not None:
+        try:
+            doc = fs.db.collection("rate_limits").document(f"rl:{bucket}:{address.lower()}")
+            now_ms = int(time.time() * 1000)
+            window_ms = int(RL_WINDOW_SECONDS * 1000)
+
+            def _incr(txn: Any) -> int:
+                snap = doc.get(transaction=txn)
+                d = snap.to_dict() or {"count": 0, "reset_at": 0}
+                if now_ms >= int(d.get("reset_at", 0)):
+                    d = {"count": 1, "reset_at": now_ms + window_ms}
+                else:
+                    d = {"count": int(d.get("count", 0)) + 1, "reset_at": int(d["reset_at"])}
+                txn.set(doc, d)
+                return int(d["count"])
+
+            txn = fs.db.transaction()
+            count = _incr(txn)  # plain callable: Firestore retries conflicts itself
+            if count > limit:
+                raise HTTPException(status_code=429, detail="Rate limit exceeded — slow down.")
+            return
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # Firestore hiccup → fall through to in-process limiting
+    with _rl_lock:
+        key = f"{bucket}:{address.lower()}"
+        now = time.time()
+        hits = [t for t in _rl_window.get(key, []) if now - t < RL_WINDOW_SECONDS]
+        hits.append(now)
+        _rl_window[key] = hits
+        if len(hits) > limit:
+            raise HTTPException(status_code=429, detail="Rate limit exceeded — slow down.")
+
+
+# Joiner-deposit timeout (audit #5, item 3): if the joiner's stake never lands
+# on-chain within this window after matchmaking, the match is voided so the
+# creator can refund (refundTimeoutMatch) instead of being locked for the
+# 30-minute on-chain refund horizon.
+DEPOSIT_TIMEOUT_SECONDS = 300.0
+
+
+def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
+    """On-chain deposit gate for round actions. Returns None to proceed.
+
+    Fail-CLOSED: when escrow mode is configured but the deposit state cannot
+    be read, rounds are refused — a custom client that never stakes must not
+    be able to grief an honest opponent's locked deposit. Also voids the
+    server-side match when the joiner's deposit never arrives (the creator
+    then gets an explicit 'refund on-chain' signal instead of a stalled duel)."""
+    if not onchain.escrow_configured():
+        return None  # practice / unconfigured dev — gate inactive
+    status = onchain.duel_status(m.match_id)
+    if status == onchain.STATUS_ACTIVE:
+        return None  # both stakes locked — play on
+    if status == onchain.STATUS_CREATED and time.time() - m.created_at > DEPOSIT_TIMEOUT_SECONDS:
+        m.status = "void"
+        return {"void": True, "reason": "Opponent stake deposit timed out — creator can refund on-chain."}
+    raise HTTPException(
+        status_code=409,
+        detail="On-chain deposits are not verified for this match yet.",
+    )
 
 
 def _nonce_of(message: str) -> str:
@@ -196,6 +283,7 @@ class ResultRequest(BaseModel):
 
 @app.post("/api/auth/nonce")
 def auth_nonce(body: NonceRequest, request: Request) -> dict[str, str]:
+    _rl_check("auth", body.address, RL_AUTH_MAX)
     domain = _request_domain(request)
     nonce = issue_nonce(body.address, domain)
     return {"nonce": nonce, "message": _siwe_message(body.address, nonce, domain)}
@@ -220,6 +308,7 @@ def auth_verify(body: VerifyRequest, request: Request) -> dict[str, str]:
 @app.post("/api/queue")
 def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     address = _auth(request)
+    _rl_check("queue", address, RL_QUEUE_MAX)
     if body.stake not in ALLOWED_STAKES:
         raise HTTPException(status_code=400, detail="Invalid stake")
     store.sweep_expired()
@@ -255,13 +344,22 @@ def match_view_post(match_id: str, request: Request) -> dict[str, Any]:
 @app.post("/api/round/commit")
 def round_commit(body: CommitRequest, request: Request) -> dict[str, Any]:
     address = _auth(request)
+    _rl_check("commit", address, RL_COMMIT_MAX)
     try:
         # Audit-#3 fix: round mutations run inside a store transaction
         # (read-modify-write) so concurrent replicas cannot clobber rounds.
-        def _mutate(m: Any, eng: Any) -> None:
+        # Audit-#5 gate: the escrow must hold BOTH stakes (read directly from
+        # the chain) before any round is accepted — fail-closed.
+        def _mutate(m: Any, eng: Any) -> dict[str, Any] | None:
+            gate = _verify_deposits_or_void(m)
+            if gate:
+                return gate
             eng.commit_intent(m, address, body.roundIndex, body.intentHash)
+            return None
 
-        store.update(body.matchId, _mutate)
+        gate = store.update(body.matchId, _mutate)
+        if gate and gate.get("void"):
+            raise HTTPException(status_code=409, detail=gate["reason"])
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {"ok": True}
@@ -271,7 +369,12 @@ def round_commit(body: CommitRequest, request: Request) -> dict[str, Any]:
 def round_target(body: TargetRequest, request: Request) -> dict[str, Any]:
     address = _auth(request)
     try:
+        # Same fail-closed deposit gate: revealing the target before the
+        # escrow holds both stakes lets a stakeless client stall the duel.
         def _mutate(m: Any, eng: Any) -> dict[str, Any]:
+            gate = _verify_deposits_or_void(m)
+            if gate:
+                raise MatchError(gate["reason"])
             return eng.reveal_target(m, address, body.roundIndex)
 
         return store.update(body.matchId, _mutate)
@@ -288,6 +391,9 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
         # and signed in the SAME transaction so no concurrent writer can
         # wedge the match between settle and sign.
         def _mutate(m: Any, eng: Any) -> dict[str, Any]:
+            gate = _verify_deposits_or_void(m)
+            if gate:
+                raise MatchError(gate["reason"])
             res = eng.submit_result(m, address, body.roundIndex, body.measuredMs, body.resultProof)
             if m.status == "active" and eng.match_completed(m):
                 try:

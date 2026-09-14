@@ -39,6 +39,10 @@ jobs:
         env:
           PULSAR_MATCH_STORE: firestore
         run: python3 scripts/test_game_server.py
+      - name: Deposit gate + distributed rate limiter + matchmaking probe (audit #5)
+        run: python3 scripts/probe_a5.py
+      - name: Firestore integration suite (skips without credentials, runs in any env that has them)
+        run: python3 scripts/test_firestore_integration.py
 
   contracts:
     runs-on: ubuntu-latest

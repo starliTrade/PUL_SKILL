@@ -25,6 +25,7 @@ import {
   Info,
 } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
+import { CHAIN } from '../lib/chain';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { PulsarDynamicAvatar, getAvatarTier } from '../components/PulsarDynamicAvatar';
 import { usePulsarStore } from '../store/usePulsarStore';
@@ -501,7 +502,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                               <span>{t('settlementHash')}:</span>
                               {m.hash && /^0x[0-9a-fA-F]{64}$/.test(m.hash) ? (
                                 <a
-                                  href={`https://polygonscan.com/tx/${m.hash}`}
+                                  href={`${CHAIN.explorerUrl}/tx/${m.hash}`}
                                   target="_blank"
                                   rel="noreferrer"
                                   className="text-sky-400 hover:underline cursor-pointer flex items-center gap-1"

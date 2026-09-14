@@ -276,15 +276,143 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
     }
   }, [isServerMode, wallet.address, currentStake]);
 
-  // Auto-start server matchmaking once on mount for staked matches.
-  const serverStartRef = useRef(false);
-  useEffect(() => {
-    if (currentStake > 0 && gameServerConfigured() && !serverStartRef.current) {
-      serverStartRef.current = true;
-      void startServerMatch();
+  // Audit-#5 refresh recovery: on reload, resume the persisted ranked match
+  // (score, round, role) from the authoritative server view. Skips the queue
+  // and the deposit flow entirely — the escrow already holds both stakes.
+  const recoverServerMatch = useCallback(async () => {
+    if (!isServerMode || !wallet.address) return false;
+    let saved: { matchId?: string; stake?: number } | null = null;
+    try {
+      const raw = localStorage.getItem(ACTIVE_MATCH_KEY);
+      saved = raw ? JSON.parse(raw) : null;
+    } catch {
+      return false;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!saved?.matchId) return false;
+    setServerError('');
+    setPhase('matchmaking');
+    try {
+      const provider = realWeb3Manager.getActiveEip1193Provider();
+      if (!provider) throw new Error('No active wallet to sign in with.');
+      const fullAddr = wallet.fullAddress || wallet.address;
+      const session = await ensureSession(fullAddr, async (message: string) => {
+        try {
+          return await provider.request({ method: 'personal_sign', params: [message, fullAddr] });
+        } catch (e: unknown) {
+          const code = (e as { code?: number })?.code;
+          if (code === -32601 || code === -32602) {
+            return await provider.request({ method: 'signMessage', params: [fullAddr, message] });
+          }
+          throw e;
+        }
+      });
+      setServerSession(session);
+      const view = await getMatch(session, saved.matchId);
+      setServerMatch(view);
+      if (view.opponent) setOpponent(view.opponent);
+      if (view.stake) setCurrentStake(view.stake);
+
+      if (view.status === 'settled' || view.status === 'void') {
+        void finishServerMatch([], 0, 0, 0, 0);
+        return true;
+      }
+      if (view.status === 'waiting') {
+        // Still unmatched — fall through to the normal queue loop by
+        // re-queuing (idempotent) rather than dead-waiting.
+        const queued = await queueForMatch(session, view.stake || currentStake);
+        if (queued.status === 'waiting') throw new Error('No opponent joined yet — retry in a moment.');
+        setServerMatch(queued);
+      }
+      const scores = restoreBo3FromServer(view);
+      if (!(view.status === 'active' && (scores.userScore >= 2 || scores.opponentScore >= 2))) {
+        setBo3State({
+          userScore: scores.userScore,
+          opponentScore: scores.opponentScore,
+          currentRound: scores.currentRound,
+          rounds: [],
+          targetWins: 2,
+          isMatchOver: false,
+        });
+        setPhase('ready');
+      }
+      return true;
+    } catch {
+      // Unrecoverable (match expired server-side, etc.) — clean slate.
+      try {
+        localStorage.removeItem(ACTIVE_MATCH_KEY);
+      } catch {
+        /* ignore */
+      }
+      return false;
+    }
+  }, [isServerMode, wallet.address, currentStake]);
+
+  // Audit-#5 refresh recovery: persist the live ranked match so a full page
+  // reload can RESUME it (score, round, role) instead of re-queuing and
+  // re-depositing. Server state is always the source of truth.
+  const ACTIVE_MATCH_KEY = 'pulsar_active_ranked_match';
+  const persistActiveMatch = useCallback((view: MatchView | null) => {
+    try {
+      if (view && (view.status === 'waiting' || view.status === 'active')) {
+        localStorage.setItem(
+          ACTIVE_MATCH_KEY,
+          JSON.stringify({ matchId: view.matchId, stake: view.stake, savedAt: Date.now() })
+        );
+      } else {
+        localStorage.removeItem(ACTIVE_MATCH_KEY);
+      }
+      // Clear on terminal state so a stale id can never resurrect a dead duel.
+    } catch {
+      // storage unavailable — recovery simply won't engage
+    }
   }, []);
+
+  useEffect(() => {
+    persistActiveMatch(serverMatch);
+  }, [serverMatch, persistActiveMatch]);
+
+  // Rebuild the local Bo3 scoreboard from the authoritative server view after
+  // a refresh: score from mutually-disclosed times, resume at the first round
+  // this player has not submitted, or finish the match if it already ended.
+  const restoreBo3FromServer = useCallback(
+    (view: MatchView): { userScore: number; opponentScore: number; currentRound: number } => {
+      let userScore = 0;
+      let opponentScore = 0;
+      for (let idx = 0; idx < 3; idx++) {
+        const mine = view.myTimes?.[String(idx)];
+        const theirs = view.opponentTimes?.[String(idx)];
+        if (mine != null && theirs != null) {
+          if (mine < theirs) userScore++;
+          else if (mine > theirs) opponentScore++;
+        }
+      }
+      // Resume at the first round this player has not submitted; if all three
+      // are submitted the match is over (the terminal branch above handles a
+      // decisive score, otherwise the server's grace settlement applies).
+      let currentRound = 4;
+      for (let idx = 0; idx < 3; idx++) {
+        if (!view.myRounds?.[idx]?.submitted) {
+          currentRound = idx + 1;
+          break;
+        }
+      }
+      // Reconciliation safety net: a mutual 2-0/2-1 majority must be terminal.
+      if (userScore >= 2 || opponentScore >= 2) {
+        setBo3State({
+          userScore,
+          opponentScore,
+          currentRound: Math.min(currentRound, 3),
+          rounds: [],
+          targetWins: 2,
+          isMatchOver: true,
+        });
+        void finishServerMatch([], userScore, opponentScore, 0, 0);
+        return { userScore, opponentScore, currentRound };
+      }
+      return { userScore, opponentScore, currentRound };
+    },
+    []
+  );
 
   // Start waiting phase — practice: local randomized delay. Server mode:
   // commit this round, fetch the server's target delay, and wait exactly that
@@ -1419,7 +1547,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                 )}
                 {settlementTxHash && (
                   <a
-                    href={`https://polygonscan.com/tx/${settlementTxHash}`}
+                    href={`${CHAIN.explorerUrl}/tx/${settlementTxHash}`}
                     target="_blank"
                     rel="noreferrer"
                     className="text-[10px] font-mono text-sky-400 hover:text-sky-300 underline mt-1 cursor-pointer"

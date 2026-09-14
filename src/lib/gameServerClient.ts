@@ -178,6 +178,8 @@ export interface MatchView {
   youAreCreator: boolean;
   /** Opponent's valid times, disclosed only for rounds BOTH players submitted. */
   opponentTimes: Record<string, number>;
+  /** This player's own validated times per round (0..2) — rebuilds the local scoreboard after a refresh. */
+  myTimes: Record<string, number>;
   myRounds: {
     index: number;
     committed: boolean;

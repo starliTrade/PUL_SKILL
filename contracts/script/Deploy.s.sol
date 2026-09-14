@@ -21,6 +21,13 @@ contract Deploy is Script {
         // testnet chain, a fresh MockUSDT is deployed.
         address paymentToken = vm.envOr("PAYMENT_TOKEN_ADDRESS", address(0));
 
+        // Audit-#5 guard: MockUSDT is a faucet token anyone can mint — it must
+        // NEVER go live on mainnet where it would be indistinguishable money.
+        // Explicitly set PAYMENT_TOKEN_ADDRESS (canonical USDT) on mainnet.
+        if (block.chainid == 137 && paymentToken == address(0)) {
+            revert("Refusing to deploy MockUSDT on mainnet: set PAYMENT_TOKEN_ADDRESS to canonical USDT");
+        }
+
         vm.startBroadcast(deployerKey);
         if (paymentToken == address(0)) {
             MockUSDT mock = new MockUSDT();
