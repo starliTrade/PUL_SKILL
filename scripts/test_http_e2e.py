@@ -268,6 +268,24 @@ if not sig.startswith("0x"):
 r = client.post("/api/auth/verify", json={"message": forged_msg, "signature": sig}, headers={"host": DOMAIN})
 check("Self-forged nonce is refused", r.status_code == 401)
 
+# 7c-bis. Audit-#6 C2 regression: the EXACT offline forgery — a well-formed
+# payload with a CURRENT window and a GARBAGE MAC. Under the old verifier
+# (which never compared the HMAC) this authenticated with 200; the MAC check
+# must now kill it at the door.
+_current_window = int(time.time() // auth_module.NONCE_WINDOW_SECONDS)
+_forged_payload = auth_module._b64url_hex(
+    f"{DOMAIN}|{addr_a}|{_current_window}|cafebabe".encode()
+)
+_forged_nonce = _forged_payload + "." + "0" * 64
+forged_msg2 = server_msg.replace(
+    server_msg.split("Nonce: ")[1].split("\n")[0], _forged_nonce
+)
+sig = alice.sign_message(encode_defunct(text=forged_msg2)).signature.hex()
+if not sig.startswith("0x"):
+    sig = "0x" + sig
+r = client.post("/api/auth/verify", json={"message": forged_msg2, "signature": sig}, headers={"host": DOMAIN})
+check("Well-formed nonce with a garbage MAC is refused (audit #6 C2)", r.status_code == 401)
+
 # 7d. Tamper-evidence: the statement's chain line is altered after issuance —
 # the signature is still by the right wallet, but the message is no longer
 # the canonical challenge this server issued.

@@ -90,18 +90,31 @@ def issue_nonce(address: str, domain: str) -> str:
     return f"{payload}.{_hmac_hex(payload)}"
 
 
-def nonce_is_fresh(nonce: str) -> bool:
+def _window_of(nonce: str) -> int | None:
+    """Window number from a well-formed nonce payload (MAC unchecked)."""
     try:
-        payload, mac = nonce.split(".", 1)
-        body = _from_b64url_any(payload).decode("utf-8")
-        parts = body.split("|")
-        if len(parts) != 4:
-            return False
-        window = int(parts[2])
-    except (ValueError, AttributeError, UnicodeDecodeError):
+        payload, _mac = nonce.split(".", 1)
+        return int(_from_b64url_any(payload).decode("utf-8").split("|")[2])
+    except (ValueError, IndexError, UnicodeDecodeError):
+        return None
+
+
+def _fresh_window(window: int | None) -> bool:
+    if window is None:
         return False
     current = int(time.time() // NONCE_WINDOW_SECONDS)
     return window in (current, current - 1)  # tolerate one window of skew
+
+
+def nonce_is_fresh(nonce: str) -> bool:
+    """Well-formed, MAC-VALID, and within the issuance window.
+
+    Audit #6 C2: freshness now INCLUDES the HMAC check (via nonce_window).
+    The previous implementation parsed the payload and checked only the
+    window — a client could mint ``b64url(domain|addr|window|rand) + '.' +
+    anything`` and it authenticated. MAC verification lives in nonce_window.
+    """
+    return _fresh_window(nonce_window(nonce))
 
 
 def nonce_is_used(nonce: str) -> bool:
@@ -187,16 +200,22 @@ def verify_siwe(message: str, signature: str, expected_domain: str) -> str | Non
     # bound to any network, so it cannot be trusted as a chain-scoped login.
     if fields.chain_id != EXPECTED_CHAIN_ID:
         return None
-    if not fields.nonce or not nonce_is_fresh(fields.nonce):
-        return None
+    # Audit #6 C2 — MAC FIRST: the nonce must carry a valid HMAC from THIS
+    # server before anything else about it matters. The old code parsed the
+    # payload and compared only domain/address; the MAC never was checked, so
+    # a self-forged nonce authenticated (the old comment claimed otherwise).
+    # nonce_window() returns None unless the MAC verifies; freshness then uses
+    # the ISSUED window, which also makes the canonical-message recompute in
+    # main.py deterministic and correct.
+    window = nonce_window(fields.nonce)
+    if window is None or not _fresh_window(window):
+        return None  # forged / malformed / stale
     if nonce_is_used(fields.nonce):
         return None  # replayed signature — each nonce authenticates exactly once
-    # The nonce must have been issued by THIS server for THIS domain+address
-    # window. A self-forged or reused-from-elsewhere nonce fails the MAC.
     try:
-        payload, mac = fields.nonce.split(".", 1)
+        payload, _mac = fields.nonce.split(".", 1)
         body = _from_b64url_any(payload).decode("utf-8")
-        dom, addr, _window, _rand = body.split("|")
+        dom, addr, _w, _rand = body.split("|")
     except (ValueError, UnicodeDecodeError):
         return None
     if dom != expected_domain.lower() or addr != fields.address.lower():

@@ -219,7 +219,9 @@ contract PulsarEscrowTest is Test {
         vm.prank(p1);
         escrow.createDuel(matchId, STAKE);
 
-        vm.warp(block.timestamp + 10 minutes + 1);
+        // MATCH_TIMEOUT is 30 minutes (raised from 10 in P1.16) — the refund
+        // horizon must be warped past its CURRENT value, not a stale constant.
+        vm.warp(block.timestamp + 30 minutes + 1);
         escrow.refundTimeoutMatch(matchId);
 
         assertEq(uint8(escrow.matches(matchId).status), uint8(PulsarEscrow.MatchStatus.Cancelled));
@@ -231,7 +233,9 @@ contract PulsarEscrowTest is Test {
         bytes32 matchId = keccak256("timeout-active");
         _createAndJoin(matchId);
 
-        vm.warp(block.timestamp + 10 minutes + 1);
+        // MATCH_TIMEOUT is 30 minutes (raised from 10 in P1.16) — the refund
+        // horizon must be warped past its CURRENT value, not a stale constant.
+        vm.warp(block.timestamp + 30 minutes + 1);
         escrow.refundTimeoutMatch(matchId);
 
         assertEq(uint8(escrow.matches(matchId).status), uint8(PulsarEscrow.MatchStatus.Refunded));
@@ -344,7 +348,8 @@ contract PulsarEscrowTest is Test {
             // Cancelled (timeout refund) duel cannot be joined.
             vm.prank(p1);
             escrow.createDuel(matchId, stake);
-            vm.warp(block.timestamp + 10 minutes + 1);
+            // MATCH_TIMEOUT is 30 minutes — warp past the CURRENT constant.
+            vm.warp(block.timestamp + 30 minutes + 1);
             escrow.refundTimeoutMatch(matchId);
             vm.prank(p1);
             vm.expectRevert("Match not available");

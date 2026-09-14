@@ -15,7 +15,9 @@ initErrorMonitoring();
 if (typeof window !== 'undefined') {
   try {
     if (window.localStorage) {
-      for (let i = 0; i < localStorage.length; i++) {
+      // Iterate BACKWARDS: forward loops skip the entry after each removal
+      // (localStorage indices shift under the cursor as keys are removed).
+      for (let i = localStorage.length - 1; i >= 0; i--) {
         const k = localStorage.key(i);
         if (k && k.startsWith('wc@2:') && k.includes('proposal')) {
           localStorage.removeItem(k);

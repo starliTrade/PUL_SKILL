@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -60,9 +61,21 @@ COMMIT_WINDOW_SECONDS = 30     # per-round intent-binding window
 # refuses so nobody can race ahead of their opponent (or void a fresh match).
 MATCH_SETTLE_GRACE_SECONDS = 480  # 8 minutes after activation
 
-# Secret used to MAC result proofs. Rotating it invalidates in-flight proofs
-# (they simply fail validation) — safe to restart.
-_PROOF_SECRET = secrets.token_bytes(32)
+# Secret used to MAC result proofs.
+# Audit #6 C4: this was a per-process `secrets.token_bytes(32)`, so with N
+# replicas (the exact deployment Firestore exists for) commit/reveal landing
+# on replica A and result on replica B → proof validation failed → 409 on a
+# valid round. Now derived deterministically from ORACLE_SIGNING_SECRET with
+# a context label via HKDF-SHA256, so EVERY replica derives the identical
+# key while remaining cryptographically independent of the oracle key
+# itself. Rotating the secret invalidates in-flight proofs only.
+_PROOF_SECRET = hashlib.pbkdf2_hmac(
+    "sha256",
+    os.environ.get("ORACLE_SIGNING_SECRET", "").encode("utf-8"),
+    b"pulsar/result-proof/v1",
+    dklen=32,
+    iterations=1,  # HKDF-style single-round derivation of a high-entropy input
+) if os.environ.get("ORACLE_SIGNING_SECRET") else secrets.token_bytes(32)
 
 
 class MatchError(Exception):

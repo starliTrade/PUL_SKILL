@@ -44,10 +44,22 @@ def escrow_configured() -> bool:
 
 
 def _match_id_to_bytes32(match_id: str) -> str:
-    mid = match_id.lower().removeprefix("0x")
-    if len(mid) != 64 or any(c not in "0123456789abcdef" for c in mid):
-        raise ValueError("matchId is not a 32-byte hex string")
-    return "0x" + mid
+    """The bytes32 key the escrow contract stores duels under.
+
+    Audit #6 C1: this MUST match the client (gameServerClient.matchIdToBytes32)
+    and the oracle (oracle._match_id_bytes32) byte-for-byte. All three now use
+    the SAME convention — sha256 of the raw server id — so the gate reads the
+    duel that actually exists on-chain. The previous raw-32-hex requirement
+    raised ValueError outside the fail-closed handler on EVERY production
+    round action (server ids are 32 chars, not 64) and would have queried the
+    wrong key even if it had not crashed.
+    """
+    import hashlib
+
+    clean = match_id.lower().removeprefix("0x")
+    if len(clean) == 64 and all(c in "0123456789abcdef" for c in clean):
+        return "0x" + clean  # already a bytes32 id (used by tests)
+    return "0x" + hashlib.sha256(match_id.encode("utf-8")).hexdigest()
 
 
 def _keccak(data: bytes) -> bytes:
@@ -102,10 +114,17 @@ def _eth_call(to: str, data: str) -> str | None:
 
 
 def duel_status(match_id: str, *, use_cache: bool = True) -> int | None:
-    """On-chain DuelMatch.status for this match id, or None if unknown."""
+    """On-chain DuelMatch.status for this match id, or None if unknown.
+
+    Never raises: every failure mode (bad id, dead RPC, bad payload) returns
+    None, which the deposit gate turns into fail-closed 409 — never a 500.
+    """
     if not escrow_configured():
         return None
-    key = _match_id_to_bytes32(match_id)
+    try:
+        key = _match_id_to_bytes32(match_id)
+    except Exception:
+        return None
     if use_cache:
         cached = _cache.get(key)
         if cached and time.time() < cached[1]:

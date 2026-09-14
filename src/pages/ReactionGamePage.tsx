@@ -43,7 +43,7 @@ import {
   type MatchView,
 } from '../lib/gameServerClient';
 import { settleDuel as settleDuelOnChain, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState } from '../lib/escrowFlow';
-import { isEscrowConfigured, CHAIN } from '../lib/chain';
+import { isEscrowConfigured, CHAIN, ECONOMY } from '../lib/chain';
 import { realWeb3Manager } from '../lib/realWeb3';
 import { reportError } from '../lib/monitoring';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
@@ -215,9 +215,16 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
       let view = await queueForMatch(session, currentStake);
       // Poll while waiting in the queue (queueForMatch is idempotent: it
       // returns the caller's waiting match or their active match).
+      // Audit #6 C3: the fixed 2.5s cadence = 24 req/min exceeded the old
+      // 20/min server limit — honest waiting players got 429'd out of
+      // matchmaking at ~50s. Exponential backoff (2.5→5→7.5→10s, capped)
+      // keeps a long wait well under the limit while staying responsive
+      // for the common fast-pairing case.
       const deadline = Date.now() + 90_000;
+      let backoffMs = 2500;
       while (view.status === 'waiting' && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 2500));
+        await new Promise((r) => setTimeout(r, backoffMs));
+        backoffMs = Math.min(backoffMs + 2500, 10_000);
         view = await queueForMatch(session, currentStake);
       }
       if (view.status === 'waiting') throw new Error('No opponent joined within 90 seconds. Try again.');
@@ -620,7 +627,9 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
           yourTime,
           opponentTime: oppTime,
           prize: 0,
-          reason: 'Match voided — stakes are refundable on-chain.',
+          // H4: honest horizon — the contract releases refunds only after
+          // its 30-minute MATCH_TIMEOUT, not immediately at void time.
+          reason: 'Match voided — each stake refunds on-chain after the 30-minute escrow timeout.',
           rounds,
           userScore,
           opponentScore: oppScore,
@@ -638,7 +647,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
           yourTime,
           opponentTime: oppTime,
           prize: 0,
-          reason: 'Match could not be settled — stakes are refundable on-chain.',
+          reason: 'Match could not be settled — each stake refunds on-chain after the 30-minute escrow timeout.',
           rounds,
           userScore,
           opponentScore: oppScore,
@@ -651,7 +660,11 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
       // truncated display address can never equal the settlement's winner.
       const myFull = (wallet.fullAddress || wallet.address || '').toLowerCase();
       const iWon = result.winner.toLowerCase() === myFull;
-      const prize = iWon ? Math.round(currentStake * 2 * 0.98 * 100) / 100 : 0;
+      // Audit #6 P3: derive from ECONOMY.winnerShareBps (single source of
+      // truth mirroring the contract's PLATFORM_FEE_BPS) instead of 0.98.
+      const prize = iWon
+        ? Math.round(((currentStake * 2 * ECONOMY.winnerShareBps) / 10_000) * 100) / 100
+        : 0;
 
       // Winner submits the oracle-signed proof to release the pot.
       let txHash = '';
@@ -1120,7 +1133,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
         </div>
         <div className="text-emerald-400 font-mono font-bold text-xs">
           {isServerMode
-            ? t('prizeLabel', { prize: (currentStake * 2 * 0.98).toFixed(2) })
+            ? t('prizeLabel', { prize: ((currentStake * 2 * ECONOMY.winnerShareBps) / 10_000).toFixed(2) })
             : t('prizeLabel', { prize: AntiCheat.calculatePrize(currentStake).toFixed(2) })}
         </div>
       </div>

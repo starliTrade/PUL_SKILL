@@ -33,6 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import auth as _auth_module
+import economy
 from auth import issue_nonce, issue_session, verify_session, verify_siwe
 from match_engine import MatchError, match_completed
 from oracle import sign_settlement
@@ -53,9 +54,29 @@ from auth import NONCE_WINDOW_SECONDS as _NONCE_WINDOW
 _rl_lock = threading.Lock()
 _rl_window: dict[str, list[float]] = {}
 RL_WINDOW_SECONDS = 60.0
-RL_QUEUE_MAX = 20        # queue calls per minute per address
+RL_QUEUE_MAX = 40        # queue calls per minute per address (audit #6 C3:
+                         # the client's 2.5s poll = 24/min; 20/min kicked
+                         # honest waiting players out of matchmaking at t≈50s)
 RL_COMMIT_MAX = 40       # round commits per minute per address
 RL_AUTH_MAX = 10         # SIWE handshakes per minute per address
+RL_VERIFY_MAX = 30       # SIWE verifications per minute per IP (ecrecover is
+                         # CPU work; unthrottled it was a cheap DoS surface)
+RL_ROUND_MAX = 60        # target reveals + result submissions per minute per
+                         # address — hot endpoints that each trigger store work
+
+
+def _rl_check_ip(bucket: str, request: Request, limit: int) -> None:
+    """Rate limit keyed by client IP instead of address (audit #6 C2/H7).
+
+    Used where the caller's address is not yet known (/api/auth/verify) or
+    where per-address limits are the wrong shape for cost control. Uses the
+    same Firestore-backed (cross-replica) window when Firestore mode is on,
+    otherwise the in-process fallback."""
+    ip = (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
+    )
+    _rl_check(bucket, ip, limit)
 
 
 def _rl_check(bucket: str, address: str, limit: int) -> None:
@@ -124,7 +145,17 @@ def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
         return None  # both stakes locked — play on
     if status == onchain.STATUS_CREATED and time.time() - m.created_at > DEPOSIT_TIMEOUT_SECONDS:
         m.status = "void"
-        return {"void": True, "reason": "Opponent stake deposit timed out — creator can refund on-chain."}
+        # H4 — honest money-UX: the contract only releases refunds at
+        # createdAt + MATCH_TIMEOUT (30 min). Saying "refundable now" sends
+        # players into a revert for ~25 minutes. State the real window.
+        return {
+            "void": True,
+            "reason": (
+                "Opponent stake deposit timed out — the match is void. The "
+                "creator's stake becomes refundable on-chain via "
+                "refundTimeoutMatch after the 30-minute escrow timeout."
+            ),
+        }
     raise HTTPException(
         status_code=409,
         detail="On-chain deposits are not verified for this match yet.",
@@ -281,6 +312,11 @@ class ResultRequest(BaseModel):
     resultProof: str = ""
 
 
+class ClaimRequest(BaseModel):
+    txHash: str = Field(pattern=r"^0x[0-9a-fA-F]{64}$")
+    signature: str = ""
+
+
 @app.post("/api/auth/nonce")
 def auth_nonce(body: NonceRequest, request: Request) -> dict[str, str]:
     _rl_check("auth", body.address, RL_AUTH_MAX)
@@ -291,6 +327,12 @@ def auth_nonce(body: NonceRequest, request: Request) -> dict[str, str]:
 
 @app.post("/api/auth/verify")
 def auth_verify(body: VerifyRequest, request: Request) -> dict[str, str]:
+    # Audit #6 C2: /verify runs ecrecover (CPU work) and used to be the only
+    # unthrottled crypto endpoint. Forged-nonce spam is now both REJECTED by
+    # the MAC check and rate-limited here — one bucket for the whole endpoint
+    # (the client signs a message it has not parsed yet, so the address is
+    # unknown until after verification).
+    _rl_check_ip("verify", request, RL_VERIFY_MAX)
     domain = _request_domain(request)
     recovered = verify_siwe(body.message, body.signature, domain)
     if not recovered:
@@ -368,6 +410,7 @@ def round_commit(body: CommitRequest, request: Request) -> dict[str, Any]:
 @app.post("/api/round/target")
 def round_target(body: TargetRequest, request: Request) -> dict[str, Any]:
     address = _auth(request)
+    _rl_check("round", address, RL_ROUND_MAX)  # audit #6 H7: hot endpoint
     try:
         # Same fail-closed deposit gate: revealing the target before the
         # escrow holds both stakes lets a stakeless client stall the duel.
@@ -385,6 +428,7 @@ def round_target(body: TargetRequest, request: Request) -> dict[str, Any]:
 @app.post("/api/round/result")
 def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
     address = _auth(request)
+    _rl_check("round", address, RL_ROUND_MAX)  # audit #6 H7: hot endpoint
     try:
         # Transactional submission: validated + stored atomically against the
         # authoritative document, then (when it completes the match) settled
@@ -434,13 +478,24 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
     if m.status == "settled" and m.signed_settlement:
         return dict(m.signed_settlement)
     if m.status == "void":
-        return {"status": "void", "reason": "Match was voided — stakes are refundable on-chain."}
+        return {
+            "status": "void",
+            "reason": (
+                "Match was voided — each stake refunds on-chain via "
+                "refundTimeoutMatch after the 30-minute escrow timeout."
+            ),
+        }
     try:
         result = eng.settle(m)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
     if result.get("status") == "settled":
-        return _attach_signed_envelope(m, result)
+        envelope = _attach_signed_envelope(m, result)
+        # C5 — economy ledger: the settlement is a FACT; the ledger (Admin
+        # SDK, bypassing the client-blocking security rules) is the writer the
+        # firestore.rules comment anticipated. Best-effort — never blocks.
+        economy.record_settlement(m)
+        return envelope
     return {"status": "void", "reason": result.get("reason", "stakes refund")}
 
 
@@ -472,4 +527,24 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
     # players on different backend replicas can no longer produce two
     # different signatures; the transaction serializes them and the loser of
     # the race replays the ONE stored proof.
-    return store.update(match_id, _settle_once)
+    envelope = store.update(match_id, _settle_once)
+    return envelope
+
+
+@app.post("/api/match/{match_id}/claim")
+def claim_match(match_id: str, body: ClaimRequest, request: Request) -> dict[str, Any]:
+    """C5 — on-chain claim persistence. After the winner's settleDuel tx is
+    broadcast, the client posts the tx hash here; the server records it in the
+    match ledger so the certificate can display REAL on-chain proof instead of
+    the permanent 'LOCAL RESULT · NOT ON-CHAIN' fallback. Authenticated and
+    participant-only; the tx hash is user-supplied metadata, not a trust
+    boundary (the chain itself remains the source of truth)."""
+    address = _auth(request)
+    try:
+        match = store.get(match_id)
+        if address not in match.players:
+            raise HTTPException(status_code=403, detail="Not a participant")
+    except MatchError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    recorded = economy.record_claim(match_id, address, body.txHash, body.signature)
+    return {"ok": recorded, "onChainProof": recorded}

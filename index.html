@@ -15,13 +15,20 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=Noto+Sans+Arabic:wght@300;400;500;600;700;800;900&family=Noto+Sans+SC:wght@300;400;500;600;700;800;900&family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&family=Vazirmatn:wght@200;300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
-    <!-- Early safety interceptor for strict mode / readonly mutation errors in iframe preview -->
+    <!-- Boot hygiene (audit #6 H6): the error-swallowing interceptor that
+         previously lived here was REMOVED. It overrode console.error and
+         suppressed window.error/unhandledrejection for anything mentioning
+         'walletconnect' or '403' — hiding exactly the error classes real
+         debugging (and Sentry) need surfaced. Only the WalletConnect
+         proposal-key purge remains. -->
     <script>
       (function() {
-        // Purge orphaned/stale WalletConnect proposal keys on load
+        // Purge orphaned/stale WalletConnect proposal keys on load.
+        // Iterate BACKWARDS: removing keys inside a forward loop skips the
+        // entry after each removal (indices shift under the cursor).
         try {
           if (typeof window !== 'undefined' && window.localStorage) {
-            for (var i = 0; i < localStorage.length; i++) {
+            for (var i = localStorage.length - 1; i >= 0; i--) {
               var k = localStorage.key(i);
               if (k && k.indexOf('wc@2:') === 0 && k.indexOf('proposal') !== -1) {
                 localStorage.removeItem(k);
@@ -29,75 +36,6 @@
             }
           }
         } catch(e) {}
-
-        var isIgnorable = function(raw) {
-          if (raw && typeof raw === 'object' && (raw.level === 50 || raw.level === 40 || typeof raw.level === 'number')) {
-            return true;
-          }
-          var msg = '';
-          try {
-            if (typeof raw === 'string') {
-              msg = raw;
-            } else if (raw && typeof raw === 'object') {
-              msg = (raw.message || (raw.error && raw.error.message) || raw.reason || raw.msg || JSON.stringify(raw) || '');
-            } else {
-              msg = String(raw || '');
-            }
-          } catch(err) {
-            msg = String(raw || '');
-          }
-          var lower = msg.toLowerCase();
-          return (
-            lower.includes('no matching key') ||
-            lower.includes('proposal:') ||
-            lower.includes('attempted to assign to readonly property') ||
-            lower.includes('which has only a getter') ||
-            lower.includes('cannot assign to read only property') ||
-            lower.includes('websocket connection closed') ||
-            lower.includes('failed to connect to websocket') ||
-            lower.includes('403') ||
-            lower.includes('origin not allowed') ||
-            lower.includes('relay.walletconnect') ||
-            lower.includes('walletconnect') ||
-            lower.includes('level":50') ||
-            lower.includes('level":40')
-          );
-        };
-
-        if (typeof console !== 'undefined' && console.error) {
-          var origConsoleError = console.error;
-          console.error = function() {
-            var args = Array.prototype.slice.call(arguments);
-            var shouldIgnore = false;
-            for (var i = 0; i < args.length; i++) {
-              if (isIgnorable(args[i])) {
-                shouldIgnore = true;
-                break;
-              }
-            }
-            if (shouldIgnore) {
-              if (console.warn) {
-                console.warn.apply(console, ['[Pulsar Background Log Intercepted]:'].concat(args));
-              }
-              return;
-            }
-            origConsoleError.apply(console, args);
-          };
-        }
-
-        window.addEventListener('error', function(e) {
-          if (isIgnorable(e)) {
-            try { e.preventDefault(); } catch (err) {}
-            try { e.stopImmediatePropagation(); } catch (err) {}
-            return true;
-          }
-        }, true);
-        window.addEventListener('unhandledrejection', function(e) {
-          if (isIgnorable(e && e.reason)) {
-            try { e.preventDefault(); } catch (err) {}
-            try { e.stopImmediatePropagation(); } catch (err) {}
-          }
-        }, true);
       })();
     </script>
       <!-- CRITICAL: DO NOT REMOVE/MODIFY THIS COMMENT OR THE SCRIPT BELOW -->
