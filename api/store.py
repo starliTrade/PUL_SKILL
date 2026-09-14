@@ -19,6 +19,7 @@ matching the client's existing 2.5s polling loop.
 
 from __future__ import annotations
 
+import copy
 import os
 import secrets
 import threading
@@ -180,11 +181,19 @@ class InMemoryStore:
         return m
 
     def update(self, match_id: str, mutate: Any) -> Any:
-        """Single-process serialization of read-modify-write (multi-replica
-        parity with the Firestore transactional path)."""
+        """Single-process serialization of read-modify-write, WITH rollback:
+        the match is deep-copied first and restored if the mutation raises.
+        This is the memory-mode parity of the Firestore transaction (whose
+        rollback is automatic) — a signing failure inside a mutation used to
+        wedge the in-memory match as settled-without-proof forever (audit #4)."""
         with self._lock:
             m = self.get(match_id)
-            out = mutate(m)
+            snapshot = copy.deepcopy(m)
+            try:
+                out = mutate(m)
+            except BaseException:
+                self.matches[match_id] = snapshot
+                raise
             return out
 
     def sweep_expired(self) -> None:

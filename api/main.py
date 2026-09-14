@@ -30,10 +30,49 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from auth import issue_nonce, issue_session, verify_session  # verify_session used by _auth
+import auth as _auth_module
+from auth import issue_nonce, issue_session, verify_session, verify_siwe
 from match_engine import MatchError, match_completed
 from oracle import sign_settlement
 from store import create_store, install_persistence
+
+# Single source of truth for the chain this deployment runs on. The SIWE
+# statement, the oracle digest and the client (VITE_CHAIN_ID → CHAIN.chainId)
+# must all agree — the audit regression was main.py hardcoding 137 while
+# auth.py verified against 80002, so signing the server's OWN message 401'd.
+from auth import EXPECTED_CHAIN_ID as _CHAIN_ID
+from auth import NONCE_WINDOW_SECONDS as _NONCE_WINDOW
+
+
+def _nonce_of(message: str) -> str:
+    fields = _auth_module.parse_siwe(message)
+    return fields.nonce if fields else ""
+
+
+def _siwe_message(address: str, nonce: str, domain: str) -> str:
+    """Canonical SIWE statement. Chain ID comes from the deployment constant
+    and Issued At is DERIVED from the nonce's time window — both fully
+    deterministic per (address, nonce, domain), so the exact issued message
+    can be recomputed at verify time on any replica (no server-side session
+    store needed)."""
+    import datetime as _dt
+
+    window = _auth_module.nonce_window(nonce) or 0
+    issued_at = _dt.datetime.fromtimestamp(
+        window * _NONCE_WINDOW, tz=_dt.timezone.utc
+    ).isoformat()
+    return (
+        f"{domain} wants you to sign in with your Polygon account:\n"
+        f"{address.lower()}\n"
+        "\n"
+        "Prove you own this wallet. This signature grants no permission to move funds or spend tokens.\n"
+        "\n"
+        f"URI: https://{domain}\n"
+        "Version: 1\n"
+        f"Chain ID: {_CHAIN_ID}\n"
+        f"Nonce: {nonce}\n"
+        f"Issued At: {issued_at}\n"
+    )
 
 app = FastAPI(title="PULSAR Game Server", version="1.1.1")
 
@@ -159,29 +198,22 @@ class ResultRequest(BaseModel):
 def auth_nonce(body: NonceRequest, request: Request) -> dict[str, str]:
     domain = _request_domain(request)
     nonce = issue_nonce(body.address, domain)
-    message = (
-        f"{domain} wants you to sign in with your Polygon account:\n"
-        f"{body.address.lower()}\n"
-        "\n"
-        "Prove you own this wallet. This signature grants no permission to move funds or spend tokens.\n"
-        "\n"
-        f"URI: https://{domain}\n"
-        "Version: 1\n"
-        "Chain ID: 137\n"
-        f"Nonce: {nonce}\n"
-        f"Issued At: {__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()}\n"
-    )
-    return {"nonce": nonce, "message": message}
+    return {"nonce": nonce, "message": _siwe_message(body.address, nonce, domain)}
 
 
 @app.post("/api/auth/verify")
 def auth_verify(body: VerifyRequest, request: Request) -> dict[str, str]:
     domain = _request_domain(request)
-    from auth import verify_siwe
-
     recovered = verify_siwe(body.message, body.signature, domain)
     if not recovered:
         raise HTTPException(status_code=401, detail="SIWE verification failed")
+    # Challenge-binding: the submitted statement must be the exact canonical
+    # message this server issued (same chain, same statement lines) and carry
+    # the nonce from OUR issuance. Prevents client-crafted or chain-scrambled
+    # statements from authenticating even when the MAC nonce is valid.
+    expected = _siwe_message(recovered, _nonce_of(body.message), domain)
+    if body.message != expected:
+        raise HTTPException(status_code=401, detail="SIWE message does not match the issued challenge")
     return {"token": issue_session(recovered), "address": recovered}
 
 
@@ -263,16 +295,30 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
                 except MatchError:
                     result = None
                 if result and result.get("status") == "settled":
-                    envelope = sign_settlement(result)
-                    envelope["roundWins"] = result.get("roundWins", {})
-                    m.signed_settlement = {"status": "settled", **envelope}
-                    res["settled"] = m.signed_settlement
+                    res["settled"] = _attach_signed_envelope(m, result)
             return res
 
         res = store.update(body.matchId, _mutate)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return res
+
+
+def _attach_signed_envelope(m: Any, result: dict[str, Any]) -> dict[str, Any]:
+    """Sign a settled result and attach the proof envelope to the match.
+    Rollback-safe: a signing failure must never leave a settled-but-proofless
+    match behind. Firestore rolls the transaction back on its own, but the
+    in-memory object mutates IN PLACE — without this snapshot the match would
+    be permanently wedged as 'settled' with no signature (audit #4)."""
+    saved = (m.status, m.winner, m.settled_at, m.signed_settlement)
+    try:
+        envelope = sign_settlement(result)
+    except Exception:
+        m.status, m.winner, m.settled_at, m.signed_settlement = saved
+        raise
+    envelope["roundWins"] = result.get("roundWins", {})
+    m.signed_settlement = {"status": "settled", **envelope}
+    return dict(m.signed_settlement)
 
 
 def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
@@ -288,10 +334,7 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
     if result.get("status") == "settled":
-        envelope = sign_settlement(result)
-        envelope["roundWins"] = result.get("roundWins", {})
-        m.signed_settlement = {"status": "settled", **envelope}
-        return dict(m.signed_settlement)
+        return _attach_signed_envelope(m, result)
     return {"status": "void", "reason": result.get("reason", "stakes refund")}
 
 

@@ -51,31 +51,25 @@ check("CORSMiddleware is installed", "CORSMiddleware" in _mw_names)
 DOMAIN = "pulsar.test"
 
 
-def make_session(account: Account) -> tuple[str, dict]:
-    """Full SIWE handshake over HTTP; returns (bearer token, address)."""
+def make_session(account: Account, domain: str = DOMAIN) -> tuple[str, dict]:
+    """Full SIWE handshake over HTTP; returns (bearer token, address).
+    Audit-#4: the wallet signs the SERVER's returned message VERBATIM — the
+    previous version rebuilt its own message, which masked the server-side
+    chain-ID regression (server built 137, verifier demanded 80002 → every
+    real client got 401)."""
     addr = account.address.lower()
-    r = client.post("/api/auth/nonce", json={"address": addr}, headers={"host": DOMAIN})
+    r = client.post("/api/auth/nonce", json={"address": addr}, headers={"host": domain})
     assert r.status_code == 200, r.text
     nonce = r.json()["nonce"]
-    message = (
-        f"{DOMAIN} wants you to sign in with your Polygon account:\n"
-        f"{addr}\n"
-        "\n"
-        "Prove you own this wallet. This signature grants no permission to move funds or spend tokens.\n"
-        "\n"
-        f"URI: https://{DOMAIN}\n"
-        "Version: 1\n"
-        f"Chain ID: {auth_module.EXPECTED_CHAIN_ID}\n"
-        f"Nonce: {nonce}\n"
-        f"Issued At: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
-    )
+    message = r.json()["message"]  # sign EXACTLY what the server issued
+    assert nonce in message, "server message must embed the issued nonce"
     sig = account.sign_message(encode_defunct(text=message)).signature.hex()
     if not sig.startswith("0x"):
         sig = "0x" + sig
     r = client.post(
         "/api/auth/verify",
         json={"message": message, "signature": sig},
-        headers={"host": DOMAIN},
+        headers={"host": domain},
     )
     assert r.status_code == 200, r.text
     return r.json()["token"], addr
@@ -152,11 +146,14 @@ def play_round(token: str, idx: int, ms: float, honest_wait: bool, with_proof: b
         result_proof = ""  # simulate the audit cheat: submit without the proof
     if honest_wait:
         # Simulate the wall-clock wait on the server object (test clock control).
+        # The claim is measured from target appearance, so the rewind models a
+        # real player's reaction — the server's claim-vs-observed gate (audit
+        # #4) rejects a claim faster than the observed submission timing.
         for m in server.store.memory.matches.values():
             if m.match_id == match_id:
                 rr = m.rounds.get(addr, {}).get(idx)
                 if rr and rr.revealed_at:
-                    rr.revealed_at -= rr.target_ms / 1000.0
+                    rr.revealed_at -= (rr.target_ms + ms) / 1000.0
     r = client.post(
         "/api/round/result",
         json={"matchId": match_id, "roundIndex": idx, "measuredMs": ms, "resultProof": result_proof},
@@ -241,6 +238,93 @@ carol = Account.create()
 token_c, _ = make_session(carol)
 r = client.post(f"/api/match/{match_id}/settle", json={}, headers=auth_headers(token_c))
 check("Outsider settle rejected (403)", r.status_code == 403)
+
+# --- 7. Audit-#4 SIWE & anti-cheat regressions ---------------------------------
+
+# 7a. The server's own SIWE message verifies (the audit's exact repro was 401
+# because main.py built its statement with Chain ID 137 while auth.py
+# verified 80002).
+r = client.post("/api/auth/nonce", json={"address": addr_a}, headers={"host": DOMAIN})
+server_msg = r.json()["message"]
+sig = alice.sign_message(encode_defunct(text=server_msg)).signature.hex()
+if not sig.startswith("0x"):
+    sig = "0x" + sig
+r = client.post("/api/auth/verify", json={"message": server_msg, "signature": sig}, headers={"host": DOMAIN})
+check("Server-issued SIWE message verifies (chain regression fixed)", r.status_code == 200)
+
+# 7b. A statement bound to a different chain is refused.
+forged_chain = server_msg.replace(f"Chain ID: {auth_module.EXPECTED_CHAIN_ID}", "Chain ID: 137")
+sig = alice.sign_message(encode_defunct(text=forged_chain)).signature.hex()
+if not sig.startswith("0x"):
+    sig = "0x" + sig
+r = client.post("/api/auth/verify", json={"message": forged_chain, "signature": sig}, headers={"host": DOMAIN})
+check("SIWE statement with a wrong chain ID is refused", r.status_code == 401)
+
+# 7c. A self-forged nonce (never issued by the server) is dead on arrival.
+forged_msg = server_msg.split("Nonce: ")[0] + "Nonce: deadbeef-deadbeefdeadbeef\nIssued At: 2026-01-01T00:00:00+00:00\n"
+sig = alice.sign_message(encode_defunct(text=forged_msg)).signature.hex()
+if not sig.startswith("0x"):
+    sig = "0x" + sig
+r = client.post("/api/auth/verify", json={"message": forged_msg, "signature": sig}, headers={"host": DOMAIN})
+check("Self-forged nonce is refused", r.status_code == 401)
+
+# 7d. Tamper-evidence: the statement's chain line is altered after issuance —
+# the signature is still by the right wallet, but the message is no longer
+# the canonical challenge this server issued.
+tampered = server_msg.replace(f"Chain ID: {auth_module.EXPECTED_CHAIN_ID}", f"Chain ID: {auth_module.EXPECTED_CHAIN_ID} ")
+sig = alice.sign_message(encode_defunct(text=tampered)).signature.hex()
+if not sig.startswith("0x"):
+    sig = "0x" + sig
+r = client.post("/api/auth/verify", json={"message": tampered, "signature": sig}, headers={"host": DOMAIN})
+check("Tampered statement body is refused (challenge binding)", r.status_code == 401)
+
+# 7e. The timing-gate regressions (claimed-time floor, pre-visible submission
+# window, round expiry) run at engine level in test_game_server.py — the HTTP
+# suite keeps its scope to auth/protocol/settlement.
+
+# --- 8. Audit-#4: a signing failure must NOT wedge the match --------------------
+# The memory store mutates in place, so a signing failure inside settle used to
+# leave a settled-without-proof match forever (Firestore rolled back, memory
+# didn't). The rollback must restore the active state, and a retry must settle.
+import match_engine as eng_mod  # noqa: E402
+from store import DurableMatchStore  # noqa: E402
+
+fb2 = DurableMatchStore()
+wa = Account.create().address.lower()
+wb = Account.create().address.lower()
+fm = fb2.enqueue(wa, 1.0)
+fb2.enqueue(wb, 1.0)
+for idx in range(eng_mod.ROUNDS):
+    for paddr, claim in ((wa, 220.0), (wb, 300.0)):
+        fb2.update(fm.match_id, lambda m, e=eng_mod, a=paddr, i=idx: e.commit_intent(m, a, i, "0x" + hashlib.sha256(f"{a}{i}".encode()).hexdigest()))
+        fb2.update(fm.match_id, lambda m, e=eng_mod, a=paddr, i=idx: e.reveal_target(m, a, i))
+
+        def _submit(m, e=eng_mod, a=paddr, i=idx, c=claim):
+            rr = m.rounds[a][i]
+            rr.revealed_at -= (rr.target_ms + c) / 1000.0
+            return e.submit_result(m, a, i, c, rr.result_proof)
+
+        fb2.update(fm.match_id, _submit)
+
+orig_sign = server.sign_settlement
+server.sign_settlement = lambda result: (_ for _ in ()).throw(RuntimeError("KMS unavailable"))
+try:
+    try:
+        fb2.update(fm.match_id, server._settle_once)
+        check("Sign failure surfaces instead of being swallowed", False)
+    except RuntimeError:
+        check("Sign failure surfaces instead of being swallowed", True)
+    m_after = fb2.get(fm.match_id)
+    check("Rollback on sign failure: match is NOT settled", m_after.status == "active")
+    check("Rollback on sign failure: no proofless settlement stored", not m_after.signed_settlement)
+finally:
+    server.sign_settlement = orig_sign
+
+out = fb2.update(fm.match_id, server._settle_once)
+check(
+    "Retry after a sign failure settles with a real signature",
+    out.get("status") == "settled" and str(out.get("signature", "")).startswith("0x"),
+)
 
 print()
 if failures:

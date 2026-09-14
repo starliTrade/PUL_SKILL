@@ -43,7 +43,13 @@ MIN_HUMAN_MS = 105.0           # below this is not humanly plausible — MUST ma
                                # the client floor (antiCheat.MIN_HUMAN_REACTION_MS = 105)
                                # so an attacker gains no threshold advantage
 MAX_HUMAN_MS = 1200.0          # above this is a disconnect / not a serious attempt
-CLOCK_TOLERANCE_MS = 250.0     # network + NTP slack for the server-clock gate
+CLOCK_TOLERANCE_MS = 250.0     # network + NTP slack for coarse wall-clock gates
+REACTION_JITTER_MS = 60.0       # client timer slop allowance for the claim-vs-
+                                # server-observed reaction gate (audit #4)
+SUBMIT_LATENCY_TOLERANCE_MS = 400.0  # max plausible network latency between a
+                                # player's click and the server receiving it —
+                                # a claim faster than (observed − this) is a
+                                # claim-faster-than-reality fabrication
 ROUND_EXPIRY_SECONDS = 60
 MATCH_EXPIRY_SECONDS = 600     # aligns with the on-chain refund horizon (30 min
                                # starts at deposit; the server gives up earlier)
@@ -305,6 +311,14 @@ def submit_result(
         raise MatchError("Round target not revealed")
     if r.result_ms is not None:
         raise MatchError("Result already submitted")
+    # Audit #4: a stale round is DEAD — the player lost their chance. Without
+    # this, an unplayed round survives all the way to the grace-window settle
+    # and converts an opponent who simply stepped away into a forfeit loser.
+    if r.revealed_at and time.time() - r.revealed_at > ROUND_EXPIRY_SECONDS:
+        raise MatchError(
+            f"Round expired — results must be submitted within "
+            f"{ROUND_EXPIRY_SECONDS}s of the target appearing"
+        )
     # P0-fix (audit #2): the commit is no longer decorative. A result is only
     # stored when it carries the proof bound to this player's commit+reveal.
     if not result_proof or not hmac.compare_digest(result_proof, r.result_proof):
@@ -326,19 +340,27 @@ def _validate_plausibility(match: Match, r: Round, measured_ms: float, now: floa
         return f"implausible: {measured_ms}ms is below human minimum"
     if measured_ms > MAX_HUMAN_MS:
         return f"implausible: {measured_ms}ms exceeds maximum plausible reaction"
-    # Timing-consistency gate (audit #3): the CLAIMED time must be supported
-    # by the SERVER-observed elapsed time since the reveal. revealed_at +
-    # target_ms is the earliest instant the target is even VISIBLE, so a
-    # reaction can never be shorter than the hidden-target delay plus the
-    # human floor. The old 0.9x rule allowed a fabricated 90ms to land BEFORE
-    # the target appeared (measured server-side) — total fairness failure.
+    # Dual timing-consistency gate (audit #4) — the claim is measured from
+    # TARGET APPEARANCE, so it is checked against what the SERVER observed:
+    #   (a) NO PRE-VISIBLE SUBMISSION: the submission cannot arrive before the
+    #       target was even displayed. revealed_at and now share the same
+    #       server clock, so this has ZERO tolerance — it closes the audit's
+    #       145ms early-submission arbitrage completely.
+    #   (b) CLAIM vs SERVER-OBSERVED REACTION: elapsed − target_ms is the
+    #       reaction the server actually witnessed (network latency only ever
+    #       INCREASES it). A claim faster than that, minus small jitter for
+    #       client timer slop, is a fabrication (the 105ms-after-delay cheat).
     if r.revealed_at:
         elapsed_ms = (now - r.revealed_at) * 1000.0
-        min_claimable = r.target_ms + MIN_HUMAN_MS
-        if elapsed_ms + CLOCK_TOLERANCE_MS < min_claimable:
+        if elapsed_ms < r.target_ms:
+            return "implausible: submitted before the target was displayed"
+        observed_reaction = elapsed_ms - r.target_ms
+        if observed_reaction + REACTION_JITTER_MS < measured_ms:
+            return "implausible: server-observed reaction is faster than the claimed time"
+        if measured_ms + SUBMIT_LATENCY_TOLERANCE_MS < observed_reaction:
             return (
-                "implausible: submitted before the target delay could have "
-                "elapsed on the server clock"
+                "implausible: claimed reaction is faster than the "
+                "server-observed submission timing allows"
             )
     return ""
 

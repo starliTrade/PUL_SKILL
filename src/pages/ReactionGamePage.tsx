@@ -296,6 +296,19 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
 
     if (isServerMode && serverSession && serverMatch) {
       const roundIndex = bo3State.currentRound - 1;
+      // Audit #4 guard: best-of-three has exactly 3 rounds (indices 0-2).
+      // Without this, an edge-case stale state could request round index 3+
+      // and get stuck against a permanent 409 from the server.
+      if (roundIndex >= 3 || roundIndex < 0) {
+        void finishServerMatch(
+          bo3State.rounds,
+          bo3State.userScore,
+          bo3State.opponentScore,
+          0,
+          0
+        );
+        return;
+      }
       void (async () => {
         try {
           let targetMs: number;
@@ -405,8 +418,22 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   // If the opponent hasn't submitted yet, the round shows as undecided (no
   // fabricated points) — the server's settlement remains authoritative.
   const applyServerRoundOutcome = (roundIndex: number, userTime: number, oppMs: number | null) => {
+    // Audit #4: null opponent time is NOT a tie. We only score a round once
+    // the opponent's time is actually disclosed; otherwise the match ends
+    // unresolved, and the grace-window settlement on the server decides the
+    // forfeits. This also makes a phantom round 4 impossible.
+    if (oppMs == null) {
+      void finishServerMatch(
+        bo3State.rounds,
+        bo3State.userScore,
+        bo3State.opponentScore,
+        userTime,
+        0
+      );
+      return;
+    }
     const roundWinner: 'user' | 'opponent' | 'tie' =
-      oppMs == null ? 'tie' : userTime < oppMs ? 'user' : userTime > oppMs ? 'opponent' : 'tie';
+      userTime < oppMs ? 'user' : userTime > oppMs ? 'opponent' : 'tie';
     const newRoundResult: RoundResult = {
       roundNumber: roundIndex + 1,
       winner: roundWinner,
@@ -436,13 +463,11 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
     if (roundWinner === 'user') sounds.playWin();
     else if (roundWinner === 'opponent') sounds.playHit();
     setRoundTransitionMessage(
-      oppMs == null
-        ? t('waitingOpponentRound')
-        : newUserScore === 1 && newOpponentScore === 1
-          ? 'TIE 1 - 1! DECIDING ROUND (MATCH POINT)!'
-          : roundWinner === 'user'
-            ? `ROUND ${roundIndex + 1} WON!`
-            : `ROUND ${roundIndex + 1} LOST!`
+      newUserScore === 1 && newOpponentScore === 1
+        ? 'TIE 1 - 1! DECIDING ROUND (MATCH POINT)!'
+        : roundWinner === 'user'
+          ? `ROUND ${roundIndex + 1} WON!`
+          : `ROUND ${roundIndex + 1} LOST!`
     );
     setPhase('round-transition');
     roundTransitionTimeoutRef.current = setTimeout(() => setPhase('ready'), 1900);
@@ -657,9 +682,10 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                     pollDelay = Math.min(pollDelay * 1.5, 10000);
                     pollOpponent();
                   } else {
-                    // ~25s of polling: the opponent is unresponsive — the
-                    // round stands as forfeit-for-them via the grace-window
-                    // settlement; show the honest undecided state.
+                    // ~25s of polling and the opponent still hasn't disclosed:
+                    // the match ends UNRESOLVED here — the grace-window
+                    // settlement on the server decides any forfeits. Never a
+                    // fabricated tie, never a phantom next round.
                     applyServerRoundOutcome(roundIndex, userTime, null);
                   }
                 } catch {

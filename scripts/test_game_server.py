@@ -69,13 +69,17 @@ m2 = store.enqueue(opp, 1.0)
 check("Matchmaking pairs two players", m1.match_id == m2.match_id and m1.status == "active")
 
 
-def wait_out_target(match, addr, idx):
+def wait_out_target(match, addr, idx, reaction_ms=None):
     """Simulate wall-clock elapse of the round's target delay on the server.
-    The engine reads time.time() directly, so tests rewind revealed_at by the
-    full target window — identical to a client waiting honestly."""
+    The engine reads time.time() directly, so tests rewind revealed_at —
+    identical to a client waiting honestly. The submission is then expected
+    'reaction_ms' after the target appeared (what a real player produces); a
+    claimed time is matched to the server-observed reaction by the new
+    audit-#4 gate."""
     r = match.rounds[addr].get(idx)
     if r and r.revealed_at:
-        r.revealed_at -= r.target_ms / 1000.0
+        waited = (r.target_ms + (reaction_ms if reaction_ms is not None else 200.0)) / 1000.0
+        r.revealed_at -= waited
 
 
 # playerA round flow
@@ -84,7 +88,7 @@ me.commit_intent(m1, player_addr, 0, "0x" + intent)
 target = me.reveal_target(m1, player_addr, 0)
 check("Target revealed after commit", target["targetMs"] >= 1200)
 check("Reveal issues a per-player result proof", bool(target.get("resultProof")))
-wait_out_target(m1, player_addr, 0)
+wait_out_target(m1, player_addr, 0, 200.0)
 
 # Reveal without commit must fail
 try:
@@ -115,7 +119,7 @@ check("Instant submit after reveal rejected", res["accepted"] is False and "targ
 # honest wait then submit accepted (fresh round — 1 was burned by the floor)
 me.commit_intent(m1, player_addr, 2, "0x" + hashlib.sha256(b"i2").hexdigest())
 target2 = me.reveal_target(m1, player_addr, 2)
-wait_out_target(m1, player_addr, 2)
+wait_out_target(m1, player_addr, 2, 250.0)
 res = me.submit_result(m1, player_addr, 2, 250.0, target2["resultProof"])
 check("Plausible time accepted", res["accepted"] is True)
 
@@ -130,7 +134,7 @@ except me.MatchError:
 for idx in range(me.ROUNDS):
     me.commit_intent(m1, opp, idx, "0x" + hashlib.sha256(f"o{idx}".encode()).hexdigest())
     t_opp = me.reveal_target(m1, opp, idx)
-    wait_out_target(m1, opp, idx)
+    wait_out_target(m1, opp, idx, 300.0 + idx * 5)
     me.submit_result(m1, opp, idx, 300.0 + idx * 5, t_opp["resultProof"])
 # Bo3 semantics: a forfeited (invalid) round is LOST. playerA burned rounds
 # 0 and 1, won only round 2 (245<310) -> opponent wins 2-1. Anti-cheat has
@@ -154,7 +158,7 @@ for idx in range(me.ROUNDS):
     for addr, base in ((m3.players and list(m3.players)[0], 220.0), (w_addr, 280.0)):
         me.commit_intent(m3, addr, idx, "0x" + hashlib.sha256(f"{addr}{idx}".encode()).hexdigest())
         t3 = me.reveal_target(m3, addr, idx)
-        wait_out_target(m3, addr, idx)
+        wait_out_target(m3, addr, idx, base + idx * 3)
         me.submit_result(m3, addr, idx, base + idx * 3, t3["resultProof"])
 
 result = me.settle(m3)
@@ -201,7 +205,7 @@ for idx in range(me.ROUNDS):
     for addr, base in ((list(m4.players)[0], 210.0), (opp4, 260.0)):
         me.commit_intent(m4, addr, idx, "0x" + hashlib.sha256(f"{addr}{idx}".encode()).hexdigest())
         t4 = me.reveal_target(m4, addr, idx)
-        wait_out_target(m4, addr, idx)
+        wait_out_target(m4, addr, idx, base + idx * 4)
         me.submit_result(m4, addr, idx, base + idx * 4, t4["resultProof"])
 me.settle(m4)
 m4.signed_settlement = {"signature": "0x" + "77" * 65}
@@ -414,7 +418,7 @@ store.enqueue(opp5, 2.0)
 for idx in range(me.ROUNDS):
     me.commit_intent(m5, opp5, idx, "0x" + hashlib.sha256(f"f5-{idx}".encode()).hexdigest())
     t5 = me.reveal_target(m5, opp5, idx)
-    wait_out_target(m5, opp5, idx)
+    wait_out_target(m5, opp5, idx, 240.0)
     me.submit_result(m5, opp5, idx, 240.0, t5["resultProof"])
 # Attack replay: the CHEATER commits, then submits a valid-looking time WITHOUT
 # ever revealing. Under the old engine this exact sequence settled 3-0. Now the
@@ -456,7 +460,7 @@ except me.MatchError:
 # exactly mirroring the client's 2-0 finish.
 for idx in (0, 1):
     me.reveal_target(m5, cheater, idx)
-    wait_out_target(m5, cheater, idx)
+    wait_out_target(m5, cheater, idx, 260.0)
     r_c = m5.rounds[cheater][idx]
     me.submit_result(m5, cheater, idx, 260.0, r_c.result_proof)
 res_early = me.settle(m5)
@@ -472,7 +476,7 @@ store.enqueue(w6, 2.0)
 for idx in range(me.ROUNDS):
     me.commit_intent(m6, w6, idx, "0x" + hashlib.sha256(f"w6-{idx}".encode()).hexdigest())
     t6 = me.reveal_target(m6, w6, idx)
-    wait_out_target(m6, w6, idx)
+    wait_out_target(m6, w6, idx, 220.0)
     me.submit_result(m6, w6, idx, 220.0, t6["resultProof"])
 m6.created_at = time.time() - 10_000  # push past the settle grace window
 res6 = me.settle(m6)
@@ -497,8 +501,8 @@ r7 = m7.rounds[fast][0]
 r7.revealed_at = time.time() - (r7.target_ms * 0.1) / 1000.0  # only 10% elapsed
 res7 = me.submit_result(m7, fast, 0, me.MIN_HUMAN_MS, t7["resultProof"])
 check(
-    "A3: fabricated floor time rejected while the target is still hidden",
-    res7["accepted"] is False and "server clock" in res7["reason"],
+    "A3/A4: fabricated floor time rejected while the target is still hidden",
+    res7["accepted"] is False and "before the target" in res7["reason"],
 )
 check(
     "A3: server floor matches the client floor (105ms, no attacker advantage)",
@@ -509,9 +513,99 @@ check(
 me.commit_intent(m7, fast, 1, "0x" + "77" * 31 + "02")
 t7b = me.reveal_target(m7, fast, 1)
 r7b = m7.rounds[fast][1]
-r7b.revealed_at = time.time() - (r7b.target_ms + 200) / 1000.0
-res7b = me.submit_result(m7, fast, 1, me.MIN_HUMAN_MS + 40, t7b["resultProof"])
+claim = me.MIN_HUMAN_MS + 40
+r7b.revealed_at = time.time() - (r7b.target_ms + claim) / 1000.0
+res7b = me.submit_result(m7, fast, 1, claim, t7b["resultProof"])
 check("A3: honest submission after the target delay is accepted", res7b["accepted"] is True)
+
+# --- 5f. Audit-#4 regressions: claim-vs-server-observed timing gate -----------
+# The audit's repro: wait out the target delay, then submit a fabricated
+# 105ms floor time. The claimed time is measured from TARGET APPEARANCE, so
+# it is checked against the SERVER-observed reaction (elapsed - target_ms):
+# a claim faster than reality (minus network slack) is rejected.
+m8 = store.enqueue(Account.create().address.lower(), 1.0)
+fast8 = Account.create().address.lower()
+store.enqueue(fast8, 1.0)
+
+# (i) The exact audit repro: a real 600ms reaction observed on the server
+# clock, but only 105ms claimed → claim + latency tolerance < observed.
+me.commit_intent(m8, fast8, 0, "0x" + "88" * 31 + "01")
+t8a = me.reveal_target(m8, fast8, 0)
+r8a = m8.rounds[fast8][0]
+r8a.revealed_at = time.time() - (r8a.target_ms + 600.0) / 1000.0
+res8a = me.submit_result(m8, fast8, 0, me.MIN_HUMAN_MS, t8a["resultProof"])
+check(
+    "A4: fabricated 105ms claim rejected when the server observed ~600ms",
+    res8a["accepted"] is False and "submission timing" in res8a["reason"],
+)
+
+# (ii) Submitting almost instantly after the target but CLAIMING a slower,
+# human-looking time: observed 80ms reaction, claim 200ms.
+me.commit_intent(m8, fast8, 1, "0x" + "88" * 31 + "02")
+t8b = me.reveal_target(m8, fast8, 1)
+r8b = m8.rounds[fast8][1]
+r8b.revealed_at = time.time() - (r8b.target_ms + 80.0) / 1000.0
+res8b = me.submit_result(m8, fast8, 1, 200.0, t8b["resultProof"])
+check(
+    "A4: claimed-slower-than-observed fabrication is rejected",
+    res8b["accepted"] is False and "faster than the claimed" in res8b["reason"],
+)
+
+# (iii) Zero-tolerance pre-visible submission: the request lands 150ms
+# before the target delay has elapsed on the server clock.
+me.commit_intent(m8, fast8, 2, "0x" + "88" * 31 + "03")
+t8c = me.reveal_target(m8, fast8, 2)
+r8c = m8.rounds[fast8][2]
+r8c.revealed_at = time.time() - (r8c.target_ms - 150.0) / 1000.0
+res8c = me.submit_result(m8, fast8, 2, 250.0, t8c["resultProof"])
+check(
+    "A4: early submission before the target is displayed is rejected (no tolerance)",
+    res8c["accepted"] is False and "before the target" in res8c["reason"],
+)
+
+# (iv) Round expiry: a round revealed too long ago is dead — no submission.
+m9 = store.enqueue(Account.create().address.lower(), 1.0)
+fast9 = Account.create().address.lower()
+store.enqueue(fast9, 1.0)
+me.commit_intent(m9, fast9, 0, "0x" + "99" * 31 + "01")
+t9 = me.reveal_target(m9, fast9, 0)
+r9 = m9.rounds[fast9][0]
+r9.revealed_at = time.time() - (me.ROUND_EXPIRY_SECONDS + 10)
+try:
+    me.submit_result(m9, fast9, 0, 300.0, t9["resultProof"])
+    check("A4: a round past its expiry is dead (no late submission)", False)
+except me.MatchError as e:
+    check("A4: a round past its expiry is dead (no late submission)", "expired" in str(e))
+
+# (v) Honest claim inside the consistency band is still accepted.
+m10 = store.enqueue(Account.create().address.lower(), 1.0)
+fast10 = Account.create().address.lower()
+store.enqueue(fast10, 1.0)
+me.commit_intent(m10, fast10, 0, "0x" + "aa" * 31 + "01")
+t10 = me.reveal_target(m10, fast10, 0)
+claim10 = me.MIN_HUMAN_MS + 60.0
+r10 = m10.rounds[fast10][0]
+r10.revealed_at = time.time() - (r10.target_ms + claim10) / 1000.0
+res10 = me.submit_result(m10, fast10, 0, claim10, t10["resultProof"])
+check("A4: honest claim inside the consistency band is accepted", res10["accepted"] is True)
+
+# (vi) Nonce MAC: a tampered or self-forged nonce is not fresh.
+forged_nonce = auth.issue_nonce(player_addr, domain)
+payload, mac = forged_nonce.split(".", 1)
+tampered_nonce = payload + ("0" if mac[0] != "0" else "1") + mac[1:]
+check(
+    "A4: a nonce with a broken MAC is not fresh",
+    auth.nonce_is_fresh(tampered_nonce) is False,
+)
+check(
+    "A4: a self-forged nonce is never issued (no MAC) and never verifies",
+    auth.verify_siwe(
+        message.replace(f"Nonce: {nonce}", "Nonce: deadbeef.deadbeef"),
+        sig,
+        domain,
+    )
+    is None,
+)
 
 # --- 5e. Audit-#3 regressions: SIWE chain binding + nonce single-use ----------
 msg_wrong_chain = message.replace(
