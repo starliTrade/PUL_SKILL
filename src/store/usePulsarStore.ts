@@ -3,7 +3,6 @@ import { WalletState, UserStats, MatchHistoryItem } from '../types';
 import { realWeb3Manager, RealWeb3Manager, UserWalletData, LeaderboardPlayer, ConnectedAccountState } from '../lib/realWeb3';
 import { EIP6963ProviderDetail } from '../lib/eip6963';
 import { XPSystem, XPSummary } from '../lib/xpSystem';
-import { loadPersistedSiweSession } from '../lib/siwe';
 
 /**
  * P0.7 — Single shared store.
@@ -34,21 +33,19 @@ interface PulsarSnapshot {
   account: ConnectedAccountState;
   userData: UserWalletData;
   leaderboard: LeaderboardPlayer[];
-  signatureVerified: boolean;
   lastMatchXPSummary: XPSummary | null;
 }
 
 let account: ConnectedAccountState = { ...realWeb3Manager.getAccount() };
 let userData: UserWalletData = EMPTY_USER_DATA;
 let leaderboard: LeaderboardPlayer[] = [];
-let signatureVerified = !!loadPersistedSiweSession();
 let lastMatchXPSummary: XPSummary | null = null;
 let snapshot: PulsarSnapshot = buildSnapshot();
 let lastLoadedAddress = '';
 let bootstrapped = false;
 
 function buildSnapshot(): PulsarSnapshot {
-  return { account, userData, leaderboard, signatureVerified, lastMatchXPSummary };
+  return { account, userData, leaderboard, lastMatchXPSummary };
 }
 
 function commit() {
@@ -162,45 +159,13 @@ const connectDirectWallet = async (address: string, providerName?: string) => {
   return undefined;
 };
 
-// P0.5 — SIWE (EIP-4361): prove wallet ownership before any privileged action.
-const requestSignature = async (): Promise<boolean> => {
-  const addr = account.connected ? account.address : '';
-  if (!addr) return false;
-  const message = realWeb3Manager.buildOwnershipMessage(addr);
-  const provider = realWeb3Manager.getActiveEip1193Provider();
-  if (!provider) throw new Error('No active wallet is connected to sign the message.');
-  try {
-    const signature: string = await provider.request({ method: 'signMessage', params: [addr, message] });
-    const verified = await realWeb3Manager.verifyOwnershipSignature(addr, message, signature);
-    if (verified) {
-      signatureVerified = true;
-      commit();
-    }
-    return verified;
-  } catch (err: any) {
-    const msg = String(err?.message || err || '');
-    if (msg.includes('signMessage') || err?.code === -32601 || err?.code === -32602) {
-      try {
-        const signature: string = await provider.request({ method: 'personal_sign', params: [message, addr] });
-        const verified = await realWeb3Manager.verifyOwnershipSignature(addr, message, signature);
-        if (verified) {
-          signatureVerified = true;
-          commit();
-        }
-        return verified;
-      } catch (err2: any) {
-        if (err2?.code === 4001) throw new Error('Signature request was cancelled in your wallet.');
-        throw err2;
-      }
-    }
-    if (err?.code === 4001) throw new Error('Signature request was cancelled in your wallet.');
-    throw err;
-  }
-};
-
+// Audit #7 R6 — the local "ownership-signature" protocol is gone. The ONLY
+// authentication is the server's SIWE session (gameServerClient.ensureSession),
+// which proves wallet ownership to the SERVER that actually enforces matches.
+// The old local sign→self-verify→signatureVerified flow granted nothing,
+// ran in parallel with the real session, and confused the trust model.
 const disconnectWallet = () => {
   try { localStorage.removeItem('pulsar_siwe_session'); } catch {}
-  signatureVerified = false;
   realWeb3Manager.disconnect();
   account = { ...realWeb3Manager.getAccount() };
   userData = EMPTY_USER_DATA;
@@ -360,8 +325,6 @@ export function usePulsarStore() {
     bestReactionMs: state.userData.bestReactionMs,
     avgReactionMs: state.userData.avgReactionMs,
     lastMatchXPSummary: state.lastMatchXPSummary,
-    signatureVerified: state.signatureVerified,
-    requestSignature,
     connectWallet,
     connectEIP6963,
     connectWalletConnect,

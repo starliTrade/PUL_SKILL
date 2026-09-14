@@ -65,7 +65,8 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   stakeAmount = 1,
 }) => {
   const { t } = useLanguage();
-  const { wallet, recordMatch, requestSignature } = usePulsarStore();
+  const { wallet, recordMatch } = usePulsarStore();
+
   const [phase, setPhase] = useState<GamePhase>('human-verify');
   const [countdown, setCountdown] = useState<number>(3);
   const [matchResult, setMatchResult] = useState<MatchResolution | null>(null);
@@ -189,7 +190,6 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   // P2.2 — Server-authoritative matchmaking for staked matches. Practice mode
   // (stake 0) never queues and never touches the server.
   const startServerMatch = useCallback(async () => {
-    if (!isServerMode || !wallet.address) return;
     setServerError('');
     setPhase('matchmaking');
     try {

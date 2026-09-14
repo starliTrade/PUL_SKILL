@@ -122,6 +122,13 @@ Set in Freebuff **Settings → Environment** (dev) **and** in
 |---|---|
 | `VITE_ESCROW_ADDRESS` | Deployed contract (real-money mode activates when present) |
 | `VITE_TREASURY_WALLET_ADDRESS` | Public treasury (display purposes) |
+| `VITE_FIREBASE_API_KEY` | Firebase web config (audit #7 R7: moved OUT of the committed `firebase-applet-config.json` — set all `VITE_FIREBASE_*` vars here instead). Cloud profiles/leaderboard are honestly disabled when absent |
+| `VITE_FIREBASE_AUTH_DOMAIN` | e.g. `<project>.firebaseapp.com` |
+| `VITE_FIREBASE_PROJECT_ID` | Firebase project ID |
+| `VITE_FIREBASE_STORAGE_BUCKET` | e.g. `<project>.appspot.com` |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | From Firebase console → Web app config |
+| `VITE_FIREBASE_APP_ID` | From Firebase console → Web app config |
+| `VITE_FIRESTORE_DATABASE_ID` | The Firestore database ID (was previously leaked by the committed config file) |
 | `VITE_ORACLE_WALLET_ADDRESS` | Public oracle address (display purposes) |
 | `VITE_CHAIN_ID` | `80002` (Amoy rehearsal — the default) / `137` (mainnet, checklist-gated) |
 | `VITE_FAUCET_URL` (testnet) | MockUSDT/feucet link shown to players on Amoy |

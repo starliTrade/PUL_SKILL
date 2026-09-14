@@ -10,3 +10,7 @@ __pycache__/
 .venv/
 .oracle_key_*.json
 *.tsbuildinfo
+
+# Audit #7 R7 — Firebase web config carries the database id + OAuth client id;
+# it belongs in env vars, not in git.
+firebase-applet-config.json

@@ -36,6 +36,54 @@ contract PulsarEscrowTest is Test {
         usdt.approve(address(escrow), type(uint256).max);
         vm.prank(p2);
         usdt.approve(address(escrow), type(uint256).max);
+
+        // Audit #7 anti-regression: fund the test contract so it can pay the
+        // 2% settlement fee (kept in sync with the contract constant below).
+        usdt.faucet(address(this), STAKE);
+    }
+
+    // ---------- cross-module convention pins (the class of bug that audit #6
+    // C1 / audit #7's meta-review found: two modules drifting apart while each
+    // side's own tests still passed) ----------
+
+    uint256 constant EXPECTED_FEE_BPS = 200; // must equal PulsarEscrow.PLATFORM_FEE_BPS
+
+    function test_Pin_ContractFeeMatchesEconomyConstant() public pure {
+        assertEq(
+            escrow.PLATFORM_FEE_BPS(),
+            EXPECTED_FEE_BPS,
+            "contract fee drifted from the platform economy constant"
+        );
+    }
+
+    function test_Pin_DuelMatchStructLayoutMatchesServerDecoder() public view {
+        // api/onchain.py decodes matches(bytes32) as 10 static words with
+        // `status` at word index 6 (matchId, player1, player2, stakeAmount,
+        // totalPool, createdAt, status, winner, winnerReactionMs,
+        // loserReactionMs). createDuel+joinDuel must produce exactly that
+        // layout, or the server's deposit gate reads the wrong field.
+        bytes32 mid = keccak256("struct-layout-pin");
+        _createAndJoin(mid);
+        (
+            bytes32 matchId_,
+            address player1_,
+            address player2_,
+            ,
+            ,
+            ,
+            uint8 status_,
+            ,
+            ,
+
+        ) = escrow.matches(mid);
+        assertEq(uint256(matchId_), uint256(mid), "word 0 must be matchId");
+        assertEq(player1_, p1, "word 1 must be player1 (creator)");
+        assertEq(player2_, p2, "word 2 must be player2 (joiner)");
+        assertEq(status_, uint8(2), "word 6 must be status (Active=2 after both stakes)");
+    }
+
+    function test_Pin_RefundHorizonIs30Minutes() public pure {
+        assertEq(escrow.MATCH_TIMEOUT(), 30 minutes, "server copy promises a 30-min refund horizon");
     }
 
     // ---------- helpers ----------

@@ -64,6 +64,23 @@ RL_VERIFY_MAX = 30       # SIWE verifications per minute per IP (ecrecover is
 RL_ROUND_MAX = 60        # target reveals + result submissions per minute per
                          # address — hot endpoints that each trigger store work
 
+# Audit #7 R3: limiter backend decoupling. The distributed (Firestore-backed)
+# window previously activated only when onchain.escrow_configured() — two
+# unrelated features coupled, so memory-mode deployments silently per-replica
+# limited. Now: Firestore is the backend whenever the durable store is on.
+# Firestore is ALWAYS the more correct backend; the in-process path remains
+# only as the outage/memory-mode fallback.
+
+
+def _rate_limited(retry_after: float) -> HTTPException:
+    """Audit #7 R3: 429s must carry Retry-After so clients can back off by
+    contract instead of hammering a full window."""
+    return HTTPException(
+        status_code=429,
+        detail="Rate limit exceeded — slow down.",
+        headers={"Retry-After": str(max(1, int(retry_after) + 1))},
+    )
+
 
 def _rl_check_ip(bucket: str, request: Request, limit: int) -> None:
     """Rate limit keyed by client IP instead of address (audit #6 C2/H7).
@@ -88,7 +105,7 @@ def _rl_check(bucket: str, address: str, limit: int) -> None:
     taking the endpoint down (fail-open for availability, never for money —
     the deposit gate below is fail-closed)."""
     fs = getattr(store, "_fs_store", None)
-    if onchain.escrow_configured() and fs is not None:
+    if fs is not None:  # audit #7 R3: decoupled from onchain.escrow_configured()
         try:
             doc = fs.db.collection("rate_limits").document(f"rl:{bucket}:{address.lower()}")
             now_ms = int(time.time() * 1000)
@@ -107,7 +124,7 @@ def _rl_check(bucket: str, address: str, limit: int) -> None:
             txn = fs.db.transaction()
             count = _incr(txn)  # plain callable: Firestore retries conflicts itself
             if count > limit:
-                raise HTTPException(status_code=429, detail="Rate limit exceeded — slow down.")
+                raise _rate_limited((int(d["reset_at"]) - now_ms) / 1000.0)
             return
         except HTTPException:
             raise
@@ -120,7 +137,7 @@ def _rl_check(bucket: str, address: str, limit: int) -> None:
         hits.append(now)
         _rl_window[key] = hits
         if len(hits) > limit:
-            raise HTTPException(status_code=429, detail="Rate limit exceeded — slow down.")
+            raise _rate_limited(RL_WINDOW_SECONDS - (now - hits[0]))
 
 
 # Joiner-deposit timeout (audit #5, item 3): if the joiner's stake never lands

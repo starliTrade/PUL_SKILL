@@ -16,9 +16,9 @@ import {
   getDocs,
   onSnapshot,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { getDb } from './firebase';
 import { CHAIN, TOKENS } from './chain';
-import { buildSiweMessage, verifySignedSiwe, loadPersistedSiweSession } from './siwe';
+
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
 import { isMobileDevice,  isWalletInAppBrowser,
   getWalletConnectDeepLink,
@@ -230,7 +230,7 @@ class RealWeb3Manager {
     return has;
   }
 
-  private siweVerified = false;
+
   private wcProvider: any = null;
   private wcInitPromise: Promise<any> | null = null;
   private wcConnectPromise: Promise<ConnectedAccountState> | null = null;
@@ -587,12 +587,10 @@ class RealWeb3Manager {
       } catch {}
     }
 
-    // P0.5 — a persisted address alone is NOT identity. It only restores a
-    // viewer; real access requires a wallet signature (SIWE) this session.
-    if (this.siweVerified && savedAddr && /^0x[a-fA-F0-9]{40}$/.test(savedAddr)) {
-      return await this.setConnectedAddress(savedAddr, savedProvider, CHAIN.chainId);
-    }
-
+    // Audit #7 R6: the old "siweVerified → restore" path was part of the dead
+    // local SIWE protocol (a client-side signature proves nothing server-side).
+    // Identity is the server SIWE session only; a persisted address alone must
+    // never silently become a connected wallet.
     return null;
   }
 
@@ -962,40 +960,6 @@ class RealWeb3Manager {
     );
   }
 
-  /**
-   * P0.5 — builds the EIP-4361 (SIWE) ownership message bound to this exact
-   * origin. The signature over this message is the ONLY accepted identity
-   * proof; it gates privileged writes and future payout authorization.
-   */
-  public buildOwnershipMessage(address: string): string {
-    if (typeof window === 'undefined') {
-      throw new Error('SIWE is only available in the browser.');
-    }
-    // Audit-#3 fix: the SIWE statement MUST bind the chain the app actually
-    // runs on (the server validates it); a hardcoded mainnet ID mismatches
-    // the Amoy deployment and every EIP-4361 client would reject the message.
-    return buildSiweMessage(address.toLowerCase(), window.location.host, CHAIN.chainId);
-  }
-
-  /**
-   * P0.5 — recovers the signer via ecrecover and marks the session verified
-   * only if it matches the connected address.
-   */
-  public async verifyOwnershipSignature(address: string, message: string, signature: string): Promise<boolean> {
-    const ok = await verifySignedSiwe(message, signature, address);
-    if (ok) {
-      this.siweVerified = true;
-      try {
-        const session = loadPersistedSiweSession();
-        localStorage.setItem(
-          'pulsar_siwe_session',
-          JSON.stringify(session || { address: address.toLowerCase(), issuedAt: Date.now(), expiresAt: Date.now() + 24 * 60 * 60 * 1000 })
-        );
-      } catch {}
-    }
-    return ok;
-  }
-
   /** EIP-1193 provider of the currently connected wallet (injected or WalletConnect). */
   public getActiveEip1193Provider(): any | null {
     if (this.wcProvider?.connected) return this.wcProvider;
@@ -1011,7 +975,6 @@ class RealWeb3Manager {
     } catch {
       /* ignore */
     }
-    this.siweVerified = false;
     this.wcConnectPromise = null;
     this.lastWcUri = null;
     this.lastHandoff = null;
@@ -1148,7 +1111,7 @@ class RealWeb3Manager {
     
     // 1. Try Firebase Firestore with rapid timeout to stay lightning fast if offline
     try {
-      const userDocRef = doc(db, 'users', cleanAddr);
+      const userDocRef = doc(getDb(), 'users', cleanAddr);
       const snapPromise = getDoc(userDocRef);
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Firestore timeout')), 8000)
@@ -1254,86 +1217,37 @@ class RealWeb3Manager {
   }
 
   private async syncToFirestore(data: UserWalletData): Promise<void> {
+    // Audit #7 R4 — CLIENT ECONOMY WRITES REMOVED. firestore.rules forbid
+    // client writes to the economy fields and to matches/leaderboard (only
+    // the settlement server may write them). The previous code spread
+    // {...data} over users/{addr}, which carried wins/xp/totalMatches and was
+    // therefore rejected wholesale — profile edits never landed and the
+    // console filled with "Firestore sync failed". The ledger itself is
+    // written by api/economy.py (Admin SDK) after each settlement.
+    // Cloud sync from the client is now PROFILE-ONLY.
     try {
       const cleanAddr = data.address.toLowerCase();
-      const userDocRef = doc(db, 'users', cleanAddr);
+      const userDocRef = doc(getDb(), 'users', cleanAddr);
       await setDoc(
         userDocRef,
         {
-          ...data,
+          playerId: data.playerId || '',
+          savedFriends: data.savedFriends || [],
           updatedAt: Date.now(),
         },
         { merge: true }
       );
-
-      // Leaderboard table updated strictly upon real matches
-      if (data.wins > 0 || data.totalMatches > 0) {
-        const lbRef = doc(db, 'leaderboard', cleanAddr);
-        const winRate = data.totalMatches > 0 ? Math.round((data.wins / data.totalMatches) * 100) : 0;
-        const tag = data.playerId || RealWeb3Manager.getPlayerTagForAddress(cleanAddr);
-        await setDoc(
-          lbRef,
-          {
-            address: cleanAddr,
-            shortAddress: `${cleanAddr.slice(0, 6)}...${cleanAddr.slice(-4)}`,
-            playerId: tag,
-            name: tag,
-            wins: data.wins,
-            totalMatches: data.totalMatches,
-            bestReactionMs: data.bestReactionMs,
-            winRate,
-            xp: data.xp || 0,
-            level: data.level || 1,
-            updatedAt: Date.now(),
-          },
-          { merge: true }
-        );
-      }
-
-      // Sync latest match to global matches ledger ONLY if it is a real USDT match (entryFee > 0)
-      if (data.history && data.history.length > 0) {
-        const latestMatch = data.history[0];
-        if (latestMatch && latestMatch.id && (latestMatch.entryFee || 0) > 0) {
-          await this.recordGlobalMatchToFirestore(latestMatch, cleanAddr);
-        }
-      }
     } catch (e) {
-      console.warn('Firestore sync failed:', e);
+      console.warn('Firestore profile sync failed:', e);
     }
   }
 
-  public async recordGlobalMatchToFirestore(match: MatchRecord, playerAddress: string): Promise<void> {
-    try {
-      const matchDocRef = doc(db, 'matches', match.id);
-      await setDoc(
-        matchDocRef,
-        {
-          id: match.id,
-          playerAddress,
-          opponentAddress: match.opponentName || 'Arena Opponent',
-          game: match.game || 'reaction',
-          result: match.result,
-          entryFee: match.entryFee || 0,
-          prize: match.prize || 0,
-          yourTime: match.yourTime || 0,
-          opponentTime: match.opponentTime || 0,
-          timestamp: match.timestamp || Date.now(),
-          // HONESTY RULE: only persist a real signature/tx hash. Local results
-          // are stored without oracle claims — never fabricated.
-          ...(match.oracleSignature && /^0x[0-9a-fA-F]{64,65}$/.test(match.oracleSignature)
-            ? { oracleSignature: match.oracleSignature }
-            : {}),
-        },
-        { merge: true }
-      );
-    } catch (err) {
-      console.warn('Global match ledger recording notice:', err);
-    }
-  }
+  // Audit #7 R4: recordGlobalMatchToFirestore removed — matches/ is
+  // server-written only (firestore.rules allow write: if false for clients).
 
   public subscribeGlobalMatches(callback: (matches: MatchRecord[]) => void): () => void {
     try {
-      const matchesCol = collection(db, 'matches');
+      const matchesCol = collection(getDb(), 'matches');
       const q = query(matchesCol, orderBy('timestamp', 'desc'), limit(15));
       const unsubscribe = onSnapshot(
         q,
@@ -1372,7 +1286,7 @@ class RealWeb3Manager {
 
   public async fetchGlobalLeaderboard(): Promise<LeaderboardPlayer[]> {
     try {
-      const lbCol = collection(db, 'leaderboard');
+      const lbCol = collection(getDb(), 'leaderboard');
       const q = query(lbCol, orderBy('wins', 'desc'), limit(20));
       const getPromise = getDocs(q);
       const timeoutPromise = new Promise<never>((_, reject) =>
@@ -1437,7 +1351,7 @@ class RealWeb3Manager {
       const alreadyAdded = matched.some((m) => m.address.toLowerCase() === q);
       if (!alreadyAdded) {
         try {
-          const userDoc = await getDoc(doc(db, 'users', q));
+          const userDoc = await getDoc(doc(getDb(), 'users', q));
           if (userDoc.exists()) {
             const data = userDoc.data() as UserWalletData;
             matched.push({
@@ -1584,7 +1498,7 @@ class RealWeb3Manager {
 
     try {
       // 1. Check usernames registry document (primary index for O(1) collision detection)
-      const usernameDocRef = doc(db, 'usernames', normalized);
+      const usernameDocRef = doc(getDb(), 'usernames', normalized);
       const usernameDoc = await getDoc(usernameDocRef);
 
       if (usernameDoc.exists()) {
@@ -1601,7 +1515,7 @@ class RealWeb3Manager {
       }
 
       // 2. Secondary check against users collection to prevent any edge collision
-      const usersCol = collection(db, 'users');
+      const usersCol = collection(getDb(), 'users');
       const q = query(usersCol, where('playerId', '==', cleanTag));
       const userSnapshot = await getDocs(q);
 
@@ -1659,7 +1573,7 @@ class RealWeb3Manager {
       // 2. If user had a different registered username, release the old username document
       if (oldTag && oldTag.toLowerCase() !== normalized) {
         try {
-          const oldDocRef = doc(db, 'usernames', oldTag.toLowerCase());
+          const oldDocRef = doc(getDb(), 'usernames', oldTag.toLowerCase());
           const oldDoc = await getDoc(oldDocRef);
           if (oldDoc.exists() && oldDoc.data()?.address?.toLowerCase() === cleanAddr) {
             await deleteDoc(oldDocRef);
@@ -1670,7 +1584,7 @@ class RealWeb3Manager {
       }
 
       // 3. Register the new username in the unique usernames collection
-      const usernameDocRef = doc(db, 'usernames', normalized);
+      const usernameDocRef = doc(getDb(), 'usernames', normalized);
       await setDoc(
         usernameDocRef,
         {

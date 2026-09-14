@@ -46,6 +46,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Audit #7 R4 — the server's distributed rate limiter lives in
+    // rate_limits/{rl:*}. No client may read or write it: a write would reset
+    // an abuser's own window (self-help), and a read maps private request
+    // cadence.
+    match /rate_limits/{docId} {
+      allow read, write: if false;
+    }
+
     // Username registry: unique by document id. A registration can never be
     // re-pointed to a different address (anti-takeover).
     match /usernames/{username} {

@@ -128,6 +128,17 @@ export const ensureSession = async (address: string, signMessage: SignMessageFn)
 // Verbs are now explicit per call so client/server can never drift again.
 type RequestMethod = "GET" | "POST";
 
+export class RateLimitedError extends Error {
+  /** Seconds the server asks us to wait before retrying (audit #7 R3). */
+  readonly retryAfterSeconds: number;
+
+  constructor(detail: string, retryAfterSeconds: number) {
+    super(detail);
+    this.name = "RateLimitedError";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
 const request = async <T>(
   path: string,
   body: unknown,
@@ -147,6 +158,22 @@ const request = async <T>(
   if (res.status === 401) {
     clearServerSession();
     throw new Error("Your game-server session expired. Please sign in again.");
+  }
+  if (res.status === 429) {
+    // Audit #7 R3: the server supplies Retry-After; parse it so the caller
+    // can back off by contract instead of hitting a wall mid-matchmaking.
+    let detail = "Rate limit exceeded";
+    let retryAfter = 10;
+    try {
+      const err = (await res.json()) as { detail?: string };
+      if (err?.detail) detail = err.detail;
+    } catch {
+      /* keep defaults */
+    }
+    const ra = res.headers.get("retry-after");
+    const parsed = ra ? Number.parseFloat(ra) : NaN;
+    if (Number.isFinite(parsed) && parsed >= 0) retryAfter = parsed;
+    throw new RateLimitedError(detail, retryAfter);
   }
   if (!res.ok) {
     let detail = `Request failed (${res.status})`;

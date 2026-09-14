@@ -27,9 +27,11 @@ os.environ["ESCROW_ADDRESS"] = "0x" + "ab" * 20
 from eth_account import Account  # noqa: E402
 from eth_account.messages import encode_defunct  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from fastapi import HTTPException as _HTTPException  # noqa: E402
 
 import main as server  # noqa: E402
 import auth as auth_module  # noqa: E402
+
 
 failures = []
 
@@ -38,6 +40,20 @@ def check(name, cond):
     print(f"[{'PASS' if cond else 'FAIL'}] {name}")
     if not cond:
         failures.append(name)
+
+
+# --- AUDIT #7 — cross-module convention pins (synthetic-shape class) ---------
+# The C1 regression happened because the three components that must agree on
+# the bytes32 match-id convention were only ever tested in isolation. These
+# pins make any future drift a RED test in the SAME suite.
+import hashlib as _hashlib  # noqa: E402
+import onchain as _onchain  # noqa: E402
+import oracle as _oracle  # noqa: E402
+
+_prod_shape_id = "1a2b3c4d5e6f708192a3b4c5d6e7f0a1"  # secrets.token_hex(16)-shaped
+_pin_key = "0x" + _hashlib.sha256(_prod_shape_id.encode()).hexdigest()
+check("PIN onchain._match_id_to_bytes32 == sha256(raw)", _onchain._match_id_to_bytes32(_prod_shape_id) == _pin_key)
+check("PIN oracle._match_id_bytes32 == sha256(raw).digest", _oracle._match_id_bytes32(_prod_shape_id) == bytes.fromhex(_pin_key[2:]))
 
 
 client = TestClient(server.app)
@@ -343,6 +359,20 @@ check(
     "Retry after a sign failure settles with a real signature",
     out.get("status") == "settled" and str(out.get("signature", "")).startswith("0x"),
 )
+
+# --- AUDIT #7 — rate limiter shape: production-shaped id + Retry-After ------
+server._rl_window.clear()
+try:
+    # hit the limiter directly with a REAL 32-char id as the key
+    try:
+        for _i in range(server.RL_COMMIT_MAX + 1):
+            server._rl_check("pin-ratelimit", _prod_shape_id, server.RL_COMMIT_MAX)
+        check("RL: over-limit raises 429", False)
+    except _HTTPException as e:
+        check("RL: over-limit raises 429", e.status_code == 429)
+        check("RL: 429 carries Retry-After header", bool(e.headers) and "Retry-After" in e.headers)
+finally:
+    server._rl_window.clear()
 
 print()
 if failures:

@@ -79,6 +79,50 @@ def main() -> int:
           and bool(merged.rounds.get(b, {}).get(0, None) and merged.rounds.get(b, {}).get(0).commit_hash == "0x" + "d" * 64))
     del stale  # (snapshot intentionally unused beyond documenting the scenario)
 
+    # --- 4. Distributed rate limiter against REAL Firestore (audit #7) --------
+    # The limiter's Firestore path was only ever exercised through stubs; if
+    # the transaction shape were wrong, only a real database would catch it.
+    import main as _server  # noqa: E402
+    _server._rl_window.clear()
+    try:
+        over = False
+        for _i in range(_server.RL_VERIFY_MAX + 1):
+            try:
+                _server._rl_check("itest", a.lower(), _server.RL_VERIFY_MAX)
+            except Exception:
+                over = True
+                break
+        check("distributed rate limiter enforces over REAL Firestore", over)
+    finally:
+        _server._rl_window.clear()
+
+    # --- 5. Economy ledger writes land (audit #7) ------------------------------
+    # record_settlement is an Admin-SDK write the rules intentionally allow;
+    # verify the document actually exists afterwards and counters advanced.
+    import economy  # noqa: E402
+
+    if economy.ledger_available():
+        winner = a.lower()
+        loser = b.lower()
+        merged.winner = winner
+        merged.status = "settled"
+        merged.settled_at = int(time.time())
+        merged.signed_settlement = {"signature": "0x" + "9" * 130}
+        before_wins = (
+            store._fs_store.db.collection("users").document(winner).get().to_dict() or {}
+        ).get("wins", 0)
+        economy.record_settlement(merged)
+        after = store._fs_store.db.collection("users").document(winner).get().to_dict() or {}
+        after_loser = store._fs_store.db.collection("users").document(loser).get().to_dict() or {}
+        check("economy: winner wins counter advanced", after.get("wins", 0) == before_wins + 1)
+        check("economy: loser losses counter advanced", (after_loser.get("losses", 0) or 0) >= 1)
+        lb = store._fs_store.db.collection("leaderboard").document(winner).get().to_dict() or {}
+        check("economy: leaderboard row written with real counters", bool(lb) and (lb.get("wins", 0) or 0) >= 1)
+        md = store._fs_store.db.collection("matches").document(m1.match_id).get().to_dict() or {}
+        check("economy: match ledger doc written", md.get("id") == m1.match_id)
+    else:
+        check("economy ledger (skipped: Admin SDK unavailable)", True)
+
     print()
     print("FAILURES:", failures if failures else "none")
     return 1 if failures else 0

@@ -35,6 +35,34 @@ RPC_TIMEOUT_SECONDS = 5.0
 _POSITIVE_TTL = 60.0   # verified-deposit cache (both stakes seen)
 _NEGATIVE_TTL = 10.0   # unverified cache (retry RPC quickly but not per call)
 
+# Audit #7 — chain-binding cross-check. Three env vars describe one chain
+# (ESCROW_RPC_URL's network, ORACLE_CHAIN_ID for signatures, VITE_CHAIN_ID in
+# the client). A mismatch would let the gate "verify" deposits on a network
+# where the client's duels do not exist. The RPC's eth_chainId is compared to
+# ORACLE_CHAIN_ID once; on mismatch every subsequent read FAILS CLOSED
+# (returns None → rounds refused) instead of trusting cross-chain data.
+_chain_id_checked = False
+_chain_id_mismatch = False
+
+
+def _rpc_chain_id() -> int | None:
+    """eth_chainId of the configured RPC, or None when it cannot be read."""
+    try:
+        payload = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": []}
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            os.environ["ESCROW_RPC_URL"],
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=RPC_TIMEOUT_SECONDS) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        return int(str(body.get("result")), 16)
+    except Exception:
+        return None
+
 _cache: dict[str, tuple[bool, float]] = {}
 
 
@@ -116,11 +144,22 @@ def _eth_call(to: str, data: str) -> str | None:
 def duel_status(match_id: str, *, use_cache: bool = True) -> int | None:
     """On-chain DuelMatch.status for this match id, or None if unknown.
 
-    Never raises: every failure mode (bad id, dead RPC, bad payload) returns
-    None, which the deposit gate turns into fail-closed 409 — never a 500.
+    Never raises: every failure mode (bad id, dead RPC, bad payload, chain
+    mismatch) returns None, which the deposit gate turns into fail-closed
+    409 — never a 500.
     """
+    global _chain_id_checked, _chain_id_mismatch
     if not escrow_configured():
         return None
+    if not _chain_id_checked:
+        observed = _rpc_chain_id()
+        if observed is not None:
+            _chain_id_checked = True
+            expected_raw = os.environ.get("ORACLE_CHAIN_ID", "80002")
+            if observed != int(expected_raw):
+                _chain_id_mismatch = True
+    if _chain_id_mismatch:
+        return None  # fail-closed: never trust reads from the wrong chain
     try:
         key = _match_id_to_bytes32(match_id)
     except Exception:
