@@ -43,7 +43,8 @@ import {
   type MatchView,
 } from '../lib/gameServerClient';
 import { settleDuel as settleDuelOnChain, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState } from '../lib/escrowFlow';
-import { isEscrowConfigured, CHAIN, ECONOMY } from '../lib/chain';
+import { isEscrowConfigured, CHAIN, TOKENS, ECONOMY } from '../lib/chain';
+import { ethers } from 'ethers';
 import { realWeb3Manager } from '../lib/realWeb3';
 import { reportError } from '../lib/monitoring';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
@@ -257,11 +258,26 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
         while (Date.now() < joinDeadline) {
           try {
             const st = await getDuelState(bytes32);
+            // F-03 client half: the stake is SET BY THE CREATOR — the joiner
+            // must verify the on-chain amount matches the agreed stake before
+            // funding, or a malicious creator deposits 0.000001 USDT while
+            // the UI advertises the full prize.
             if (st.status === 1) {
+              const expectedUnits = ethers.parseUnits(String(currentStake), TOKENS.USDT_DECIMALS);
+              if (st.stakeAmount !== expectedUnits) {
+                throw new Error(
+                  `On-chain stake (${ethers.formatUnits(st.stakeAmount, TOKENS.USDT_DECIMALS)} USDT) ` +
+                    `does not match the agreed stake (${currentStake} USDT). Refusing to join.`,
+                );
+              }
               created = true;
               break;
             }
-          } catch {
+          } catch (e) {
+            // F-03 stake mismatch is a hard refusal, not a "keep waiting" case.
+            if (e instanceof Error && e.message.includes('does not match the agreed stake')) {
+              throw e;
+            }
             // contract read before deposit — keep waiting
           }
           await new Promise((r) => setTimeout(r, 3000));
@@ -1354,7 +1370,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                 {/* Micro Crosshair Guide */}
                 <div className="absolute bottom-3 left-3 text-[10px] font-mono text-zinc-500 flex items-center gap-1.5">
                   <Crosshair className="w-3 h-3 text-emerald-400" />
-                  <span>{t('targetSeed')}: {spawnConfig.seedHash.slice(0, 8)}</span>
+                  <span>{t('targetSeed')}</span>
                 </div>
               </div>
             )}
@@ -1723,7 +1739,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
             game: 'reaction',
             result: matchResult.outcome === 'win' ? 'win' : 'loss',
             entryFee: currentStake,
-            prize: matchResult.outcome === 'win' ? matchResult.prize || (currentStake * 1.96) : 0,
+            prize: matchResult.outcome === 'win' ? matchResult.prize || ((currentStake * 2 * ECONOMY.winnerShareBps) / 10_000) : 0,
             yourTime: matchResult.yourTime,
             opponentTime: matchResult.opponentTime,
             timestamp: Date.now(),

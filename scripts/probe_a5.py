@@ -10,6 +10,7 @@ Run: .venv/bin/python scripts/probe_a5.py
 """
 import os
 import sys
+from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
 os.environ.setdefault("ORACLE_SIGNING_SECRET", "probe-secret")
@@ -104,21 +105,115 @@ try:
 finally:
     onchain.urllib.request.urlopen = orig_urlopen
 
-# ACTIVE passes
+# ACTIVE passes — method-aware escrow stub with a FULL DuelMatch struct.
+# Audit #8 F-03: the gate now reads paymentToken(), decimals() and the whole
+# matches(bytes32) struct, so the stub must answer all three like a real RPC,
+# and the server match must carry BOTH participants (an ACTIVE on-chain duel
+# always has two).
 onchain._cache.clear()
+onchain._token_decimals = "unread"  # re-read decimals from the stub
+
+_TOKEN_ADDR = "0x" + "0" * 24 + "77" * 20  # full 32-byte word, as a real RPC returns
+_TOKEN_DECIMALS = 6
+_STAKE_UNITS = 10 ** _TOKEN_DECIMALS  # 1.0 USDT
+_SEL_TOKEN = onchain._selector("paymentToken()")
+_SEL_DECIMALS = onchain._selector("decimals()")
+_SEL_MATCHES = onchain._matches_selector()
 
 
-class _FakeActive(_FakeCreated):
+def _addr_word(addr: str) -> str:
+    return "0" * 24 + addr[2:].lower()
+
+
+def _struct_payload(status: int, p1: str, p2: str, stake_units: int) -> str:
+    """Encode the 10-word static DuelMatch struct (layout per _decode_match)."""
+    words = [
+        "0" * 64,  # matchId
+        _addr_word(p1),  # player1
+        _addr_word(p2),  # player2
+        format(stake_units, "064x"),  # stakeAmount
+        format(stake_units * 2, "064x"),  # totalPool
+        "0" * 64,  # createdAt
+        format(status, "064x"),  # status
+        "0" * 64,  # winner
+        "0" * 64,
+        "0" * 64,
+    ]
+    return "0x" + "".join(words)
+
+
+class _FakeEscrowRPC:
+    """Answers eth_chainId, paymentToken(), decimals() and matches(bytes32)."""
+
     status = 2
+    p1 = "0x" + "c" * 40
+    p2 = "0x" + "f" * 40
+    stake_units = _STAKE_UNITS
+    calls: list = []
+
+    def __init__(self, *a, **k) -> None:
+        try:
+            req = _json.loads(a[0].data.decode())
+            self._method = req.get("method", "eth_call")
+            try:
+                self._calldata = req["params"][0]["data"]
+            except Exception:
+                self._calldata = ""  # eth_chainId and friends carry no calldata
+        except Exception:
+            self._method, self._calldata = "eth_call", ""
+        _FakeEscrowRPC.calls.append(self._calldata)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a) -> None:
+        return None
+
+    def read(self) -> bytes:
+        if self._method == "eth_chainId":
+            result = hex(int(os.environ.get("ORACLE_CHAIN_ID", "80002")))
+        elif self._calldata.startswith(_SEL_TOKEN):
+            result = _TOKEN_ADDR
+        elif self._calldata.startswith(_SEL_DECIMALS):
+            result = format(_TOKEN_DECIMALS, "064x")
+        else:  # matches(bytes32)
+            result = _struct_payload(self.status, self.p1, self.p2, self.stake_units)
+        return ('{"jsonrpc":"2.0","id":1,"result":"' + result + '"}').encode()
 
 
-onchain.urllib.request.urlopen = _FakeActive
+def _active_match(mid: str, creator: str, joiner: str) -> Any:
+    m = me.Match(match_id=mid, stake=1.0, created_at=_time.time())
+    for p in (creator, joiner):
+        m.players[p] = {"address": p, "joinedAt": 0}
+    m.creator = creator
+    m.status = "active"
+    return m
+
+
+onchain.urllib.request.urlopen = _FakeEscrowRPC
 try:
-    m3 = me.Match(match_id="ef" * 32, stake=1.0, created_at=_time.time())
-    m3.players["0x" + "c" * 40] = {"address": "0x" + "c" * 40, "joinedAt": 0}
-    m3.creator = "0x" + "c" * 40
+    m3 = _active_match("ef" * 32, _FakeEscrowRPC.p1, _FakeEscrowRPC.p2)
+    check("ACTIVE (matching struct) → play on", server._verify_deposits_or_void(m3) is None)
+
+    # F-03 regression: creator locks a dust stake while the UI promises 1.96
+    _FakeEscrowRPC.stake_units = 1
+    onchain._cache.clear()
+    gate = server._verify_deposits_or_void(m3)
+    check(
+        "ACTIVE but dust stake → void (F-03)",
+        isinstance(gate, dict) and gate.get("void") is True and m3.status == "void",
+    )
+
+    # F-03 regression: deposited from wallet W2, playing as W1
     m3.status = "active"
-    check("ACTIVE → play on", server._verify_deposits_or_void(m3) is None)
+    _FakeEscrowRPC.stake_units = _STAKE_UNITS
+    _FakeEscrowRPC.p2 = "0x" + "9" * 40
+    onchain._cache.clear()
+    gate = server._verify_deposits_or_void(m3)
+    check(
+        "ACTIVE but wrong participants → void (F-03)",
+        isinstance(gate, dict) and gate.get("void") is True and m3.status == "void",
+    )
 finally:
     onchain.urllib.request.urlopen = orig_urlopen
     onchain._cache.clear()
@@ -127,34 +222,25 @@ finally:
 onchain._cache.clear()
 onchain._chain_id_checked = False
 onchain._chain_id_mismatch = False
+onchain._token_decimals = "unread"  # re-read from the stub after it is swapped in
 os.environ["ESCROW_ADDRESS"] = "0x" + "ab" * 20
 
 raw_prod_id = "9f2c41a7b8d3e5061728394a5b6c7d8e"  # secrets.token_hex(16)-shaped
-m_prod = me.Match(match_id=raw_prod_id, stake=1.0, created_at=_time.time())
-m_prod.players["0x" + "e" * 40] = {"address": "0x" + "e" * 40, "joinedAt": 0}
-m_prod.creator = "0x" + "e" * 40
-m_prod.status = "active"
+_FakeEscrowRPC.p1 = "0x" + "e" * 40
+_FakeEscrowRPC.p2 = "0x" + "8" * 40
+_FakeEscrowRPC.stake_units = _STAKE_UNITS
+m_prod = _active_match(raw_prod_id, _FakeEscrowRPC.p1, _FakeEscrowRPC.p2)
 
-
-class _FakeActiveCapture(_FakeActive):
-    last_calldata = ""
-
-    def __init__(self, *a, **k) -> None:
-        super().__init__(*a, **k)
-        try:
-            _FakeActiveCapture.last_calldata = _json.loads(a[0].data.decode())["params"][0]["data"]
-        except Exception:
-            pass
-
-
-onchain.urllib.request.urlopen = _FakeActiveCapture
+onchain.urllib.request.urlopen = _FakeEscrowRPC
 try:
+    _FakeEscrowRPC.calls = []
     check("PROD-SHAPE 32-char id → ACTIVE gate passes", server._verify_deposits_or_void(m_prod) is None)
     expected_key = "0x" + _hashlib.sha256(raw_prod_id.encode()).hexdigest()
-    cd = _FakeActiveCapture.last_calldata
+    matches_calls = [c for c in _FakeEscrowRPC.calls if c.startswith(_SEL_MATCHES)]
+    cd = matches_calls[0] if matches_calls else ""
     check(
         "gate queried sha256(matchId) as the on-chain key",
-        cd.startswith(onchain._matches_selector()) and cd.endswith(expected_key[2:]) and len(cd) == 10 + 64,
+        bool(cd) and cd.endswith(expected_key[2:]) and len(cd) == 10 + 64,
     )
 finally:
     onchain.urllib.request.urlopen = orig_urlopen

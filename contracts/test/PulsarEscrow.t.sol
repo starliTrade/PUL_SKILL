@@ -425,10 +425,13 @@ contract PulsarEscrowTest is Test {
         bytes32 matchId = keccak256(abi.encodePacked("fuzz-pool", stake));
         vm.prank(p1);
         escrow.createDuel(matchId, stake);
-        assertEq(escrow.matches(matchId).totalPool, stake * 2);
+        // F-19: totalPool is finalized on JOIN (balance-delta accounting),
+        // not at create time — the pool is only real once both stakes landed.
+        assertEq(escrow.matches(matchId).totalPool, 0, "pool set on join");
         assertEq(usdt.balanceOf(address(escrow)), stake);
         vm.prank(p2);
         escrow.joinDuel(matchId);
+        assertEq(escrow.matches(matchId).totalPool, stake * 2, "pool after join");
         assertEq(usdt.balanceOf(address(escrow)), stake * 2, "both stakes locked");
     }
 

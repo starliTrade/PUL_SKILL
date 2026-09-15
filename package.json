@@ -1,5 +1,5 @@
 {
-  "name": "react-example",
+  "name": "pulsar-duels",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -9,8 +9,10 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "test:server": "python3 scripts/test_game_server.py",
-    "test:contract": "node contracts/test/compile_check.js"
+    "test:server": "sh -c '.venv/bin/python scripts/test_game_server.py || python3 scripts/test_game_server.py'",
+    "test:contract": "node contracts/test/compile_check.js",
+    "test:http": "sh -c '.venv/bin/python scripts/test_http_e2e.py || python3 scripts/test_http_e2e.py'",
+    "test:firestore": "sh -c '.venv/bin/python scripts/test_firestore_integration.py || python3 scripts/test_firestore_integration.py'"
   },
   "dependencies": {
     "@sentry/react": "^10.73.0",

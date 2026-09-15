@@ -88,12 +88,24 @@ def _rl_check_ip(bucket: str, request: Request, limit: int) -> None:
     Used where the caller's address is not yet known (/api/auth/verify) or
     where per-address limits are the wrong shape for cost control. Uses the
     same Firestore-backed (cross-replica) window when Firestore mode is on,
-    otherwise the in-process fallback."""
-    ip = (
-        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        or (request.client.host if request.client else "unknown")
-    )
-    _rl_check(bucket, ip, limit)
+    otherwise the in-process fallback.
+
+    Audit #8 F-10: the XFF hop count is validated before trusting the first
+    entry. On a plain deployment (no trusted proxy) x-forwarded-for is client
+    forgeable, so we also blend the socket address into the key — spoofing
+    the header then still pays the socket's quota. Deploy behind a trusted
+    reverse proxy that OVERWRITES X-Forwarded-For for exact per-client keys.
+    """
+    xff = request.headers.get("x-forwarded-for", "")
+    hops = [h.strip() for h in xff.split(",") if h.strip()]
+    socket_ip = request.client.host if request.client else "unknown"
+    # Trust the header only when it exists AND the socket is plausibly a
+    # local/edge proxy (private network) — otherwise the socket IS the client.
+    if hops and (socket_ip.startswith("10.") or socket_ip.startswith("172.") or socket_ip.startswith("192.168.") or socket_ip.startswith("127.")):
+        ip = hops[0]
+    else:
+        ip = socket_ip or (hops[0] if hops else "unknown")
+    _rl_check(bucket, f"{ip}|{socket_ip}" if hops and ip != socket_ip else ip, limit)
 
 
 def _rl_check(bucket: str, address: str, limit: int) -> None:
@@ -152,27 +164,62 @@ def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
 
     Fail-CLOSED: when escrow mode is configured but the deposit state cannot
     be read, rounds are refused — a custom client that never stakes must not
-    be able to grief an honest opponent's locked deposit. Also voids the
-    server-side match when the joiner's deposit never arrives (the creator
-    then gets an explicit 'refund on-chain' signal instead of a stalled duel)."""
+    be able to grief an honest opponent's locked deposit.
+
+    Audit #8 F-03: the gate now validates the WHOLE duel, not just its status:
+      - status must be Active (both stakes locked),
+      - the on-chain stakeAmount must equal the server's agreed stake
+        (converted with the token's real decimals — a creator cannot lock
+        the match with a dust stake while the UI promises the full prize),
+      - the on-chain player1/player2 must be exactly the server's two
+        participants (depositing from a different wallet then playing as
+        another one makes the winner unpayable — the contract rejects a
+        winner that is not player1/player2, so the honest player would burn
+        30 minutes of locked stake on an unwinnable match).
+    Also voids the server-side match when the joiner's deposit never arrives
+    (audit #8 F-05: the deposit timeout counts from ACTIVATION, not queue
+    entry)."""
     if not onchain.escrow_configured():
         return None  # practice / unconfigured dev — gate inactive
-    status = onchain.duel_status(m.match_id)
-    if status == onchain.STATUS_ACTIVE:
-        return None  # both stakes locked — play on
-    if status == onchain.STATUS_CREATED and time.time() - m.created_at > DEPOSIT_TIMEOUT_SECONDS:
-        m.status = "void"
-        # H4 — honest money-UX: the contract only releases refunds at
-        # createdAt + MATCH_TIMEOUT (30 min). Saying "refundable now" sends
-        # players into a revert for ~25 minutes. State the real window.
-        return {
-            "void": True,
-            "reason": (
-                "Opponent stake deposit timed out — the match is void. The "
-                "creator's stake becomes refundable on-chain via "
-                "refundTimeoutMatch after the 30-minute escrow timeout."
-            ),
-        }
+    info = onchain.duel_info(m.match_id)
+    if info is None:
+        raise HTTPException(
+            status_code=409,
+            detail="On-chain deposit state is temporarily unreadable — retry shortly.",
+        )
+    if info.get("status") == onchain.STATUS_ACTIVE:
+        # F-03: stake amount + participants must match the server's match
+        # (single source of truth: onchain.verify_deposit — probe-testable).
+        if not onchain.verify_deposit(info, m.stake, m.players):
+            m.status = "void"
+            return {
+                "void": True,
+                "reason": (
+                    "On-chain duel does not match this match (stake or "
+                    "participants differ) — the match is void. Both stakes "
+                    "refund via refundTimeoutMatch after the 30-minute escrow "
+                    "timeout."
+                ),
+            }
+        return None  # both stakes locked AND the duel is genuinely this match — play on
+    if info.get("status") == onchain.STATUS_CREATED:
+        # Audit #8 F-05: the deposit timeout counts from ACTIVATION (when the
+        # joiner paired), not from queue entry — a long-queued match must not
+        # be voided the moment it finally pairs.
+        clock_origin = m.play_started_at()
+        if time.time() - clock_origin > DEPOSIT_TIMEOUT_SECONDS:
+            m.status = "void"
+            # H4 — honest money-UX: the contract only releases refunds at
+            # createdAt + MATCH_TIMEOUT (30 min). Saying "refundable now" sends
+            # players into a revert for ~25 minutes. State the real window.
+            return {
+                "void": True,
+                "reason": (
+                    "Opponent stake deposit timed out — the match is void. The "
+                    "creator's stake becomes refundable on-chain via "
+                    "refundTimeoutMatch after the 30-minute escrow timeout."
+                ),
+            }
     raise HTTPException(
         status_code=409,
         detail="On-chain deposits are not verified for this match yet.",
@@ -210,6 +257,47 @@ def _siwe_message(address: str, nonce: str, domain: str) -> str:
     )
 
 app = FastAPI(title="PULSAR Game Server", version="1.1.1")
+
+# Audit #8 F-09 — production configuration is MANDATORY, not optional. When
+# the deployment looks like production (PULSAR_ENV=production), missing
+# ALLOWED_DOMAIN / CORS_ALLOW_ORIGINS / ESCROW_ADDRESS / ESCROW_RPC_URL must
+# fail startup instead of silently running with a Host-derived SIWE domain,
+# wildcard CORS, and no deposit gate (a "real-money" UI without the gate is
+# the exact configuration the audits keep flagging).
+if os.environ.get("PULSAR_ENV", "").lower() == "production":
+    _missing = [
+        name
+        for name in (
+            "ALLOWED_DOMAIN",
+            "CORS_ALLOW_ORIGINS",
+            "ESCROW_ADDRESS",
+            "ESCROW_RPC_URL",
+            "ORACLE_SIGNING_SECRET",
+            "ORACLE_PRIVATE_KEY",
+        )
+        if not os.environ.get(name)
+    ]
+    if _missing:
+        raise RuntimeError(
+            "PULSAR_ENV=production requires these env vars to be set: "
+            + ", ".join(_missing)
+            + ". Refusing to start with an insecure default."
+        )
+
+# Audit #8 F-09 — TrustedHost: when ALLOWED_DOMAIN is configured, requests
+# with a foreign Host header are rejected at the middleware layer instead of
+# being trusted for SIWE domain binding (host-header injection hardening).
+_allowed_domain = os.environ.get("ALLOWED_DOMAIN", "")
+if _allowed_domain:
+    try:
+        from fastapi.middleware.trustedhost import TrustedHostMiddleware
+
+        app.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=[_allowed_domain, _allowed_domain.removeprefix("www.")],
+        )
+    except Exception:  # pragma: no cover — older FastAPI without the middleware
+        pass
 
 # P0-fix — CORS. The frontend (static hosting) and this API are commonly on
 # different origins (docs/DEPLOYMENT.md deployment topology), so browsers send
@@ -336,7 +424,11 @@ class ClaimRequest(BaseModel):
 
 @app.post("/api/auth/nonce")
 def auth_nonce(body: NonceRequest, request: Request) -> dict[str, str]:
-    _rl_check("auth", body.address, RL_AUTH_MAX)
+    # Audit #8 F-10: the nonce bucket was keyed ONLY by the client-supplied
+    # address — rotating addresses bypassed the limit (soft-lock DoS on a
+    # victim's login). Now it's the composite IP+address bucket: still fair to
+    # a single honest client, blind to address rotation.
+    _rl_check_ip("auth", request, RL_AUTH_MAX)
     domain = _request_domain(request)
     nonce = issue_nonce(body.address, domain)
     return {"nonce": nonce, "message": _siwe_message(body.address, nonce, domain)}
@@ -371,6 +463,13 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     if body.stake not in ALLOWED_STAKES:
         raise HTTPException(status_code=400, detail="Invalid stake")
     store.sweep_expired()
+    # Audit #8 F-13: durable idempotency — check Firestore for a live match
+    # containing this address BEFORE enqueueing, so a re-poll that lands on a
+    # different replica (or a recycled process) cannot mint an orphan match
+    # the client might fund twice.
+    live = store.player_live_match(address)
+    if live is not None and live.stake == body.stake:
+        return live.public_view(for_address=address)
     match = store.enqueue(address, body.stake)
     return match.public_view(for_address=address)
 
@@ -490,9 +589,38 @@ def _attach_signed_envelope(m: Any, result: dict[str, Any]) -> dict[str, Any]:
 
 def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
     """Shared transactional settlement body: settle → sign → attach the proof
-    envelope, persisted atomically by store.update(). Idempotent — an already
-    settled/void match is replayed, never re-signed."""
+    envelope, persisted atomically by store.update().
+
+    Idempotent — an already settled/void match is replayed, never re-signed —
+    with ONE audit #8 F-12 exception: when the stored envelope's on-chain
+    deadline has EXPIRED (the winner's client never managed to broadcast the
+    tx within the 10-minute signature validity), the match is re-signed with
+    a FRESH deadline + nonce. The server's result does not change; only the
+    spendable proof is refreshed. Without this path a winner who closed the
+    tab (or lost gas/RPC) forfeits the prize forever and the ledger keeps a
+    "win + prize" that can never be collected."""
     if m.status == "settled" and m.signed_settlement:
+        envelope = dict(m.signed_settlement)
+        deadline = int(envelope.get("deadline", 0) or 0)
+        if deadline and time.time() < deadline:
+            return envelope  # still spendable — replay as-is
+        # F-12 re-sign: result unchanged, fresh deadline + nonce.
+        try:
+            fresh = sign_settlement(
+                {
+                    "status": "settled",
+                    "matchId": m.match_id,
+                    "winner": m.winner,
+                    "winnerTimeMs": int(envelope.get("winnerTimeMs", 0)),
+                    "loserTimeMs": int(envelope.get("loserTimeMs", 0)),
+                    "validatedTimes": envelope.get("validatedTimes", {}),
+                }
+            )
+        except Exception:
+            return envelope  # signing unavailable — return the stale envelope
+        fresh["roundWins"] = envelope.get("roundWins", {})
+        fresh["resigned"] = True
+        m.signed_settlement = {"status": "settled", **fresh}
         return dict(m.signed_settlement)
     if m.status == "void":
         return {
@@ -550,12 +678,18 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
 
 @app.post("/api/match/{match_id}/claim")
 def claim_match(match_id: str, body: ClaimRequest, request: Request) -> dict[str, Any]:
-    """C5 — on-chain claim persistence. After the winner's settleDuel tx is
-    broadcast, the client posts the tx hash here; the server records it in the
-    match ledger so the certificate can display REAL on-chain proof instead of
-    the permanent 'LOCAL RESULT · NOT ON-CHAIN' fallback. Authenticated and
-    participant-only; the tx hash is user-supplied metadata, not a trust
-    boundary (the chain itself remains the source of truth)."""
+    """C5 + audit #8 F-04 — VERIFIED on-chain claim persistence.
+
+    The tx hash used to be stored verbatim (any hex string became
+    "onChain: true" forever). Now the server fetches the receipt from the
+    RPC and only records the claim when the tx REALLY settled THIS match:
+      - receipt exists and succeeded,
+      - `to` == the configured escrow,
+      - a MatchSettled(matchId, winner, ...) event log for THIS match id
+        (sha256 convention) with winner == the claimer.
+    A participant may still POST early (their tx may need a moment to be
+    mined); the response says onChainProof=false in that case and the client
+    can retry. Nothing unverifiable is ever persisted."""
     address = _auth(request)
     try:
         match = store.get(match_id)
@@ -563,5 +697,127 @@ def claim_match(match_id: str, body: ClaimRequest, request: Request) -> dict[str
             raise HTTPException(status_code=403, detail="Not a participant")
     except MatchError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    recorded = economy.record_claim(match_id, address, body.txHash, body.signature)
+    winner = (getattr(match, "winner", "") or "").lower()
+    verified = onchain.verify_settlement_tx(body.txHash, match_id, winner)
+    if not verified:
+        return {
+            "ok": False,
+            "onChainProof": False,
+            "reason": (
+                "Transaction not verified as a settlement of this match yet — "
+                "it must be mined, target the escrow, and emit MatchSettled "
+                "for this match with the winner as claimer. Retry after the tx confirms."
+            ),
+        }
+    recorded = economy.record_claim(match_id, winner, body.txHash, body.signature)
     return {"ok": recorded, "onChainProof": recorded}
+
+
+# --- Audit #8 F-08 — username ownership is SERVER-ENFORCED -------------------
+#
+# The old flow let any client write usernames/{name} directly with any
+# address (rules only checked the address format) — free namespace squatting
+# and identity theft. Now the claim runs HERE, authenticated by the caller's
+# SIWE session, inside an idempotent transaction:
+#   - the claimed doc must be free OR already owned by the caller,
+#   - the caller's previous username is released in the same transaction.
+
+USERNAME_MIN_LEN = 3
+USERNAME_MAX_LEN = 20
+USERNAME_PATTERN = "^[a-zA-Z0-9_]+$"
+USERNAME_RESERVED = {
+    "admin", "pulsar", "official", "system", "treasury", "moderator",
+    "support", "bot", "oracle", "escrow",
+}
+
+
+class UsernameRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+
+
+def _clean_username(raw: str) -> str:
+    import re as _re
+
+    tag = raw.strip()
+    if not (USERNAME_MIN_LEN <= len(tag) <= USERNAME_MAX_LEN):
+        raise HTTPException(status_code=400, detail="Username must be 3-20 characters")
+    if not _re.match(USERNAME_PATTERN, tag):
+        raise HTTPException(status_code=400, detail="Only letters, numbers and underscores are allowed")
+    if tag.lower() in USERNAME_RESERVED:
+        raise HTTPException(status_code=400, detail=f'"{tag}" is a reserved system name')
+    return tag
+
+
+@app.post("/api/username/claim")
+def username_claim(body: UsernameRequest, request: Request) -> dict[str, Any]:
+    address = _auth(request)
+    _rl_check("username", address, 10)
+    tag = _clean_username(body.username)
+    normalized = tag.lower()
+    db = None
+    try:
+        import store as _store_mod
+
+        db = getattr(_store_mod, "_fs_store", None)
+        db = db.db if db is not None else None
+    except Exception:
+        db = None
+    if db is None:
+        raise HTTPException(status_code=503, detail="Username registry requires the durable store (Firestore)")
+
+    try:
+        from google.cloud.firestore_v1.base_transaction import transactional  # type: ignore
+
+        @transactional
+        def _claim(tx) -> dict[str, Any]:
+            registry = db.collection("usernames")
+            users = db.collection("users")
+            doc_ref = registry.document(normalized)
+            snap = doc_ref.get(transaction=tx)
+            if snap.exists:
+                owner = (snap.to_dict() or {}).get("address", "").lower()
+                if owner != address:
+                    raise HTTPException(status_code=409, detail=f'Username "{tag}" is already taken')
+                # Already ours — idempotent success.
+                return {"ok": True, "cleanTag": tag, "alreadyOwned": True}
+
+            # Release the caller's previous username (atomic, same tx).
+            user_snap = users.document(address).get(transaction=tx)
+            old_tag = ((user_snap.to_dict() or {}).get("playerId") or "").strip()
+            if old_tag and old_tag.lower() != normalized:
+                old_ref = registry.document(old_tag.lower())
+                old_snap = old_ref.get(transaction=tx)
+                if old_snap.exists and (old_snap.to_dict() or {}).get("address", "").lower() == address:
+                    tx.delete(old_ref)
+
+            doc_ref.create({"username": normalized, "tag": tag, "address": address})
+            users.document(address).set({"playerId": tag}, merge=True)
+            return {"ok": True, "cleanTag": tag, "alreadyOwned": False}
+
+        result = _claim(db.transaction())
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=409, detail=f"Username claim failed: {e}")
+
+
+@app.get("/api/username/{name}")
+def username_lookup(name: str, request: Request) -> dict[str, Any]:
+    _auth(request)  # must hold a session; reads stay public via Firestore
+    normalized = name.strip().lower()
+    db = None
+    try:
+        import store as _store_mod
+
+        db = getattr(_store_mod, "_fs_store", None)
+        db = db.db if db is not None else None
+    except Exception:
+        db = None
+    if db is None:
+        raise HTTPException(status_code=503, detail="Username registry requires the durable store (Firestore)")
+    snap = db.collection("usernames").document(normalized).get()
+    if not snap.exists:
+        return {"available": True, "username": normalized}
+    owner = (snap.to_dict() or {}).get("address", "")
+    return {"available": False, "username": normalized, "taken": True, "owner": owner.lower()}

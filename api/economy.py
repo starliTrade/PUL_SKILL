@@ -1,19 +1,26 @@
 """
-PULSAR — Economy ledger (audit #6, C5).
+PULSAR — Economy ledger (audit #6 C5, hardened per audit #8 F-07).
 
 The Firestore rules deliberately forbid CLIENT writes to `matches`,
 `leaderboard`, and the economy fields of `users` ("only the settlement server
-writes these collections") — correct security, but until now the settlement
-server never wrote them either, so the leaderboard was permanently empty and
-every client sync was silently rejected by the rules.
-
-This module IS the writer those rules anticipate: it uses the Firestore Admin
-SDK (which bypasses security rules by design) to record server-authoritative
-settlements:
+writes these collections"). This module IS the writer those rules anticipate:
+it uses the Firestore Admin SDK (which bypasses security rules by design) to
+record server-authoritative settlements:
 
   - matches/{matchId}      one document per settled duel (signed proof included)
   - users/{addr}           economy counters advanced ONLY by settlement facts
   - leaderboard/{addr}     real wins/earnings rows, recomputed from counters
+
+F-07 hardening over the first version:
+  - ATOMIC: every settlement is one WriteBatch — no half-written ledger if the
+    process dies between writes.
+  - IDEMPOTENT: the batch carries a `settlementId` (hash of the settled FACTS).
+    A retried settlement (two replicas racing settle, a re-run of the sweep)
+    writes the SAME id and is skipped instead of double-incrementing counters.
+  - CLAIM CONFLICT: `record_claim` refuses to overwrite a different tx hash —
+    the first verified claim wins; a forged re-claim cannot rewrite history.
+  - OBSERVABLE: ledger failures are logged loudly (stderr) instead of being
+    silently swallowed — a dead ledger must be visible in the logs.
 
 Everything here is best-effort: a ledger failure must never break settlement
 or the on-chain claim (money keeps moving; the ledger can be back-filled).
@@ -22,7 +29,9 @@ When Firestore is not configured the module degrades to a no-op.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import sys
 import time
 from typing import Any
 
@@ -46,19 +55,48 @@ def ledger_available() -> bool:
     return _fs_db() is not None
 
 
+def _log_ledger_error(where: str, exc: BaseException) -> None:
+    """F-07: a silent ledger is an invisible lie. Log to stderr so the deploy
+    logs surface it (the money path itself stays unaffected)."""
+    print(f"[economy] ledger write failed in {where}: {exc!r}", file=sys.stderr)
+
+
+def _winner_share() -> float:
+    """Single source of truth for the winner share (F-17): 98% unless the
+    platform fee bps env is overridden. The contract's PLATFORM_FEE_BPS = 200
+    is the on-chain authority; this mirrors it for display/ledger math."""
+    fee_bps = float(os.environ.get("PLATFORM_FEE_BPS", "200"))
+    return (10_000.0 - fee_bps) / 10_000.0
+
+
 def record_claim(match_id: str, claimer: str, tx_hash: str, signature: str) -> bool:
     """Persist the on-chain settlement transaction AFTER the winner claims.
 
-    This closes the 'certificate can never be on-chain' gap (audit #6 P2):
-    the tx hash exists only in the winner's browser until it lands here, so
-    every duel's certificate previously rendered 'LOCAL RESULT · NOT ON-CHAIN'
-    even for genuinely settled duels.
+    F-04: the caller (main.py) has ALREADY verified the receipt on-chain —
+    to == escrow, status == 1, MatchSettled event with this matchId. This
+    function only persists the verified fact.
+
+    F-07 claim-conflict guard: if a different tx hash was already recorded
+    for this match, the new claim is refused (returns False). The first
+    VERIFIED claim wins; nobody can rewrite a settled match's proof.
     """
     db = _fs_db()
     if db is None:
         return False
     try:
-        db.collection("matches").document(match_id).set(
+        doc_ref = db.collection("matches").document(match_id)
+        existing = doc_ref.get()
+        if existing.exists:
+            prev_hash = (existing.to_dict() or {}).get("settlementTxHash")
+            if prev_hash and prev_hash != tx_hash:
+                _log_ledger_error(
+                    "record_claim",
+                    ValueError(
+                        f"claim conflict for {match_id}: already recorded {prev_hash}, refusing {tx_hash}"
+                    ),
+                )
+                return False
+        doc_ref.set(
             {
                 "settlementTxHash": tx_hash,
                 "claimedBy": claimer.lower(),
@@ -68,17 +106,24 @@ def record_claim(match_id: str, claimer: str, tx_hash: str, signature: str) -> b
             merge=True,
         )
         return True
-    except Exception:
+    except Exception as exc:
+        _log_ledger_error("record_claim", exc)
         return False
 
 
 def record_settlement(match: Any) -> None:
-    """Ledger write after a successful server settlement. Best-effort.
+    """Ledger write after a successful server settlement. Best-effort, atomic,
+    idempotent (F-07).
 
-    Writes in one pass:
+    Writes in ONE batch:
       matches/{matchId}  — result, times, and the oracle signature
       users/{winner|loser} — wins/losses/totalMatches advanced by the FACT
       leaderboard/{addr} — real stats rows for the podium
+
+    Idempotency: the batch carries `settlementId = sha256(matchId|winner|
+    times)`. If the match doc already records the same id, the settlement was
+    already ledgered (retry / replica race) and everything is skipped — so a
+    re-run can never double-increment a player's counters.
     Void matches are recorded (totalMatches only) so histories stay truthful.
     """
     db = _fs_db()
@@ -91,9 +136,43 @@ def record_settlement(match: Any) -> None:
         settled_at = int(getattr(match, "settled_at", 0) or time.time())
         signed = getattr(match, "signed_settlement", None) or {}
         match_id = getattr(match, "match_id", "")
-        prize = round(stake * 2 * 0.98, 2) if winner else 0.0
+        forfeit = bool(getattr(match, "forfeit", False))
+        prize = round(stake * 2 * _winner_share(), 2) if winner else 0.0
 
-        # 1. Match document — server-authored, signed, replayable.
+        # F-07 idempotency key: derived from the settled FACTS themselves, so
+        # the same settlement reached twice produces the same id.
+        outcome = winner or "void"
+        times_key = getattr(match, "validated_times", None) or {}
+        settlement_id = hashlib.sha256(
+            "|".join(
+                [
+                    match_id,
+                    outcome,
+                    f"{stake:.2f}",
+                    str(settled_at),
+                    str(sorted((k, tuple(v or ())) for k, v in times_key.items())),
+                ]
+            ).encode()
+        ).hexdigest()
+
+        match_ref = db.collection("matches").document(match_id)
+        existing = match_ref.get()
+        if existing.exists:
+            prev_id = (existing.to_dict() or {}).get("settlementId")
+            if prev_id == settlement_id:
+                return  # already ledgered — nothing to do (idempotent replay)
+            # A DIFFERENT settlement id for the same match should not happen
+            # (the engine settles once). Record the anomaly but keep the first
+            # ledger row: history is append-only from here.
+            if prev_id:
+                _log_ledger_error(
+                    "record_settlement",
+                    ValueError(
+                        f"settlement id drift for {match_id}: {prev_id} != {settlement_id}; keeping first"
+                    ),
+                )
+                return
+
         doc: dict[str, Any] = {
             "id": match_id,
             "players": players,
@@ -102,6 +181,8 @@ def record_settlement(match: Any) -> None:
             "status": "settled" if winner else "void",
             "timestamp": settled_at,
             "onChain": bool(signed.get("signature")),
+            "forfeit": forfeit,
+            "settlementId": settlement_id,
         }
         if winner:
             doc.update(
@@ -120,12 +201,16 @@ def record_settlement(match: Any) -> None:
                 ]
                 for a in players
             }
-        db.collection("matches").document(match_id).set(doc, merge=True)
 
-        # 2. User economy counters — advanced by SETTLEMENT FACTS only.
+        # ONE atomic batch: match doc + both user counters + leaderboard row
+        # commit together or not at all (F-07).
+        batch = db.batch()
+        batch.set(match_ref, doc, merge=True)
+
         for addr in players:
             is_winner = addr == winner
-            db.collection("users").document(addr).set(
+            batch.set(
+                db.collection("users").document(addr),
                 {
                     "totalMatches": _inc(1),
                     "wins": _inc(1) if is_winner else _inc(0),
@@ -136,9 +221,9 @@ def record_settlement(match: Any) -> None:
                 merge=True,
             )
 
-        # 3. Leaderboard rows from the same facts (real earnings, labeled).
         if winner:
-            db.collection("leaderboard").document(winner).set(
+            batch.set(
+                db.collection("leaderboard").document(winner),
                 {
                     "address": winner,
                     "wins": _inc(1),
@@ -148,9 +233,12 @@ def record_settlement(match: Any) -> None:
                 },
                 merge=True,
             )
-    except Exception:
-        # Ledger is a shadow of the money path — never raise into settlement.
-        pass
+
+        batch.commit()
+    except Exception as exc:
+        # Ledger is a shadow of the money path — never raise into settlement,
+        # but make the failure VISIBLE (F-07).
+        _log_ledger_error("record_settlement", exc)
 
 
 def _inc(n: float) -> dict[str, Any]:
@@ -169,4 +257,16 @@ def _inc(n: float) -> dict[str, Any]:
             return {"__increment__": n}
 
 
-__all__ = ["ledger_available", "record_claim", "record_settlement"]
+__all__ = [
+    "ledger_available",
+    "record_claim",
+    "record_settlement",
+    "settlement_id_for",
+]
+
+
+def settlement_id_for(match_id: str, outcome: str, stake: float, settled_at: int) -> str:
+    """Exposed for tests: the deterministic settlement id."""
+    return hashlib.sha256(
+        "|".join([match_id, outcome, f"{stake:.2f}", str(settled_at), ""]).encode()
+    ).hexdigest()

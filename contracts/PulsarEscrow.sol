@@ -19,6 +19,46 @@ interface IERC20 {
     event Approval(address indexed owner, address indexed spender, uint256 value);
 }
 
+/**
+ * F-19 — SafeERC20-equivalent helpers, inlined (the contract is
+ * dependency-free by design). Wraps the optional-bool-return reality of
+ * real USDT: if the token returns data it MUST decode to true; if it returns
+ * nothing, success is the absence of revert.
+ */
+library SafeTransfer {
+    function _callAndCheck(bool success, bytes memory data) private pure returns (bool) {
+        if (!success) {
+            // Solidity ≥0.8 bubbles revert reasons automatically.
+            assembly {
+                revert(add(data, 0x20), mload(data))
+            }
+        }
+        if (data.length == 0) {
+            return true; // non-standard token (e.g. USDT): no return value
+        }
+        require(data.length >= 32, "SafeTransfer: short return");
+        bool ok;
+        assembly {
+            ok := mload(add(data, 0x20))
+        }
+        return ok;
+    }
+
+    function safeTransfer(IERC20 token, address to, uint256 amount) internal {
+        (bool success, bytes memory data) = address(token).call(
+            abi.encodeWithSelector(token.transfer.selector, to, amount)
+        );
+        require(_callAndCheck(success, data), "SafeTransfer: transfer failed");
+    }
+
+    function safeTransferFrom(IERC20 token, address from, address to, uint256 amount) internal {
+        (bool success, bytes memory data) = address(token).call(
+            abi.encodeWithSelector(token.transferFrom.selector, from, to, amount)
+        );
+        require(_callAndCheck(success, data), "SafeTransfer: transferFrom failed");
+    }
+}
+
 abstract contract Context {
     function _msgSender() internal view virtual returns (address) {
         return msg.sender;
@@ -74,6 +114,7 @@ abstract contract ReentrancyGuard {
 }
 
 contract PulsarEscrow is Ownable, ReentrancyGuard {
+    using SafeTransfer for IERC20;
     uint256 public constant FEE_DENOMINATOR = 10000; // 100.00%
     uint256 public constant PLATFORM_FEE_BPS = 200;  // 2.00% (98% to winner)
     // Refund opens 30 minutes after the FIRST deposit. The oracle signature is
@@ -154,14 +195,18 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         require(stakeAmount > 0, "Stake must be > 0");
         require(matches[matchId].status == MatchStatus.None, "Match already exists");
 
-        require(paymentToken.transferFrom(msg.sender, address(this), stakeAmount), "Deposit failed");
+        uint256 beforeBalance = paymentToken.balanceOf(address(this));
+        SafeTransfer.safeTransferFrom(paymentToken, msg.sender, address(this), stakeAmount);
+        uint256 received = paymentToken.balanceOf(address(this)) - beforeBalance;
 
         matches[matchId] = DuelMatch({
             matchId: matchId,
             player1: msg.sender,
             player2: address(0),
-            stakeAmount: stakeAmount,
-            totalPool: stakeAmount * 2,
+            // F-19: account for fee-on-transfer tokens — the POOL is what
+            // actually sits in escrow, never the nominal amount.
+            stakeAmount: received,
+            totalPool: 0, // set to 2× stake on join
             createdAt: block.timestamp,
             status: MatchStatus.Created,
             winner: address(0),
@@ -169,7 +214,7 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
             loserReactionMs: 0
         });
 
-        emit MatchCreated(matchId, msg.sender, stakeAmount, stakeAmount * 2);
+        emit MatchCreated(matchId, msg.sender, received, received * 2);
     }
 
     function joinDuel(bytes32 matchId) external nonReentrant {
@@ -177,10 +222,14 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         require(duel.status == MatchStatus.Created, "Match not available");
         require(duel.player1 != msg.sender, "Cannot play against self");
 
-        require(paymentToken.transferFrom(msg.sender, address(this), duel.stakeAmount), "Deposit failed");
+        uint256 beforeBalance = paymentToken.balanceOf(address(this));
+        SafeTransfer.safeTransferFrom(paymentToken, msg.sender, address(this), duel.stakeAmount);
+        uint256 received = paymentToken.balanceOf(address(this)) - beforeBalance;
+        require(received == duel.stakeAmount, "Fee-on-transfer deposit rejected");
 
         duel.player2 = msg.sender;
         duel.status = MatchStatus.Active;
+        duel.totalPool = duel.stakeAmount * 2;
 
         emit MatchJoined(matchId, msg.sender);
     }
@@ -237,10 +286,10 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         totalVolumeDistributed += winnerPrize;
         totalFeesCollected += platformFee;
 
-        // Execute Non-Custodial Token Transfers
-        require(paymentToken.transfer(proof.winner, winnerPrize), "Winner transfer failed");
+        // Execute Non-Custodial Token Transfers (F-19: SafeERC20 semantics)
+        SafeTransfer.safeTransfer(paymentToken, proof.winner, winnerPrize);
         if (platformFee > 0) {
-            require(paymentToken.transfer(treasuryWallet, platformFee), "Fee transfer failed");
+            SafeTransfer.safeTransfer(paymentToken, treasuryWallet, platformFee);
         }
 
         emit MatchSettled(proof.matchId, proof.winner, winnerPrize, platformFee);
@@ -255,12 +304,12 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
 
         if (duel.status == MatchStatus.Created) {
             duel.status = MatchStatus.Cancelled;
-            require(paymentToken.transfer(duel.player1, refundAmount), "Refund P1 failed");
+            SafeTransfer.safeTransfer(paymentToken, duel.player1, refundAmount);
             emit MatchCancelled(matchId, "Timeout cancelled");
         } else {
             duel.status = MatchStatus.Refunded;
-            require(paymentToken.transfer(duel.player1, refundAmount), "Refund P1 failed");
-            require(paymentToken.transfer(duel.player2, refundAmount), "Refund P2 failed");
+            SafeTransfer.safeTransfer(paymentToken, duel.player1, refundAmount);
+            SafeTransfer.safeTransfer(paymentToken, duel.player2, refundAmount);
             emit MatchRefunded(matchId, refundAmount);
         }
     }

@@ -25,7 +25,7 @@ import {
   Info,
 } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
-import { CHAIN } from '../lib/chain';
+import { CHAIN, ECONOMY } from '../lib/chain';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { PulsarDynamicAvatar, getAvatarTier } from '../components/PulsarDynamicAvatar';
 import { usePulsarStore } from '../store/usePulsarStore';
@@ -612,7 +612,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                         <div className="text-[9px] text-emerald-400 font-mono mt-1 font-semibold">
                           {(player.totalWinnings ?? player.totalEarnedUSDT) != null
                             ? `$${(player.totalWinnings ?? player.totalEarnedUSDT ?? 0).toLocaleString()}`
-                            : `~$${((player.wins ?? 0) * 1.96).toLocaleString()} (est.)`}
+                            : `~$${(((player.wins ?? 0) * 2 * ECONOMY.winnerShareBps) / 10_000).toLocaleString()} (est.)`}
                         </div>
                       </div>
                     );
@@ -672,7 +672,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                         <div className="text-[9.5px] text-emerald-400">
                           {(p.totalWinnings ?? p.totalEarnedUSDT) != null
                             ? `$${(p.totalWinnings ?? p.totalEarnedUSDT ?? 0).toLocaleString()}`
-                            : `~$${((p.wins ?? 0) * 1.96).toLocaleString()} (est.)`}
+                            : `~$${(((p.wins ?? 0) * 2 * ECONOMY.winnerShareBps) / 10_000).toLocaleString()} (est.)`}
                         </div>
                       </div>
                     </div>

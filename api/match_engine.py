@@ -50,11 +50,24 @@ REACTION_JITTER_MS = 60.0       # client timer slop allowance for the claim-vs-
 SUBMIT_LATENCY_TOLERANCE_MS = 400.0  # max plausible network latency between a
                                 # player's click and the server receiving it —
                                 # a claim faster than (observed − this) is a
-                                # claim-faster-than-reality fabrication
+                                # claim-faster-than-reality fabrication.
+                                # Audit #8 F-01: this tolerance NO LONGER decides
+                                # winners — ranking uses the SERVER-OBSERVED
+                                # reaction time (elapsed − target_ms), so a
+                                # fabricated 105ms claim cannot outrank an
+                                # honest 220ms player even when it passes the
+                                # plausibility gate (see Round.observed_ms).
 ROUND_EXPIRY_SECONDS = 60
-MATCH_EXPIRY_SECONDS = 600     # aligns with the on-chain refund horizon (30 min
-                               # starts at deposit; the server gives up earlier)
+MATCH_EXPIRY_SECONDS = 600     # active-play expiry, counted from ACTIVATION
+                               # (the moment the joiner paired), NOT from queue
+                               # entry (audit #8 F-05). The on-chain refund
+                               # horizon (30 min) still starts at deposit.
+QUEUE_EXPIRY_SECONDS = 600     # how long an UNPAIRED waiting match may sit in
+                               # the queue before it is voided (counted from
+                               # created_at — queue lifetime, not play time)
 COMMIT_WINDOW_SECONDS = 30     # per-round intent-binding window
+FORFEIT_SENTINEL_MS = 0.0      # audit #8 F-15: declared forfeit time in the
+                               # signed packet (never a fabricated human time)
 
 # P0-fix (audit #2): after this long past activation, a participant may settle
 # an unfinished match — missing rounds become forfeits. Before that, settle()
@@ -93,6 +106,11 @@ class Round:
     revealed: bool = False
     revealed_at: float = 0.0
     result_ms: float | None = None
+    # Audit #8 F-01: the reaction the SERVER witnessed for this submission
+    # (elapsed − target_ms). Network latency can only inflate it, never shrink
+    # it, so it is the authoritative ranking signal; result_ms stays as the
+    # client's claim (display + cross-check only).
+    observed_ms: float | None = None
     submitted_at: float = 0.0
     valid: bool = False
     reject_reason: str = ""
@@ -111,11 +129,21 @@ class Match:
     settled_at: float = 0.0
     creator: str = ""  # first player in the queue — deposits the on-chain stake first
     signed_settlement: dict[str, Any] | None = None  # replay for the other client
+    # Audit #8 F-05: play deadlines (grace window, play expiry) are counted
+    # from ACTIVATION (the joiner pairing in), not from queue entry. A match
+    # that waited 9 minutes in a slow queue must still get its full play
+    # window after pairing. None for unpaired (waiting) matches.
+    activated_at: float | None = None
     # Audit #5: the joiner must know its role BEFORE the creator's deposit is
     # visible on-chain (the creator deposits first by protocol design), so
     # role is persisted and restored with the match instead of being inferred
     # from an on-chain read that cannot succeed yet.
     joiner: str = ""  # second player — deposits after the creator's deposit is visible
+
+    def play_started_at(self) -> float:
+        """The instant the PLAY clock started (activation, falling back to
+        creation for legacy documents that pre-date the field)."""
+        return self.activated_at if self.activated_at else self.created_at
 
     def public_view(self, for_address: str | None = None) -> dict[str, Any]:
         """Round data is per-player secret; only summaries are public."""
@@ -356,6 +384,10 @@ def submit_result(
     reason = _validate_plausibility(match, r, measured_ms, now)
     r.result_ms = measured_ms
     r.submitted_at = now
+    # Audit #8 F-01: record the SERVER-OBSERVED reaction (elapsed − target_ms)
+    # for every submission. Ranking uses this, not the client's claim.
+    if r.revealed_at:
+        r.observed_ms = max(0.0, (now - r.revealed_at) * 1000.0 - r.target_ms)
     if reason:
         r.valid = False
         r.reject_reason = reason
@@ -401,12 +433,29 @@ def _ensure_active(match: Match, address: str) -> None:
         raise MatchError("Not a participant of this match")
 
 
+def _rank_time(r: Round | None) -> float | None:
+    """The ranking time for one player's round.
+
+    Audit #8 F-01: the server-OBSERVED reaction time (elapsed − target_ms)
+    is authoritative, because network latency can only ever inflate it. A
+    client that fabricates a 105ms claim while really reacting in 450ms
+    cannot outrank an honest 220ms player anymore — its OBSERVED time is
+    450ms and it loses the round. Falls back to the claim for legacy
+    documents written before observed_ms existed.
+    """
+    if r is None or not r.valid or r.result_ms is None:
+        return None
+    if r.observed_ms is not None:
+        return r.observed_ms
+    return r.result_ms
+
+
 def _round_winner(mine: dict[int, Round], theirs: dict[int, Round], idx: int) -> str:
     """'a' (mine wins) | 'b' (theirs wins) | '' (undecided) for one round."""
     ra = mine.get(idx)
     rb = theirs.get(idx)
-    va = ra.result_ms if (ra and ra.valid and ra.result_ms is not None) else None
-    vb = rb.result_ms if (rb and rb.valid and rb.result_ms is not None) else None
+    va = _rank_time(ra)
+    vb = _rank_time(rb)
     if va is None and vb is None:
         return ""
     if vb is None:
@@ -469,7 +518,11 @@ def match_completed(match: Match) -> bool:
         mine = match.rounds.get(addr, {}) or {}
         if any(mine.get(i) is None or mine[i].result_ms is None for i in range(ROUNDS)):
             # Every round past the grace deadline is a forfeit round.
-            if time.time() - match.created_at <= MATCH_SETTLE_GRACE_SECONDS:
+            # Audit #8 F-05: the grace window counts from ACTIVATION (the
+            # moment the joiner paired), not from queue entry — a match that
+            # waited 9 minutes in a slow queue must not be instantly voided
+            # (or instantly forfeitable) at its first round.
+            if time.time() - match.play_started_at() <= MATCH_SETTLE_GRACE_SECONDS:
                 return False
     return True
 
@@ -498,13 +551,14 @@ def settle(match: Match) -> dict[str, Any]:
     rounds_b = match.rounds.get(b, {})
 
     wins_a = wins_b = 0
+    forfeit_a = forfeit_b = False
     times_a: list[float] = []
     times_b: list[float] = []
     for idx in range(ROUNDS):
         ra = rounds_a.get(idx)
         rb = rounds_b.get(idx)
-        va = ra.result_ms if (ra and ra.valid and ra.result_ms is not None) else None
-        vb = rb.result_ms if (rb and rb.valid and rb.result_ms is not None) else None
+        va = _rank_time(ra)
+        vb = _rank_time(rb)
         if va is not None:
             times_a.append(va)
         if vb is not None:
@@ -513,9 +567,11 @@ def settle(match: Match) -> dict[str, Any]:
             continue  # double forfeit: round awards nobody
         if vb is None:
             wins_a += 1  # forfeit by b
+            forfeit_b = True
             continue
         if va is None:
             wins_b += 1  # forfeit by a
+            forfeit_a = True
             continue
         if va < vb:
             wins_a += 1
@@ -530,16 +586,20 @@ def settle(match: Match) -> dict[str, Any]:
 
     winner = a if wins_a >= wins_needed else b
     loser = b if winner == a else a
-    # P0-fix (audit #4): the oracle refuses settlements whose time arrays are
-    # empty — and main.py has no fallback, so a forfeit-only winner used to
-    # strand the stake in a settled-without-signature state forever. Reserve
-    # at least one engine-validated time (the max plausible value) so every
-    # settled match is signable. Applied to the RETURNED arrays, not just the
-    # signed scalars, so validatedTimes always matches the signed digest.
+    # Audit #8 F-15: a forfeit side no longer gets a FABRICATED human time
+    # (1200ms) written into the oracle-signed packet and the on-chain event.
+    # Forfeits are declared with the sentinel FORFEIT_SENTINEL_MS = 0 and a
+    # per-side forfeit flag the oracle packet carries; the chain record and
+    # the ledger then tell the truth ("opponent forfeited"), not a lie
+    # ("they reacted in 1200ms"). The oracle still accepts the settlement
+    # because the sentinel keeps the arrays non-empty (audit #4's signability
+    # requirement) while being unambiguous.
     if not times_a:
-        times_a = [float(MAX_HUMAN_MS)]
+        times_a = [FORFEIT_SENTINEL_MS]
+        forfeit_a = True
     if not times_b:
-        times_b = [float(MAX_HUMAN_MS)]
+        times_b = [FORFEIT_SENTINEL_MS]
+        forfeit_b = True
     winner_times = times_a if winner == a else times_b
     loser_times = times_b if winner == a else times_a
     winner_ms = int(round(min(winner_times)))
@@ -554,6 +614,7 @@ def settle(match: Match) -> dict[str, Any]:
         "loser": loser,
         "stake": match.stake,
         "roundWins": {a: wins_a, b: wins_b},
+        "forfeits": {a: forfeit_a, b: forfeit_b},
         "validatedTimes": {a: times_a, b: times_b},
         "winningMedianMs": winner_ms,
         "winnerTimeMs": winner_ms,

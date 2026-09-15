@@ -88,6 +88,9 @@ export interface ConnectedAccountState {
   networkName: string;
   balanceUSDT: number;
   balancePOL?: number;
+  /** F-18: true until the first successful balance fetch. A zero shown
+   *  before that is an RPC failure, not a fact — UI must not gate on it. */
+  balanceUnknown: boolean;
   connected: boolean;
   providerName: string;
 }
@@ -164,6 +167,7 @@ class RealWeb3Manager {
     chainId: CHAIN.chainId,
     networkName: CHAIN.name,
     balanceUSDT: 0,
+    balanceUnknown: true,
     connected: false,
     providerName: '',
   };
@@ -990,15 +994,16 @@ class RealWeb3Manager {
       chainId: CHAIN.chainId,
       networkName: CHAIN.name,
       balanceUSDT: 0,
+      balanceUnknown: true,
       connected: false,
       providerName: '',
     };
     this.notify();
   }
 
-  public async fetchLiveOnChainBalances(address: string): Promise<{ usdt: number; pol: number }> {
+  public async fetchLiveOnChainBalances(address: string): Promise<{ usdt: number; pol: number; ok: boolean }> {
     if (!address || !address.startsWith('0x') || address.length !== 42) {
-      return { usdt: 0, pol: 0 };
+      return { usdt: 0, pol: 0, ok: false };
     }
     const rpcs = CHAIN.rpcUrls;
     for (const rpc of rpcs) {
@@ -1009,33 +1014,55 @@ class RealWeb3Manager {
         const polWei = await provider.getBalance(address);
         const pol = parseFloat(ethers.formatEther(polWei));
 
+        // F-18: read decimals() from the token itself. A testnet token with
+        // 18 decimals no longer inflates every amount by 10^12.
         const usdtContract = new ethers.Contract(
           TOKENS.USDT,
-          ['function balanceOf(address) view returns (uint256)'],
+          [
+            'function balanceOf(address) view returns (uint256)',
+            'function decimals() view returns (uint8)',
+          ],
           provider
         );
         const usdtRaw = await usdtContract.balanceOf(address);
-        const usdt = parseFloat(ethers.formatUnits(usdtRaw, 6));
+        let decimals: number = TOKENS.USDT_DECIMALS;
+        try {
+          const onchainDecimals: number = await usdtContract.decimals();
+          if (Number.isInteger(onchainDecimals) && onchainDecimals > 0 && onchainDecimals <= 36) {
+            decimals = onchainDecimals;
+          }
+        } catch {
+          // older tokens without decimals() — keep the configured default
+        }
+        const usdt = parseFloat(ethers.formatUnits(usdtRaw, decimals));
 
         return {
           usdt: isNaN(usdt) ? 0 : Math.round(usdt * 100) / 100,
           pol: isNaN(pol) ? 0 : Math.round(pol * 10000) / 10000,
+          ok: true,
         };
       } catch (err) {
         console.warn(`[Pulsar Web3] Balance check failed on ${rpc}:`, err);
       }
     }
-    return { usdt: 0, pol: 0 };
+    // F-18: all RPCs failed. Return ok:false — callers must not treat the
+    // zero as the player's real balance.
+    return { usdt: 0, pol: 0, ok: false };
   }
 
-  public async refreshBalances(): Promise<{ usdt: number; pol: number }> {
+  public async refreshBalances(): Promise<{ usdt: number; pol: number; ok: boolean }> {
     if (!this.currentAccount.connected || !this.currentAccount.address) {
-      return { usdt: 0, pol: 0 };
+      return { usdt: 0, pol: 0, ok: false };
     }
     const balances = await this.fetchLiveOnChainBalances(this.currentAccount.address);
-    this.currentAccount.balanceUSDT = balances.usdt;
-    this.currentAccount.balancePOL = balances.pol;
-    this.notify();
+    if (balances.ok) {
+      this.currentAccount.balanceUSDT = balances.usdt;
+      this.currentAccount.balancePOL = balances.pol;
+      this.currentAccount.balanceUnknown = false;
+      this.notify();
+    }
+    // F-18: on total RPC failure the previous balance snapshot is KEPT and
+    // balanceUnknown stays true — a dead RPC must never zero a funded wallet.
     return balances;
   }
 
@@ -1065,6 +1092,7 @@ class RealWeb3Manager {
       shortAddress: short,
       chainId,
       networkName: chainId === 137 ? 'Polygon Mainnet' : chainId === 1 ? 'Ethereum Mainnet' : chainId === 56 ? 'BNB Chain' : 'EVM Network',
+      balanceUnknown: true,
       // P1.16: start at zero; the REAL on-chain USDT balance arrives from
       // fetchLiveOnChainBalances(). Never seed from the profile record.
       balanceUSDT: 0,
@@ -1076,9 +1104,10 @@ class RealWeb3Manager {
 
     // Query live real on-chain balances from Polygon Mainnet without blocking initial UI
     void this.fetchLiveOnChainBalances(formatted).then((live) => {
-      if (this.currentAccount.address === formatted && this.currentAccount.connected) {
+      if (this.currentAccount.address === formatted && this.currentAccount.connected && live.ok) {
         this.currentAccount.balanceUSDT = live.usdt;
         this.currentAccount.balancePOL = live.pol;
+        this.currentAccount.balanceUnknown = false;
         this.notify();
       }
     });

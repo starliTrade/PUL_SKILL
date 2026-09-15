@@ -6,10 +6,15 @@ export interface WalletState {
   playerId?: string;
   balance: number;
   balancePOL?: number;
+  /** F-18: true until a live on-chain balance fetch succeeds. */
+  balanceUnknown?: boolean;
 }
 
 export interface UserStats {
   balance: number;
+  /** F-18: true until a live on-chain balance fetch succeeds — a zero
+   *  balance is then an RPC failure, not a fact. */
+  balanceUnknown?: boolean;
   wins: number;
   losses: number;
   voids: number;

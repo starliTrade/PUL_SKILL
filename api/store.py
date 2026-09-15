@@ -28,6 +28,7 @@ from typing import Any, Callable, Optional
 
 from match_engine import (
     MATCH_EXPIRY_SECONDS,
+    QUEUE_EXPIRY_SECONDS,
     ROUND_EXPIRY_SECONDS,
     Match,
     MatchError,
@@ -58,6 +59,10 @@ def _round_to_doc(r: Round) -> dict[str, Any]:
         "revealed": r.revealed,
         "revealed_at": r.revealed_at,
         "result_ms": r.result_ms,
+        # Audit #8 F-01: the server-observed reaction must survive
+        # persistence, or the cross-replica ranking falls back to the
+        # fabricable client claim.
+        "observed_ms": r.observed_ms,
         "submitted_at": r.submitted_at,
         "valid": r.valid,
         "reject_reason": r.reject_reason,
@@ -78,6 +83,7 @@ def _round_from_doc(d: dict[str, Any]) -> Round:
     r.revealed = bool(d.get("revealed", False))
     r.revealed_at = float(d.get("revealed_at", 0.0))
     r.result_ms = d.get("result_ms")
+    r.observed_ms = d.get("observed_ms")
     r.submitted_at = float(d.get("submitted_at", 0.0))
     r.valid = bool(d.get("valid", False))
     r.reject_reason = d.get("reject_reason", "")
@@ -90,6 +96,8 @@ def _match_to_doc(m: Match) -> dict[str, Any]:
         "match_id": m.match_id,
         "stake": m.stake,
         "created_at": m.created_at,
+        # Audit #8 F-05: activation instant (play clock origin) persisted.
+        "activated_at": m.activated_at,
         "players": m.players,
         # P0-fix: creator was never persisted, so after the first read the
         # queueing player lost youAreCreator=true and nobody ever sent
@@ -116,6 +124,8 @@ def _match_from_doc(d: dict[str, Any]) -> Match:
         created_at=float(d["created_at"]),
     )
     m.players = dict(d.get("players", {}))
+    # Audit #8 F-05: restore the activation instant (None for legacy docs).
+    m.activated_at = d.get("activated_at")
     # P0-fix: restore creator; for documents written before this field
     # existed, derive it (players preserves insertion order — creator first).
     m.creator = d.get("creator", "") or next(iter(m.players), "")
@@ -166,6 +176,9 @@ class InMemoryStore:
                 m.players[addr] = {"address": addr, "joinedAt": time.time()}
                 m.status = "active"
                 m.joiner = addr
+                # Audit #8 F-05: the PLAY clock starts when the joiner pairs,
+                # not when the creator queued.
+                m.activated_at = time.time()
                 bucket.remove(other)
                 self.player_match[addr] = m.match_id
                 return m
@@ -208,7 +221,12 @@ class InMemoryStore:
         now = time.time()
         for mid in list(self.matches):
             m = self.matches[mid]
-            if m.status in ("waiting", "active") and now - m.created_at > MATCH_EXPIRY_SECONDS:
+            if m.status == "waiting" and now - m.created_at > QUEUE_EXPIRY_SECONDS:
+                m.status = "void"
+            elif (
+                m.status == "active"
+                and now - m.play_started_at() > MATCH_EXPIRY_SECONDS
+            ):
                 m.status = "void"
         for stake, bucket in list(self.queue.items()):
             self.queue[stake] = [
@@ -271,6 +289,9 @@ class FirestoreStore:
                         m.players[addr] = {"address": addr, "joinedAt": time.time()}
                         m.status = "active"
                         m.joiner = addr
+                        # Audit #8 F-05: activation instant — the play/grace
+                        # clock starts at pairing, not queue entry.
+                        m.activated_at = time.time()
                         transaction.set(mref, _match_to_doc(m))
                         transaction.set(queue_ref, {"waitingMatchId": None})
                         return m
@@ -357,7 +378,7 @@ class FirestoreStore:
                 qd.reference.set({"waitingMatchId": None})
                 continue
             m = _match_from_doc(snap.to_dict())
-            if m.status == "waiting" and now - m.created_at > MATCH_EXPIRY_SECONDS:
+            if m.status == "waiting" and now - m.created_at > QUEUE_EXPIRY_SECONDS:
                 m.status = "void"
                 self._match_ref(m.match_id).set(_match_to_doc(m))
                 qd.reference.set({"waitingMatchId": None})
@@ -472,6 +493,56 @@ class DurableMatchStore:
             self._mirror(self._fs_store.get(match_id))
         except MatchError:
             pass
+
+    def player_live_match(self, address: str) -> Match | None:
+        """Audit #8 F-13: DURABLE idempotency for matchmaking.
+
+        Previously the address→live-match map lived only in process memory
+        (``player_match`` + the local cache), so a re-poll landing on another
+        replica (or after a recycle) minted an orphan waiting match that the
+        client could then fund twice. Now the mapping is read from Firestore
+        itself: any live (waiting|active) match whose doc contains this
+        address is returned, regardless of which replica holds the cache.
+        """
+        addr = address.lower()
+        if self._fs_store is None:
+            live = self.memory.player_match.get(addr)
+            if not live:
+                return None
+            try:
+                return self.memory.get(live)
+            except MatchError:
+                # Stale map entry (match voided/expunged) — not an error.
+                return None
+        try:
+            docs = (
+                self._fs_store.db.collection(COLLECTION)
+                .where("players.%s.address" % addr, "==", addr)
+                .limit(5)
+                .stream()
+            )
+            candidates = [
+                _match_from_doc(d.to_dict())
+                for d in docs
+                if _match_from_doc(d.to_dict()).status in ("waiting", "active")
+            ]
+            if not candidates:
+                return None
+            # Deterministic pick: the most recently activated/created live match.
+            candidates.sort(
+                key=lambda m: m.activated_at or m.created_at, reverse=True
+            )
+            return candidates[0]
+        except Exception:
+            # A query failure must not break matchmaking — fall back to the
+            # per-process map (the old behavior) rather than raising.
+            live = self.memory.player_match.get(addr)
+            if live:
+                try:
+                    return self.memory.get(live)
+                except MatchError:
+                    return None
+            return None
 
 
 def install_persistence(store: DurableMatchStore, engine_module: Any) -> None:

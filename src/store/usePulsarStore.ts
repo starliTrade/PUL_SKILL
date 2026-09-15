@@ -3,6 +3,7 @@ import { WalletState, UserStats, MatchHistoryItem } from '../types';
 import { realWeb3Manager, RealWeb3Manager, UserWalletData, LeaderboardPlayer, ConnectedAccountState } from '../lib/realWeb3';
 import { EIP6963ProviderDetail } from '../lib/eip6963';
 import { XPSystem, XPSummary } from '../lib/xpSystem';
+import { clearServerSession } from '../lib/gameServerClient';
 
 /**
  * P0.7 — Single shared store.
@@ -166,6 +167,11 @@ const connectDirectWallet = async (address: string, providerName?: string) => {
 // ran in parallel with the real session, and confused the trust model.
 const disconnectWallet = () => {
   try { localStorage.removeItem('pulsar_siwe_session'); } catch {}
+  // Audit #8 F-06 — disconnect MUST kill the server session too. The old
+  // version only cleared a legacy key, leaving the Bearer token valid in
+  // this browser (shared-device leak). clearServerSession removes it, so
+  // the next ranked action requires a fresh SIWE handshake.
+  clearServerSession();
   realWeb3Manager.disconnect();
   account = { ...realWeb3Manager.getAccount() };
   userData = EMPTY_USER_DATA;
@@ -299,10 +305,12 @@ export function usePulsarStore() {
       (state.account.address ? RealWeb3Manager.getPlayerTagForAddress(state.account.address) : undefined),
     balance: currentUsdtBalance,
     balancePOL: state.account.balancePOL || 0,
+    balanceUnknown: state.account.balanceUnknown !== false,
   };
 
   const statsState: UserStats = {
     balance: currentUsdtBalance,
+    balanceUnknown: state.account.balanceUnknown !== false,
     wins: state.userData.wins,
     losses: state.userData.losses,
     voids: state.userData.voids,

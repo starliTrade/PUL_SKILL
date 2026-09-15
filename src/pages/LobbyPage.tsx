@@ -22,6 +22,7 @@ import { ConnectWallet } from '../components/ConnectWallet';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { FriendChallengeModal } from '../components/FriendChallengeModal';
 import { AntiCheat, getRandomOpponent } from '../lib/antiCheat';
+import { ECONOMY } from '../lib/chain';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { realWeb3Manager, MatchRecord } from '../lib/realWeb3';
@@ -75,7 +76,9 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
     };
   }, []);
 
-  const prize = (selectedStake * 2) * 0.98;
+  // F-17: prize math derives from the single shared constant (mirrors the
+  // contract's PLATFORM_FEE_BPS) — no layer-local hardcodes left.
+  const prize = (selectedStake * 2 * ECONOMY.winnerShareBps) / 10_000;
 
   const handleStartMatchmaking = () => {
     // P1.15/P2.2: real-money mode is honest — it only exists when BOTH the
@@ -98,7 +101,10 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
       return;
     }
 
-    if (gameMode === 'real' && stats.balance < selectedStake) {
+    // F-18: a zero balance is only a fact once a live fetch succeeded. Until
+    // then the gate must not mislead a funded player with a wrong-network or
+    // dead-RPC zero.
+    if (gameMode === 'real' && !stats.balanceUnknown && stats.balance < selectedStake) {
       sounds.playError();
       setShowWalletAlert(true);
       return;
@@ -443,7 +449,9 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                 const opp = match.opponentName || match.opponent || 'Arena Duelist';
                 const reactionMs = match.yourTime || match.reactionTime || match.opponentTime || 185;
                 const stakeVal = Number(match.entryFee ?? match.stake ?? 1);
-                const prizeVal = Number(match.prize || (stakeVal * 1.96));
+                const prizeVal = Number(
+                  match.prize || ((stakeVal * 2 * ECONOMY.winnerShareBps) / 10_000),
+                );
 
                 const timeAgo = match.timestamp
                   ? (() => {

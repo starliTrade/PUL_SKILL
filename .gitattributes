@@ -1,15 +1,18 @@
-*.png filter=lfs diff=lfs merge=lfs -text
-*.jpg filter=lfs diff=lfs merge=lfs -text
-*.jpeg filter=lfs diff=lfs merge=lfs -text
-*.gif filter=lfs diff=lfs merge=lfs -text
-*.webp filter=lfs diff=lfs merge=lfs -text
-*.mp4 filter=lfs diff=lfs merge=lfs -text
-*.mov filter=lfs diff=lfs merge=lfs -text
-*.mp3 filter=lfs diff=lfs merge=lfs -text
-*.wav filter=lfs diff=lfs merge=lfs -text
-*.woff filter=lfs diff=lfs merge=lfs -text
-*.woff2 filter=lfs diff=lfs merge=lfs -text
-*.ttf filter=lfs diff=lfs merge=lfs -text
-*.otf filter=lfs diff=lfs merge=lfs -text
-*.pdf filter=lfs diff=lfs merge=lfs -text
-*.zip filter=lfs diff=lfs merge=lfs -text
+# F-20: LFS is not enforced anywhere in this project's toolchain — a rule
+# without LFS makes every clone warn and breaks forced-LFS environments.
+# Only text-based diffing is kept.
+*.png -text diff merge
+*.jpg -text diff merge
+*.jpeg -text diff merge
+*.gif -text diff merge
+*.webp -text diff merge
+*.mp4 -text diff merge
+*.mov -text diff merge
+*.mp3 -text diff merge
+*.wav -text diff merge
+*.woff -text diff merge
+*.woff2 -text diff merge
+*.ttf -text diff merge
+*.otf -text diff merge
+*.pdf -text diff merge
+*.zip -text diff merge
