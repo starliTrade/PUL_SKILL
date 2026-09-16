@@ -144,6 +144,10 @@ def record_settlement(match: Any) -> None:
       users/{winner|loser} — wins/losses/totalMatches advanced by the FACT
       leaderboard/{addr} — real stats rows for the podium
 
+    The settled facts are read from the ORACLE-SIGNED envelope
+    (`match.signed_settlement`), which mirrors engine.settle()'s result:
+    `validatedTimes {addr: [ms, ...]}` and `forfeits {addr: bool}`.
+
     Idempotency: the batch carries `settlementId = sha256(matchId|winner|
     times)`. If the match doc already records the same id, the settlement was
     already ledgered (retry / replica race) and everything is skipped — so a
@@ -160,13 +164,27 @@ def record_settlement(match: Any) -> None:
         settled_at = int(getattr(match, "settled_at", 0) or time.time())
         signed = getattr(match, "signed_settlement", None) or {}
         match_id = getattr(match, "match_id", "")
-        forfeit = bool(getattr(match, "forfeit", False))
+        # Audit #11 C1: the Match dataclass has NO `forfeit` or
+        # `validated_times` attributes — reading them via getattr() silently
+        # produced forfeit=False and an empty idempotency key for EVERY
+        # settlement. The truth lives in the signed envelope (engine.settle's
+        # result, mirrored by _attach_signed_envelope):
+        #   validatedTimes {addr: [ms, ...]}, forfeits {addr: bool}.
+        packet = signed if isinstance(signed, dict) else {}
+        raw_times = packet.get("validatedTimes", {}) or {}
+        validated_times: dict[str, list[float]] = {
+            a: [float(t) for t in (raw_times.get(a) or []) if isinstance(t, (int, float))]
+            for a in players
+        }
+        forfeit = any(bool(v) for v in (packet.get("forfeits", {}) or {}).values())
         prize = round(stake * 2 * _winner_share(), 2) if winner else 0.0
 
         # F-07 idempotency key: derived from the settled FACTS themselves, so
         # the same settlement reached twice produces the same id.
         outcome = winner or "void"
-        times_key = getattr(match, "validated_times", None) or {}
+        # Audit #11 C1: the key hashes the REAL validated times (was: a
+        # nonexistent attribute → always ""), so idempotency is per-FACT.
+        times_key = validated_times
         settlement_id = hashlib.sha256(
             "|".join(
                 [
@@ -216,15 +234,9 @@ def record_settlement(match: Any) -> None:
                     "oracleSignature": signed.get("signature", ""),
                 }
             )
-            times = getattr(match, "players", {}) or {}
-            doc["reactionTimes"] = {
-                a: [
-                    r.get("result_ms")
-                    for r in ((times.get(a) or {}).get("rounds") or {}).values()
-                    if isinstance(r, dict) and r.get("result_ms")
-                ]
-                for a in players
-            }
+            # Audit #11 C1: reaction times come from the signed packet's
+            # validatedTimes (was: match.players misread as rounds — always []).
+            doc["reactionTimes"] = {a: list(validated_times.get(a, [])) for a in players}
 
         # ONE atomic batch: match doc + both user counters + leaderboard row
         # commit together or not at all (F-07).

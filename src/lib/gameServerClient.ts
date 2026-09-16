@@ -46,8 +46,14 @@ export const loadServerSession = (): ServerSession | null => {
     const raw = localStorage.getItem(SESSION_KEY);
     if (!raw) return null;
     const s = JSON.parse(raw) as ServerSession;
-    // Server sessions expire after 24h; treat anything older than 23h as stale.
-    if (Date.now() - s.issuedAt > 23 * 60 * 60 * 1000) return null;
+    // Audit #11 M1: the server (api/auth.py SESSION_TTL_SECONDS) expires the
+    // bearer token after 2 HOURS — the old 23h client window kept a session
+    // the server had already revoked, so every call 401'd until the user
+    // manually reconnected. Treat 1h55m as stale (5 min skew headroom) so
+    // ensureSession() re-runs the SIWE handshake BEFORE the token dies.
+    const SERVER_TTL_MS = 2 * 60 * 60 * 1000;
+    const SKEW_MS = 5 * 60 * 1000;
+    if (Date.now() - s.issuedAt > SERVER_TTL_MS - SKEW_MS) return null;
     return s;
   } catch {
     return null;

@@ -82,6 +82,7 @@ FORFEIT_SENTINEL_MS = 0.0      # audit #8 F-15: declared forfeit time in the
 # P0-fix (audit #2): after this long past activation, a participant may settle
 # an unfinished match — missing rounds become forfeits. Before that, settle()
 # refuses so nobody can race ahead of their opponent (or void a fresh match).
+MATCH_SETTLE_GRACE_SECONDS = 480  # 8 minutes after activation (unchanged)
 
 
 def settlement_deadline(match: Any) -> int:
@@ -118,19 +119,6 @@ _PROOF_SECRET = hashlib.pbkdf2_hmac(
     dklen=32,
     iterations=1,  # HKDF-style single-round derivation of a high-entropy input
 )
-
-# --- Audit #10 (item 5): ONE deadline table -----------------------------------
-#
-# The expiry windows used to live in three uncoordinated places (engine,
-# oracle.py's signature deadline, the contract's MATCH_TIMEOUT). These are the
-# only numbers the server is allowed to reason about; oracle.py imports them
-# so a signature can never outlive the on-chain refund horizon.
-MATCH_TIMEOUT_SECONDS = 30 * 60  # == PulsarEscrow.MATCH_TIMEOUT (30 min):
-                                 # the HARD ceiling — after this the contract
-                                 # lets anyone refund both stakes and a
-                                 # settlement signature is worthless.
-MATCH_SETTLE_GRACE_SECONDS = 480  # 8 minutes after activation (unchanged)
-
 
 class MatchError(Exception):
     """Raised on invalid match state transitions."""

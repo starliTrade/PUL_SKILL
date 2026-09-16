@@ -426,6 +426,47 @@ class FirestoreStore:
         self._match_ref(match.match_id).set(_match_to_doc(match))
         self.local.put(match)
 
+    def sweep_stale_settlements(self) -> list[Match]:
+        """Audit #11 C2: re-sign sweep over the DURABLE backend.
+
+        ``_resign_stale_settlements`` used to iterate ``store.memory.matches``
+        — the per-REPLICA cache. On Firestore, a settled match written by
+        replica A was invisible to replica B's sweep, so if both players
+        closed their tabs before claiming, the winner's proof expired and was
+        refreshed by nobody (prize unspendable until pure luck re-routed the
+        traffic). This scans the COLLECTION itself for settled matches whose
+        signed envelope's on-chain deadline has passed and hands them to the
+        caller (main.py re-signs inside the store transaction).
+
+        Ordered by settled_at ascending (oldest first) so the freshest
+        settlements always make the cut. Best-effort: a missing composite
+        index or a transient error returns what was scanned so far."""
+        now = time.time()
+        found: list[Match] = []
+        try:
+            docs = (
+                self.db.collection(COLLECTION)
+                .where("status", "==", "settled")
+                .order_by("settled_at")
+                .limit(100)
+                .stream()
+            )
+            for doc in docs:
+                try:
+                    m = _match_from_doc(doc.to_dict() or {})
+                except Exception:
+                    continue
+                if m.status != "settled" or not m.signed_settlement:
+                    continue
+                deadline = int((m.signed_settlement or {}).get("deadline", 0) or 0)
+                if deadline and now < deadline:
+                    continue  # still spendable — nothing to do
+                found.append(m)
+        except Exception:
+            # Sweep is best-effort (a missing index must not crash queueing).
+            pass
+        return found
+
 
 class DurableMatchStore:
     """
@@ -503,6 +544,14 @@ class DurableMatchStore:
         if self._fs_store is not None:
             self._fs_store.sweep_expired()
         self.memory.sweep_expired()
+
+    def sweep_stale_settlements(self) -> list[Match]:
+        """Audit #11 C2: settled matches with an expired envelope, read from
+        the DURABLE backend (empty list on the memory backend — the caller's
+        own cache IS the full dataset there, the original path still works)."""
+        if self._fs_store is not None:
+            return self._fs_store.sweep_stale_settlements()
+        return []
 
     def put(self, match: Match) -> None:
         """Persist after a mutation (commit/reveal/submit/settle)."""

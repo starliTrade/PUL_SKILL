@@ -1202,7 +1202,10 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
               </button>
             </div>
           </motion.div>
-        ) : wallet.connected && currentStake > 0 && wallet.balance < currentStake ? (
+        ) : wallet.connected &&
+          currentStake > 0 &&
+          !wallet.balanceUnknown &&
+          wallet.balance < currentStake ? (
           <motion.div
             initial={{ opacity: 0, scale: 0.96 }}
             animate={{ opacity: 1, scale: 1 }}

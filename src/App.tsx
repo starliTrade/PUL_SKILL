@@ -1,6 +1,7 @@
 import React, { Suspense, lazy, useState, useEffect } from 'react';
 import type { LegalTab } from './pages/LegalPage';
 import { EligibilityGate } from './components/EligibilityGate';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { BottomNav, TabType } from './components/BottomNav';
 
 // Audit-#5 item 10 — route-level code splitting. Every page is lazy-loaded,
@@ -75,6 +76,7 @@ export default function App() {
   const isGameRoute = currentPath === '/game/reaction';
 
   return (
+    <ErrorBoundary>
     <div className="min-h-screen bg-[#07080a] text-slate-100 flex flex-col font-sans selection:bg-sky-500/30 selection:text-white">
       {/* Route Views (lazy-loaded chunks per route) */}
       <Suspense fallback={<RouteFallback />}>
@@ -111,5 +113,6 @@ export default function App() {
         />
       )}
     </div>
+    </ErrorBoundary>
   );
 }

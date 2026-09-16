@@ -67,6 +67,9 @@ RL_CLAIM_MAX = 10        # claim calls per minute per address (audit #10 #7:
                          # an RPC receipt fetch per call — cheap-DoS surface)
                          # CPU work; unthrottled it was a cheap DoS surface)
 RL_ROUND_MAX = 60        # target reveals + result submissions per minute per
+RL_USERNAME_LOOKUP_MAX = 60  # GET /api/username/{name} per minute per IP
+                         # (audit #11 H3: without this the registry is
+                         # enumerable — every possible name probed for free)
                          # address — hot endpoints that each trigger store work
 
 # Audit #7 R3: limiter backend decoupling. The distributed (Firestore-backed)
@@ -622,6 +625,14 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
                     result = None
                 if result and result.get("status") == "settled":
                     res["settled"] = _attach_signed_envelope(m, result)
+                    # Audit #11 H6: the NATURAL Bo3 completion usually lands
+                    # here (the client requests /settle only to FETCH the
+                    # stored envelope, which replays without ledgering) — so
+                    # the economy ledger must be written in THIS path too.
+                    # record_settlement is best-effort and idempotent
+                    # (settlementId), so the later replay path can never
+                    # double-count.
+                    economy.record_settlement(m)
             return res
 
         res = store.update(body.matchId, _mutate)
@@ -737,6 +748,12 @@ def _resign_stale_settlements() -> None:
     match whose envelope is stale but whose on-chain duel can still pay
     (inside MATCH_TIMEOUT). Sweep is best-effort: failures never block queueing."""
     try:
+        # Audit #11 C2: iterating store.memory.matches scanned only THIS
+        # replica's cache — on Firestore, matches settled on other replicas
+        # were never re-signed (both players close tabs → prize unspendable
+        # until luck re-routes traffic). The durable sweep reads the settled
+        # COLLECTION itself, so every replica sees the full stale set. The
+        # memory-cache pass stays as the zero-cost fast path.
         for mid, m in list(getattr(store.memory, "matches", {}).items()):
             if m.status != "settled" or not m.signed_settlement:
                 continue
@@ -747,6 +764,14 @@ def _resign_stale_settlements() -> None:
                 continue  # past the on-chain horizon — only refund applies
             try:
                 store.update(mid, _settle_once)
+            except (MatchError, HTTPException):
+                pass
+        for m in store.sweep_stale_settlements():
+            deadline = int((m.signed_settlement or {}).get("deadline", 0) or 0)
+            if deadline and time.time() >= engine.settlement_deadline(m):
+                continue  # past the on-chain horizon — only refund applies
+            try:
+                store.update(m.match_id, _settle_once)
             except (MatchError, HTTPException):
                 pass
     except Exception:
@@ -911,6 +936,10 @@ def username_claim(body: UsernameRequest, request: Request) -> dict[str, Any]:
 @app.get("/api/username/{name}")
 def username_lookup(name: str, request: Request) -> dict[str, Any]:
     _auth(request)  # must hold a session; reads stay public via Firestore
+    # Audit #11 H3: session auth alone does not stop name enumeration (a
+    # script can hold one valid session). IP-keyed cap keeps the check cheap
+    # for the UI (a couple of calls per claim) while throttling crawlers.
+    _rl_check_ip("username_lookup", request, RL_USERNAME_LOOKUP_MAX)
     normalized = name.strip().lower()
     db = None
     try:

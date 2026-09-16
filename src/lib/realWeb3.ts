@@ -26,8 +26,6 @@ import { isMobileDevice,  isWalletInAppBrowser,
   openWalletConnectInNativeApp,
 } from './web3DeepLinks';
 
-const DEFAULT_REOWN_PROJECT_ID = '34c47f30708c637d30c239a5b1cdb65f';
-
 export const getWalletConnectProjectId = (): string => {
   if (typeof window !== 'undefined') {
     const userStored = localStorage.getItem('pulsar_reown_project_id') || localStorage.getItem('pulsar_wc_project_id');
@@ -39,7 +37,13 @@ export const getWalletConnectProjectId = (): string => {
   if (envId && typeof envId === 'string' && envId.trim().length > 0) {
     return envId.trim();
   }
-  return DEFAULT_REOWN_PROJECT_ID;
+  // Audit #11 M4: NO hardcoded shared Project ID ships in the bundle anymore
+  // (a shared relay identity is rate-limited per-app and ties every
+  // deployment to one wallet dashboard). Configure VITE_WALLETCONNECT_
+  // PROJECT_ID per environment; without it hasValidWalletConnectProjectId()
+  // is false and the connect flow fails fast with a clear message instead
+  // of silently riding a shared identity.
+  return '';
 };
 
 export const setWalletConnectProjectId = (id: string): void => {
@@ -59,7 +63,8 @@ export const hasValidWalletConnectProjectId = (): boolean => {
 };
 
 /**
- * Bulletproof resolver for WalletConnect EthereumProvider class
+ * EthereumProvider class resolver for WalletConnect (ESM/CJS/default-export
+ * shapes across bundlers).
  * Handles ESM, CJS, default export wrapping, and dynamic imports across all mobile and desktop browsers
  */
 async function getEthereumProviderClass(): Promise<any> {
