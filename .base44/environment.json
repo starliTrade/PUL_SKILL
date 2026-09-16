@@ -1,0 +1,13 @@
+{
+  "previewPort": 3000,
+  "healthPath": "/",
+  "startCommand": "docker compose -f docker-compose.base44.yml up -d",
+  "secrets": [
+    {
+      "name": "ORACLE_SIGNING_SECRET",
+      "description": "Server-side HMAC/signing secret for the PULSAR game server (api/). Required at boot — auth.py and match_engine.py refuse to start without it. Not a third-party credential; a generated dev placeholder is sufficient for local play. Generate a fresh random value for production.",
+      "requiredAtBoot": true,
+      "generatedForDevelopment": true
+    }
+  ]
+}
