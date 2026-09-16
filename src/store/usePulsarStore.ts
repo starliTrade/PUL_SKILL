@@ -3,7 +3,7 @@ import { WalletState, UserStats, MatchHistoryItem } from '../types';
 import { realWeb3Manager, RealWeb3Manager, UserWalletData, LeaderboardPlayer, ConnectedAccountState } from '../lib/realWeb3';
 import { EIP6963ProviderDetail } from '../lib/eip6963';
 import { XPSystem, XPSummary } from '../lib/xpSystem';
-import { clearServerSession } from '../lib/gameServerClient';
+import { claimUsername, clearServerSession, ensureSession, GameServerUnavailableError } from '../lib/gameServerClient';
 
 /**
  * P0.7 — Single shared store.
@@ -253,12 +253,43 @@ const updatePlayerTag = async (newTag: string): Promise<{ success: boolean; erro
   if (!account.connected || !account.address) {
     return { success: false, error: 'Please connect your wallet first' };
   }
-  const result = await realWeb3Manager.claimUsername(newTag, account.address);
-  if (result.success) {
+  // Audit #10 (item 8): the claim is now SERVER-executed and authenticated by
+  // this wallet's SIWE session — the client can no longer write
+  // usernames/{name} with an arbitrary address (squatting / identity theft).
+  // Availability is still checked locally for instant UX feedback, but the
+  // server's atomic claim is the authority (first verified claim wins).
+  const availability = await realWeb3Manager.checkUsernameAvailability(newTag, account.address);
+  if (!availability.available) {
+    return { success: false, error: availability.error || 'Username is not available' };
+  }
+  try {
+    const session = await ensureSession(account.address, async (message: string) => {
+      const provider = realWeb3Manager.getActiveEip1193Provider();
+      if (!provider) throw new Error('No active wallet to sign in with.');
+      try {
+        return await provider.request({ method: 'personal_sign', params: [message, account.address] });
+      } catch (e: unknown) {
+        const code = (e as { code?: number })?.code;
+        if (code === -32601 || code === -32602) {
+          return await provider.request({ method: 'signMessage', params: [account.address, message] });
+        }
+        throw e;
+      }
+    });
+    const claim = await claimUsername(session, newTag);
+    if (!claim.ok) {
+      return { success: false, error: claim.detail || 'Username claim was rejected by the server' };
+    }
     const updated = await realWeb3Manager.loadUserDataAsync(account.address);
     setUserData(updated);
+    return { success: true };
+  } catch (e: unknown) {
+    if (e instanceof GameServerUnavailableError) {
+      return { success: false, error: 'Game server is not configured — username claims require it.' };
+    }
+    const message = e instanceof Error ? e.message : 'Failed to claim username.';
+    return { success: false, error: message };
   }
-  return result;
 };
 
 const checkUsernameAvailability = async (tag: string) => {

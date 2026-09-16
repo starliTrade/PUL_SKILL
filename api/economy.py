@@ -55,10 +55,34 @@ def ledger_available() -> bool:
     return _fs_db() is not None
 
 
+# Audit #10 (item 6): ledger failures are no longer only a stderr line nobody
+# greps. Every failure increments in-process counters exposed by
+# ledger_health() (surfaced on /api/health), so a dead ledger is VISIBLE in
+# monitoring instead of being discovered during a payout dispute.
+_LEDGER_FAILURES = {"record_settlement": 0, "record_claim": 0, "total": 0}
+_LEDGER_LAST_ERROR: dict[str, Any] = {}
+
+
 def _log_ledger_error(where: str, exc: BaseException) -> None:
-    """F-07: a silent ledger is an invisible lie. Log to stderr so the deploy
-    logs surface it (the money path itself stays unaffected)."""
+    """F-07: a silent ledger is an invisible lie. Log to stderr AND bump the
+    health counters (the money path itself stays unaffected)."""
+    try:
+        _LEDGER_FAILURES[where] = _LEDGER_FAILURES.get(where, 0) + 1
+        _LEDGER_FAILURES["total"] += 1
+        _LEDGER_LAST_ERROR.clear()
+        _LEDGER_LAST_ERROR.update({"where": where, "error": repr(exc)[:200], "at": int(time.time())})
+    except Exception:
+        pass
     print(f"[economy] ledger write failed in {where}: {exc!r}", file=sys.stderr)
+
+
+def ledger_health() -> dict[str, Any]:
+    """Observability for the best-effort ledger (audit #10 item 6)."""
+    return {
+        "available": ledger_available(),
+        "failures": dict(_LEDGER_FAILURES),
+        "lastError": dict(_LEDGER_LAST_ERROR),
+    }
 
 
 def _winner_share() -> float:
@@ -259,6 +283,7 @@ def _inc(n: float) -> dict[str, Any]:
 
 __all__ = [
     "ledger_available",
+    "ledger_health",
     "record_claim",
     "record_settlement",
     "settlement_id_for",

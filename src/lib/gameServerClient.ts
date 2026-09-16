@@ -277,6 +277,13 @@ export interface SettledMatch {
 export const settleMatch = (session: ServerSession, matchId: string): Promise<SettledMatch> =>
   request<SettledMatch>(`/api/match/${encodeURIComponent(matchId)}/settle`, {}, session);
 
+// Audit #10 (item 8): username claims moved OFF the direct-Firestore path
+// (anyone could write usernames/{name} with any address — rules could not
+// prove ownership). The claim now runs server-side, authenticated by this
+// caller's SIWE session, inside the server's idempotent transaction.
+export const claimUsername = (session: ServerSession, username: string): Promise<{ ok: boolean; cleanTag?: string; alreadyOwned?: boolean; detail?: string }> =>
+  request(`/api/username/claim`, { username }, session);
+
 /**
  * Convert a free-form server match id to the bytes32 the escrow contract uses.
  * MUST stay identical to api/oracle.py:_match_id_bytes32 (SHA-256 of the string).

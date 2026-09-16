@@ -58,6 +58,16 @@ SUBMIT_LATENCY_TOLERANCE_MS = 400.0  # max plausible network latency between a
                                 # honest 220ms player even when it passes the
                                 # plausibility gate (see Round.observed_ms).
 ROUND_EXPIRY_SECONDS = 60
+# --- Audit #10 (item 5): ONE deadline table -----------------------------------
+#
+# The expiry windows used to live in three uncoordinated places (this engine,
+# oracle.py's signature deadline, the contract's MATCH_TIMEOUT). These are the
+# numbers the server reasons about; oracle.py imports them so a signature can
+# never outlive the on-chain refund horizon.
+MATCH_TIMEOUT_SECONDS = 30 * 60  # == PulsarEscrow.MATCH_TIMEOUT (30 min): the
+                                 # HARD ceiling — after this the contract lets
+                                 # anyone refund both stakes and a settlement
+                                 # signature is worthless.
 MATCH_EXPIRY_SECONDS = 600     # active-play expiry, counted from ACTIVATION
                                # (the moment the joiner paired), NOT from queue
                                # entry (audit #8 F-05). The on-chain refund
@@ -72,7 +82,15 @@ FORFEIT_SENTINEL_MS = 0.0      # audit #8 F-15: declared forfeit time in the
 # P0-fix (audit #2): after this long past activation, a participant may settle
 # an unfinished match — missing rounds become forfeits. Before that, settle()
 # refuses so nobody can race ahead of their opponent (or void a fresh match).
-MATCH_SETTLE_GRACE_SECONDS = 480  # 8 minutes after activation
+
+
+def settlement_deadline(match: Any) -> int:
+    """Audit #10 (item 5): the last instant a settlement of `match` is worth
+    anything on-chain: activation + the contract's MATCH_TIMEOUT. After this
+    the duel is refundable and NO signature can pay the winner — every signed
+    deadline must be clamped to this."""
+    origin = float(getattr(match, "activated_at", 0.0) or getattr(match, "created_at", 0.0))
+    return int(origin + MATCH_TIMEOUT_SECONDS)
 
 # Secret used to MAC result proofs.
 # Audit #6 C4: this was a per-process `secrets.token_bytes(32)`, so with N
@@ -82,13 +100,36 @@ MATCH_SETTLE_GRACE_SECONDS = 480  # 8 minutes after activation
 # a context label via HKDF-SHA256, so EVERY replica derives the identical
 # key while remaining cryptographically independent of the oracle key
 # itself. Rotating the secret invalidates in-flight proofs only.
+# Audit #10 (item 9): the `secrets.token_bytes(32)` fallback branch here was
+# DEAD CODE — api/auth.py refuses to start without ORACLE_SIGNING_SECRET, so
+# this module can never be imported without it. A per-process random proof key
+# silently splitting commit/reveal across replicas was the exact bug class
+# audit #6 C4 fixed; keeping a fallback branch that re-introduces it (should
+# the auth gate ever change) is worse than failing loudly.
+if not os.environ.get("ORACLE_SIGNING_SECRET"):
+    raise RuntimeError(
+        "ORACLE_SIGNING_SECRET is required: result-proof keys must be "
+        "identical across replicas (derive deterministically, never per-process)."
+    )
 _PROOF_SECRET = hashlib.pbkdf2_hmac(
     "sha256",
-    os.environ.get("ORACLE_SIGNING_SECRET", "").encode("utf-8"),
+    os.environ["ORACLE_SIGNING_SECRET"].encode("utf-8"),
     b"pulsar/result-proof/v1",
     dklen=32,
     iterations=1,  # HKDF-style single-round derivation of a high-entropy input
-) if os.environ.get("ORACLE_SIGNING_SECRET") else secrets.token_bytes(32)
+)
+
+# --- Audit #10 (item 5): ONE deadline table -----------------------------------
+#
+# The expiry windows used to live in three uncoordinated places (engine,
+# oracle.py's signature deadline, the contract's MATCH_TIMEOUT). These are the
+# only numbers the server is allowed to reason about; oracle.py imports them
+# so a signature can never outlive the on-chain refund horizon.
+MATCH_TIMEOUT_SECONDS = 30 * 60  # == PulsarEscrow.MATCH_TIMEOUT (30 min):
+                                 # the HARD ceiling — after this the contract
+                                 # lets anyone refund both stakes and a
+                                 # settlement signature is worthless.
+MATCH_SETTLE_GRACE_SECONDS = 480  # 8 minutes after activation (unchanged)
 
 
 class MatchError(Exception):

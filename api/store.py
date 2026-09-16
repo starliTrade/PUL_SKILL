@@ -365,9 +365,16 @@ class FirestoreStore:
         return out
 
     def sweep_expired(self) -> None:
-        """Void expired matches and clear stale queue slots (best effort)."""
+        """Void expired matches and clear stale queue slots (best effort).
+
+        Audit #10 (item 10): this previously voided only WAITING matches —
+        the memory backend voids expired ACTIVE ones too, so the two backends
+        disagreed. Now ACTIVE matches past MATCH_EXPIRY (counted from
+        ACTIVATION, audit #8 F-05) are voided here as well, keeping both
+        stores consistent. Settled matches are never touched."""
         now = time.time()
         queue_docs = self.db.collection(QUEUE_DOC).stream()
+        seen_match_ids: set[str] = set()
         for qd in queue_docs:
             data = qd.to_dict() or {}
             waiting_id = data.get("waitingMatchId")
@@ -378,10 +385,42 @@ class FirestoreStore:
                 qd.reference.set({"waitingMatchId": None})
                 continue
             m = _match_from_doc(snap.to_dict())
+            seen_match_ids.add(m.match_id)
             if m.status == "waiting" and now - m.created_at > QUEUE_EXPIRY_SECONDS:
                 m.status = "void"
                 self._match_ref(m.match_id).set(_match_to_doc(m))
                 qd.reference.set({"waitingMatchId": None})
+            elif (
+                m.status == "active"
+                and now - m.play_started_at() > MATCH_EXPIRY_SECONDS
+            ):
+                m.status = "void"
+                self._match_ref(m.match_id).set(_match_to_doc(m))
+                qd.reference.set({"waitingMatchId": None})
+
+        # Active matches are not always reachable through a queue slot (the
+        # slot is cleared on pairing). Scan active-looking docs directly so
+        # expired duels never linger 'active' on the durable backend.
+        # A subset of active matches is visible via the status index; to stay
+        # shard-safe we scan only documents modified in the last few hours
+        # would need an index — instead we accept the small scan below: this
+        # deployment's match volume is bounded by active play.
+        try:
+            active_docs = (
+                self.db.collection(COLLECTION)
+                .where("status", "==", "active")
+                .stream()
+            )
+            for doc in active_docs:
+                if doc.id in seen_match_ids:
+                    continue
+                m = _match_from_doc(doc.to_dict() or {})
+                if m.status == "active" and now - m.play_started_at() > MATCH_EXPIRY_SECONDS:
+                    m.status = "void"
+                    self._match_ref(m.match_id).set(_match_to_doc(m))
+        except Exception:
+            # Sweep is best-effort; a missing composite index must not crash it.
+            pass
 
     def put(self, match: Match) -> None:
         self._match_ref(match.match_id).set(_match_to_doc(match))

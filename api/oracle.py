@@ -26,7 +26,19 @@ from eth_account import Account
 _EIP191_PREFIX = b"\x19Ethereum Signed Message:\n32"
 
 # Deadline for on-chain submission of a signed settlement.
-SETTLEMENT_DEADLINE_SECONDS = 600  # 10 minutes
+SETTLEMENT_DEADLINE_SECONDS = 600  # 10 minutes — MAXIMUM validity of a
+# settlement signature. Audit #10 (item 5): the signature deadline must never
+# outlive the on-chain refund horizon (activation + the contract's
+# MATCH_TIMEOUT = 30 min — single source of truth: match_engine).
+# sign_settlement() clamps every deadline to match_engine.settlement_deadline,
+# so a re-signed envelope minted at minute 29 expires WITH the duel instead of
+# dangling past the refund horizon as a proof nobody can spend. — MAXIMUM validity of a
+# settlement signature. Audit #10 (item 5): the signature deadline must never
+# outlive the on-chain refund horizon (activation + the contract's
+# MATCH_TIMEOUT = 30 min, single source of truth: match_engine). sign_settlement
+# clamps every deadline to match_engine.settlement_deadline(matchish), so a
+# re-signed envelope minted at minute 29 expires with the duel instead of
+# dangling past the refund horizon (a proof nobody can spend).
 
 _KMS_KEY_ENV = "ORACLE_PRIVATE_KEY"
 # P0-fix: the signing chain id MUST match the chain the CLIENT plays on, not
@@ -160,7 +172,11 @@ def build_settlement_digest(
     return _keccak(_EIP191_PREFIX + inner)
 
 
-def sign_settlement(record: dict[str, Any], chain_id: int | None = None) -> dict[str, Any]:
+def sign_settlement(
+    record: dict[str, Any],
+    chain_id: int | None = None,
+    matchish: Any = None,
+) -> dict[str, Any]:
     """
     Sign one engine-produced settlement. The record MUST come from
     match_engine.settle(), not from client input. `chain_id` overrides the
@@ -180,6 +196,22 @@ def sign_settlement(record: dict[str, Any], chain_id: int | None = None) -> dict
 
     server_nonce = secrets.randbelow(2**48)
     deadline = int(time.time()) + SETTLEMENT_DEADLINE_SECONDS
+    # Audit #10 (item 5): clamp to the on-chain refund horizon when the caller
+    # can identify the match (activated_at + contract MATCH_TIMEOUT). Without
+    # the clamp, a re-sign issued near minute 30 would mint a proof valid past
+    # the moment the contract refunds both stakes.
+    if matchish is not None:
+        try:
+            import match_engine as _me
+
+            deadline = min(deadline, _me.settlement_deadline(matchish))
+        except Exception:  # clamping must never block settlement
+            pass
+    if deadline <= int(time.time()):
+        raise ValueError(
+            "Refusing to sign: the on-chain MATCH_TIMEOUT has elapsed — "
+            "this duel can only refund via refundTimeoutMatch."
+        )
 
     digest = build_settlement_digest(
         {

@@ -341,7 +341,11 @@ for idx in range(eng_mod.ROUNDS):
         fb2.update(fm.match_id, _submit)
 
 orig_sign = server.sign_settlement
-server.sign_settlement = lambda result: (_ for _ in ()).throw(RuntimeError("KMS unavailable"))
+# audit #10: sign_settlement now also takes matchish= (deadline clamp) — the
+# failure stub must accept the same surface as the real function.
+def _kms_down(*_args, **_kwargs):
+    raise RuntimeError("KMS unavailable")
+server.sign_settlement = _kms_down
 try:
     try:
         fb2.update(fm.match_id, server._settle_once)

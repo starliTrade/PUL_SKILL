@@ -24,6 +24,7 @@ Security model:
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from typing import Any
@@ -60,6 +61,10 @@ RL_QUEUE_MAX = 40        # queue calls per minute per address (audit #6 C3:
 RL_COMMIT_MAX = 40       # round commits per minute per address
 RL_AUTH_MAX = 10         # SIWE handshakes per minute per address
 RL_VERIFY_MAX = 30       # SIWE verifications per minute per IP (ecrecover is
+RL_SETTLE_MAX = 10       # settle calls per minute per address (audit #10 #7:
+                         # Firestore txn + signature minting per call)
+RL_CLAIM_MAX = 10        # claim calls per minute per address (audit #10 #7:
+                         # an RPC receipt fetch per call — cheap-DoS surface)
                          # CPU work; unthrottled it was a cheap DoS surface)
 RL_ROUND_MAX = 60        # target reveals + result submissions per minute per
                          # address — hot endpoints that each trigger store work
@@ -90,18 +95,24 @@ def _rl_check_ip(bucket: str, request: Request, limit: int) -> None:
     same Firestore-backed (cross-replica) window when Firestore mode is on,
     otherwise the in-process fallback.
 
-    Audit #8 F-10: the XFF hop count is validated before trusting the first
-    entry. On a plain deployment (no trusted proxy) x-forwarded-for is client
-    forgeable, so we also blend the socket address into the key — spoofing
-    the header then still pays the socket's quota. Deploy behind a trusted
-    reverse proxy that OVERWRITES X-Forwarded-For for exact per-client keys.
+    Audit #10 (item 4): trusting X-Forwarded-For is now EXPLICIT, not inferred
+    from "the socket looks like a private IP". Private-socket inference still
+    trusts a proxy that rewrites XFF (Cloud Run / VPC L7 LB), but a deployment
+    behind a proxy that PASSES the header through unmodified (nginx default,
+    some edge workers) lets a client forge the first hop and shift its quota
+    onto a victim IP. Set TRUST_PROXY_HEADERS=1 for such a topology AND make
+    sure the proxy OVERWRITES X-Forwarded-For; leave it unset and the socket
+    address is used directly (spoof-proof, just coarser per-NAT).
     """
     xff = request.headers.get("x-forwarded-for", "")
     hops = [h.strip() for h in xff.split(",") if h.strip()]
     socket_ip = request.client.host if request.client else "unknown"
-    # Trust the header only when it exists AND the socket is plausibly a
-    # local/edge proxy (private network) — otherwise the socket IS the client.
-    if hops and (socket_ip.startswith("10.") or socket_ip.startswith("172.") or socket_ip.startswith("192.168.") or socket_ip.startswith("127.")):
+    trust_xff = os.environ.get("TRUST_PROXY_HEADERS", "") in ("1", "true", "yes")
+    socket_is_private = socket_ip.startswith(("10.", "172.", "192.168.", "127."))
+    if hops and (trust_xff or (not trust_xff and socket_is_private)):
+        # The proxy sits between us and the client; its REWRITTEN first hop is
+        # the client. (A pass-through proxy makes this forgeable — that is why
+        # the flag must only be set when the proxy overwrites the header.)
         ip = hops[0]
     else:
         ip = socket_ip or (hops[0] if hops else "unknown")
@@ -123,7 +134,12 @@ def _rl_check(bucket: str, address: str, limit: int) -> None:
             now_ms = int(time.time() * 1000)
             window_ms = int(RL_WINDOW_SECONDS * 1000)
 
-            def _incr(txn: Any) -> int:
+            def _incr(txn: Any) -> dict[str, int]:
+                # Audit #10 (item 1): this used to `return int(d["count"])` while
+                # the caller read `d["reset_at"]` from the OUTER scope — a
+                # guaranteed NameError (d is local to _incr), swallowed by the
+                # broad except below, so the Firestore limiter NEVER 429'd and
+                # every deployment silently degraded to per-process limiting.
                 snap = doc.get(transaction=txn)
                 d = snap.to_dict() or {"count": 0, "reset_at": 0}
                 if now_ms >= int(d.get("reset_at", 0)):
@@ -131,12 +147,12 @@ def _rl_check(bucket: str, address: str, limit: int) -> None:
                 else:
                     d = {"count": int(d.get("count", 0)) + 1, "reset_at": int(d["reset_at"])}
                 txn.set(doc, d)
-                return int(d["count"])
+                return {"count": int(d["count"]), "reset_at": int(d["reset_at"])}
 
             txn = fs.db.transaction()
-            count = _incr(txn)  # plain callable: Firestore retries conflicts itself
-            if count > limit:
-                raise _rate_limited((int(d["reset_at"]) - now_ms) / 1000.0)
+            win = _incr(txn)  # plain callable: Firestore retries conflicts itself
+            if win["count"] > limit:
+                raise _rate_limited((win["reset_at"] - now_ms) / 1000.0)
             return
         except HTTPException:
             raise
@@ -262,9 +278,23 @@ app = FastAPI(title="PULSAR Game Server", version="1.1.1")
 # the deployment looks like production (PULSAR_ENV=production), missing
 # ALLOWED_DOMAIN / CORS_ALLOW_ORIGINS / ESCROW_ADDRESS / ESCROW_RPC_URL must
 # fail startup instead of silently running with a Host-derived SIWE domain,
-# wildcard CORS, and no deposit gate (a "real-money" UI without the gate is
-# the exact configuration the audits keep flagging).
-if os.environ.get("PULSAR_ENV", "").lower() == "production":
+# Audit #10 (item 2): the "deployment looks like production" check used to
+# be PULSAR_ENV == "production" EXACTLY — one typo ("prod", "Production ",
+# "main") or a staging box that simply forgot the var switched every
+# safeguard off (fail-open configuration). Now ANY of these implies a
+# deployment that must not run with insecure defaults:
+#   - PULSAR_ENV set to anything production-like (prod/production/main/release),
+#   - PULSAR_ENV unset but a deployment marker present (K_SERVICE, PORT-bound
+#     hosting with RENDER/TRIGGER/etc.),
+#   - a real ESCROW_ADDRESS configured (money mode — the gate must not be
+#     silently absent).
+# Plain local dev (no env at all) still boots without configuration.
+_prodlike_values = {"prod", "production", "main", "release", "staging"}
+_pulsar_env = os.environ.get("PULSAR_ENV", "").strip().lower()
+_deploy_markers = ("K_SERVICE", "K_REVISION", "RENDER", "FLY_MACHINE_ID", "DYNO")
+_is_deployed = any(os.environ.get(marker) for marker in _deploy_markers)
+_prod_like = _pulsar_env in _prodlike_values or _is_deployed
+if _prod_like:
     _missing = [
         name
         for name in (
@@ -279,10 +309,25 @@ if os.environ.get("PULSAR_ENV", "").lower() == "production":
     ]
     if _missing:
         raise RuntimeError(
-            "PULSAR_ENV=production requires these env vars to be set: "
+            "Production-like deployment requires these env vars to be set: "
             + ", ".join(_missing)
-            + ". Refusing to start with an insecure default."
+            + ". Refusing to start with an insecure default. "
+            "Set PULSAR_ENV=dev to explicitly opt out for local testing."
         )
+
+# Audit #10 (item 2): an INCOHERENT escrow config (one half set, the other
+# missing) silently disables the deposit gate (onchain.escrow_configured()
+# requires BOTH) while the deployment believes it has one. In dev/test the
+# address is deliberately configured without an RPC to keep the gate off, so
+# this is a loud warning, not a crash — the prod-like gate above still
+# requires the full set when money mode is real.
+if bool(os.environ.get("ESCROW_ADDRESS")) != bool(os.environ.get("ESCROW_RPC_URL")):
+    print(
+        "[config] WARNING: ESCROW_ADDRESS and ESCROW_RPC_URL are not both set — "
+        "the on-chain deposit gate is INACTIVE. This is safe only for local "
+        "dev/test, never for a real-money deployment.",
+        file=sys.stderr,
+    )
 
 # Audit #8 F-09 — TrustedHost: when ALLOWED_DOMAIN is configured, requests
 # with a foreign Host header are rejected at the middleware layer instead of
@@ -309,6 +354,15 @@ if _allowed_domain:
 _cors_origins = [
     o.strip() for o in os.environ.get("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()
 ]
+# Audit #10 (item 2): "*" stays available for credentialess local dev, but a
+# production-like deployment that somehow kept it (e.g. CORS_ALLOW_ORIGINS=*,
+# bypassing the required-env gate above) is downgraded to the SIWE domain —
+# bearer tokens from arbitrary origins are exactly the replay surface the
+# audits keep flagging.
+if _prod_like and _cors_origins == ["*"]:
+    _fallback_origin = f"https://{_allowed_domain}" if _allowed_domain else ""
+    if _fallback_origin:
+        _cors_origins = [_fallback_origin]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -363,6 +417,9 @@ def health() -> dict[str, Any]:
         "service": "pulsar-game-server",
         "rounds": ROUNDS,
         "matchStore": store.backend_name,  # honest visibility for ops
+        # Audit #10 (item 6): surface ledger health so a silently-dead economy
+        # ledger shows up in monitoring, not in payout disputes.
+        "ledger": economy.ledger_health(),
     }
 
 
@@ -463,6 +520,9 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     if body.stake not in ALLOWED_STAKES:
         raise HTTPException(status_code=400, detail="Invalid stake")
     store.sweep_expired()
+    # Audit #10 (item 5): also refresh settled matches whose signed envelope
+    # expired while both clients were offline (sweep-driven F-12 re-sign).
+    _resign_stale_settlements()
     # Audit #8 F-13: durable idempotency — check Firestore for a live match
     # containing this address BEFORE enqueueing, so a re-poll that lands on a
     # different replica (or a recycled process) cannot mint an orphan match
@@ -578,7 +638,9 @@ def _attach_signed_envelope(m: Any, result: dict[str, Any]) -> dict[str, Any]:
     be permanently wedged as 'settled' with no signature (audit #4)."""
     saved = (m.status, m.winner, m.settled_at, m.signed_settlement)
     try:
-        envelope = sign_settlement(result)
+        # Audit #10 (item 5): pass the match so the signature deadline is
+        # clamped to activation + contract MATCH_TIMEOUT.
+        envelope = sign_settlement(result, matchish=m)
     except Exception:
         m.status, m.winner, m.settled_at, m.signed_settlement = saved
         raise
@@ -605,6 +667,10 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
         if deadline and time.time() < deadline:
             return envelope  # still spendable — replay as-is
         # F-12 re-sign: result unchanged, fresh deadline + nonce.
+        # Audit #10 (item 5): the re-sign is clamped to activation + contract
+        # MATCH_TIMEOUT — past that horizon the duel is refundable and no
+        # signature can pay (sign_settlement raises and the stale envelope
+        # is returned; the refund path is the only money exit left).
         try:
             fresh = sign_settlement(
                 {
@@ -614,7 +680,8 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
                     "winnerTimeMs": int(envelope.get("winnerTimeMs", 0)),
                     "loserTimeMs": int(envelope.get("loserTimeMs", 0)),
                     "validatedTimes": envelope.get("validatedTimes", {}),
-                }
+                },
+                matchish=m,
             )
         except Exception:
             return envelope  # signing unavailable — return the stale envelope
@@ -657,9 +724,44 @@ def _finalize_if_due(match: Any) -> None:
         pass
 
 
+def _resign_stale_settlements() -> None:
+    """Audit #10 (item 5): sweep-driven re-sign of expired proofs.
+
+    The F-12 re-sign path used to run ONLY when a participant polled /settle —
+    if both players closed their tabs, the match stayed 'settled' with an
+    expired envelope and the winner's prize was unspendable until someone
+    happened to call the endpoint again. The re-sign is a pure server-side
+    state refresh (result unchanged, fresh deadline+nonce), so it belongs in
+    the same lazy sweep that /api/queue already runs: ANY authenticated queue
+    poll (matchmaking traffic — the busiest path) refreshes every settled
+    match whose envelope is stale but whose on-chain duel can still pay
+    (inside MATCH_TIMEOUT). Sweep is best-effort: failures never block queueing."""
+    try:
+        for mid, m in list(getattr(store.memory, "matches", {}).items()):
+            if m.status != "settled" or not m.signed_settlement:
+                continue
+            deadline = int(m.signed_settlement.get("deadline", 0) or 0)
+            if not deadline or time.time() < deadline:
+                continue  # still spendable / never signed
+            if time.time() >= engine.settlement_deadline(m):
+                continue  # past the on-chain horizon — only refund applies
+            try:
+                store.update(mid, _settle_once)
+            except (MatchError, HTTPException):
+                pass
+    except Exception:
+        pass  # observability nicety — must never break matchmaking
+
+
 @app.post("/api/match/{match_id}/settle")
 def settle_match(match_id: str, request: Request) -> dict[str, Any]:
     address = _auth(request)
+    # Audit #10 (item 7): settle is a transactional Firestore read-modify-write
+    # with signature minting — an unauthenticated flood would be both a Firestore
+    # cost amplifier (and NOT free on the free tier) and a signature-mint
+    # DoS vector. 10 calls/min per address is far above any legitimate polling
+    # cadence (the client settles once, then replays).
+    _rl_check("settle", address, RL_SETTLE_MAX)
     try:
         match = store.get(match_id)
         if address not in match.players:
@@ -678,6 +780,10 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
 
 @app.post("/api/match/{match_id}/claim")
 def claim_match(match_id: str, body: ClaimRequest, request: Request) -> dict[str, Any]:
+    # Audit #10 (item 7): every call pays for an RPC eth_getTransactionReceipt
+    # — an unauthenticated flood was a cheap RPC/infura-paid DoS. 10/min per
+    # address is generous for a claim+retry flow.
+    _rl_check("claim", _auth(request), RL_CLAIM_MAX)
     """C5 + audit #8 F-04 — VERIFIED on-chain claim persistence.
 
     The tx hash used to be stored verbatim (any hex string became

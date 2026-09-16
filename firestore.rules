@@ -20,15 +20,24 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
+      // Audit #10 (item 8): profile documents are PUBLIC READ (leaderboard
+      // cards render from them) but the payload is frozen to the display
+      // fields the UI actually consumes — reaction times, wallet-linked
+      // history, and friend graphs are server/ledger data, not a public feed.
+      // The economy counters stay readable for the podium UI.
       allow read: if true;
       // New profiles must start with a zeroed economy — no self-granted stats.
-      allow create: if request.resource.data.wins == 0
-        && request.resource.data.losses == 0
-        && request.resource.data.voids == 0
-        && request.resource.data.totalMatches == 0
-        && request.resource.data.xp == 0
-        && request.resource.data.level == 1
-        && (!('vaultBalance' in request.resource.data) || request.resource.data.vaultBalance == 0);
+      // OWNERSHIP (audit #10 item 8): a create must address the caller's OWN
+      // wallet. There is no Firebase Auth in this deployment, so ownership is
+      // proven with the same signature the game server already verifies
+      // (EIP-191 personal_sign over the fixed SIWE-statement string). The
+      // server (Admin SDK) is not bound by these rules and keeps writing
+      // economy counters after settlements.
+      // NOTE: with no client-side firebase/auth wiring yet, the effective
+      // policy today is "creates only via the Admin SDK" — the game server's
+      // ledger is the legitimate writer; the legacy anonymous self-create is
+      // closed.
+      allow create: if false;
       // Updates may edit the profile, never the economy.
       allow update: if economyUnchanged();
       allow delete: if false;
@@ -56,12 +65,14 @@ service cloud.firestore {
 
     // Username registry: unique by document id. A registration can never be
     // re-pointed to a different address (anti-takeover).
+    // Audit #10 (item 8): the legacy client-write create only validated the
+    // address FORMAT — no proof the caller owned it (squatting / identity
+    // theft). Claims now run through the game server's authenticated,
+    // idempotent /api/username/claim (Admin SDK), so clients get read-only
+    // access here.
     match /usernames/{username} {
       allow read: if true;
-      allow create: if request.resource.data.address is string
-        && request.resource.data.address.matches('^0x[0-9a-fA-F]{40}$');
-      allow update: if request.resource.data.address == resource.data.address;
-      allow delete: if false;
+      allow write: if false;
     }
   }
 }

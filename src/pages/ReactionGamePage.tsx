@@ -1653,7 +1653,12 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                   </motion.div>
                 )}
 
-                {/* Anti-Cheat Biometric Telemetry */}
+                {/* Client Integrity Check (audit #10 #3): the old copy claimed
+                    a "Neural Bio-Verification % Human" score - a number the
+                    client fabricates and the server never sees. Honest copy:
+                    this card only reports the LOCAL input-integrity checks
+                    (trusted events, human reaction floor). Ranked-duel
+                    validation is the server's timing gates. */}
                 {matchResult.telemetry && (
                   <div className="w-full mt-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] text-left space-y-2">
                     <div className="flex items-center justify-between text-[11px]">
@@ -1661,9 +1666,11 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                         <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
                         <span>{t('neuralBioVerification')}</span>
                       </div>
-                      <span className="text-emerald-400 font-mono font-bold">
-                        {matchResult.telemetry.humanEntropyScore}% {t('humanPercent')}
-                      </span>
+                      {matchResult.telemetry.passedValidation && (
+                        <span className="text-emerald-400 font-mono font-bold">
+                          {t('humanPercent')}
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex items-center justify-between pt-1.5 border-t border-white/[0.04] text-[9px] font-mono text-zinc-500">
