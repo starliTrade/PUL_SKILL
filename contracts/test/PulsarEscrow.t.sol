@@ -308,12 +308,31 @@ contract PulsarEscrowTest is Test {
         assertEq(escrow.oracleSigner(), makeAddr("newOracle"));
     }
 
+    function test_OwnershipHandoverRequiresAccept() public {
+        address next = makeAddr("nextOwner");
+        vm.prank(deployer);
+        escrow.transferOwnership(next);
+        // Not transferred yet — fat-finger safe.
+        assertEq(escrow.owner(), deployer);
+        assertEq(escrow.pendingOwner(), next);
+        vm.prank(next);
+        escrow.acceptOwnership();
+        assertEq(escrow.owner(), next);
+        assertEq(escrow.pendingOwner(), address(0));
+    }
+
+    function test_RevertWhen_DustStakeBelowMinimum() public {
+        vm.prank(p1);
+        vm.expectRevert("Stake below minimum");
+        escrow.createDuel(keccak256("dust"), 1);
+    }
+
     // ---------- fuzz / property tests (audit #5, item 6) ----------
 
     /// The fee split is EXACT for every pool: fee + prize == pool, escrow ends
     /// empty, and no wei... no unit of token is ever created or lost.
     function testFuzz_FeeMathIsExact(uint256 stake) public {
-        stake = bound(stake, 1, 1_000e6);
+        stake = bound(stake, 1_000_000, 1_000e6);
         usdt.faucet(p1, stake);
         usdt.faucet(p2, stake);
         vm.prank(p1);
@@ -340,7 +359,7 @@ contract PulsarEscrowTest is Test {
 
     /// A settled duel can NEVER be settled, joined, or re-created.
     function testFuzz_SettledIsTerminal(uint8 action, uint256 stake) public {
-        stake = bound(stake, 1, 1_000e6);
+        stake = bound(stake, 1_000_000, 1_000e6);
         usdt.faucet(p1, stake);
         usdt.faucet(p2, stake);
         vm.prank(p1);
@@ -374,7 +393,7 @@ contract PulsarEscrowTest is Test {
     /// joinDuel only ever transitions Created → Active; player1 can never join
     /// their own duel for any stake.
     function testFuzz_SelfJoinAndGhostJoinRevert(uint256 stake, uint8 state) public {
-        stake = bound(stake, 1, 1_000e6);
+        stake = bound(stake, 1_000_000, 1_000e6);
         usdt.faucet(p1, stake);
         vm.prank(p1);
         usdt.approve(address(escrow), stake);
@@ -408,10 +427,10 @@ contract PulsarEscrowTest is Test {
     /// Zero/negative-equivalent stakes are impossible; every accepted stake
     /// locks exactly 2×stake in the escrow pool.
     function testFuzz_StakeGateAndPoolAccounting(uint96 stake) public {
-        if (stake == 0) {
+        if (stake < 1_000_000) {
             vm.prank(p1);
-            vm.expectRevert("Stake must be > 0");
-            escrow.createDuel(keccak256("zero"), 0);
+            vm.expectRevert("Stake below minimum");
+            escrow.createDuel(keccak256("zero"), stake);
             return;
         }
         vm.assume(stake <= 1_000e6);
@@ -437,7 +456,7 @@ contract PulsarEscrowTest is Test {
 
     /// A non-participant can never be declared winner, for any signature.
     function testFuzz_OutsiderWinnerImpossible(uint256 stake) public {
-        stake = bound(stake, 1, 1_000e6);
+        stake = bound(stake, 1_000_000, 1_000e6);
         usdt.faucet(p1, stake);
         usdt.faucet(p2, stake);
         vm.prank(p1);

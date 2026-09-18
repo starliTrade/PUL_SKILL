@@ -37,9 +37,17 @@ service cloud.firestore {
       // policy today is "creates only via the Admin SDK" — the game server's
       // ledger is the legitimate writer; the legacy anonymous self-create is
       // closed.
+      // P0-fix: profile defacement closed. Previously `allow update: if
+      // economyUnchanged()` let ANY unauthenticated client rewrite anyone's
+      // bestReactionMs/avgReactionMs/savedFriends/playerId/address (only 7
+      // economy counters were pinned). There is no Firebase Auth in this
+      // deployment, so per-user ownership cannot be proven in rules — ALL
+      // writes go through the game server (Admin SDK, bypasses rules).
+      // Clients are read-only here; profile edits must use /api/username/claim
+      // and future authenticated profile endpoints.
       allow create: if false;
       // Updates may edit the profile, never the economy.
-      allow update: if economyUnchanged();
+      allow update: if false;
       allow delete: if false;
     }
 

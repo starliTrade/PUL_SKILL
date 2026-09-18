@@ -314,7 +314,16 @@ def verify_deposit(
         decimals = token_decimals()
     if decimals is None:
         return False  # cannot verify the amount — fail-closed
-    expected_units = int(round(float(agreed_stake) * (10**int(decimals))))
+    # P0-fix: Decimal (not float) so large/fractional stakes never lose a unit
+    # to binary rounding and brick an honest Active duel.
+    from decimal import Decimal, InvalidOperation
+
+    try:
+        expected_units = int(
+            (Decimal(str(agreed_stake)) * (Decimal(10) ** int(decimals))).to_integral_value()
+        )
+    except (InvalidOperation, ValueError):
+        return False
     if int(info.get("stakeAmount", 0)) != expected_units:
         return False
     onchain_players = {

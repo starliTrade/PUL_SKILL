@@ -9,6 +9,7 @@
 
 import { BrowserProvider, Contract, formatUnits, parseUnits } from 'ethers';
 import { CHAIN, TOKENS, PULSAR_ESCROW_ABI, ERC20_ABI, ESCROW, isPaymentTokenConfigured } from './chain';
+import { realWeb3Manager } from './realWeb3';
 
 export interface EscrowStatus {
   configured: boolean;
@@ -39,8 +40,12 @@ export function escrowStatus(): EscrowStatus {
 }
 
 function requireInjected(): BrowserProvider {
-  const eth = (window as any).ethereum;
-  if (!eth) throw new Error('No injected wallet found. Connect a wallet first.');
+  // P0-fix: use the ACTIVE wallet provider (WalletConnect on mobile, injected
+  // on desktop) instead of window.ethereum only. Previously a WC-only mobile
+  // session could connect + SIWE-sign but never approve/create/settle.
+  const active = realWeb3Manager.getActiveEip1193Provider() as any;
+  const eth = active || (window as any).ethereum;
+  if (!eth) throw new Error('No connected wallet found. Connect a wallet first.');
   return new BrowserProvider(eth, CHAIN.chainId);
 }
 
@@ -54,8 +59,9 @@ function requireInjected(): BrowserProvider {
  * elsewhere.
  */
 async function ensureCorrectChain(): Promise<void> {
-  const eth = (window as any).ethereum;
-  if (!eth) throw new Error('No injected wallet found. Connect a wallet first.');
+  const active = realWeb3Manager.getActiveEip1193Provider() as any;
+  const eth = active || (window as any).ethereum;
+  if (!eth) throw new Error('No connected wallet found. Connect a wallet first.');
   let current: string;
   try {
     current = (await eth.request({ method: 'eth_chainId' })) as string;

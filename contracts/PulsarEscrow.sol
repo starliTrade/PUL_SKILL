@@ -67,8 +67,14 @@ abstract contract Context {
 
 abstract contract Ownable is Context {
     address private _owner;
+    address private _pendingOwner;
 
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
+
+    function pendingOwner() public view virtual returns (address) {
+        return _pendingOwner;
+    }
 
     constructor(address initialOwner) {
         require(initialOwner != address(0), "Ownable: zero owner");
@@ -86,7 +92,16 @@ abstract contract Ownable is Context {
 
     function transferOwnership(address newOwner) public virtual onlyOwner {
         require(newOwner != address(0), "Ownable: zero address");
-        _transferOwnership(newOwner);
+        // P0-fix: two-step handover — a fat-fingered address no longer bricks
+        // admin forever. The new owner must call acceptOwnership().
+        _pendingOwner = newOwner;
+        emit OwnershipTransferStarted(_owner, newOwner);
+    }
+
+    function acceptOwnership() public virtual {
+        require(msg.sender == _pendingOwner, "Ownable: not pending owner");
+        _transferOwnership(msg.sender);
+        _pendingOwner = address(0);
     }
 
     function _transferOwnership(address newOwner) internal virtual {
@@ -125,6 +140,10 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
     // both stakes and negate the loss. 30 min guarantees the settle window is
     // provably closed (deadline expired) before any refund can open.
     uint256 public constant MATCH_TIMEOUT = 30 minutes;
+    // P0-fix: anti-dust/anti-spam floor. Server ALLOWED_STAKES are 1/2/5/10 USDT
+    // (6 decimals => 1 USDT = 1e6 units). Permissionless createDuel with
+    // `stake > 0` let anyone squat matchIds and spam Created duels for ~1 wei.
+    uint256 public constant MIN_STAKE_UNITS = 1_000_000;
 
     IERC20 public immutable paymentToken;
     address public treasuryWallet;
@@ -192,12 +211,13 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
     }
 
     function createDuel(bytes32 matchId, uint256 stakeAmount) external nonReentrant {
-        require(stakeAmount > 0, "Stake must be > 0");
+        require(stakeAmount >= MIN_STAKE_UNITS, "Stake below minimum");
         require(matches[matchId].status == MatchStatus.None, "Match already exists");
 
         uint256 beforeBalance = paymentToken.balanceOf(address(this));
         SafeTransfer.safeTransferFrom(paymentToken, msg.sender, address(this), stakeAmount);
         uint256 received = paymentToken.balanceOf(address(this)) - beforeBalance;
+        require(received >= MIN_STAKE_UNITS, "Received below minimum");
 
         matches[matchId] = DuelMatch({
             matchId: matchId,
@@ -316,14 +336,16 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
 
     function setTreasuryWallet(address _newTreasury) external onlyOwner {
         require(_newTreasury != address(0), "Zero address");
-        emit TreasuryUpdated(treasuryWallet, _newTreasury);
+        address oldTreasury = treasuryWallet;
         treasuryWallet = _newTreasury;
+        emit TreasuryUpdated(oldTreasury, _newTreasury);
     }
 
     function setOracleSigner(address _newOracle) external onlyOwner {
         require(_newOracle != address(0), "Zero address");
-        emit OracleSignerUpdated(oracleSigner, _newOracle);
+        address oldOracle = oracleSigner;
         oracleSigner = _newOracle;
+        emit OracleSignerUpdated(oldOracle, _newOracle);
     }
 
     function recoverSigner(bytes32 ethSignedHash, bytes memory signature) internal pure returns (address) {
