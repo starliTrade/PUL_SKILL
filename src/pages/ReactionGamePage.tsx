@@ -42,7 +42,7 @@ import {
   type ServerSession,
   type MatchView,
 } from '../lib/gameServerClient';
-import { settleDuel as settleDuelOnChain, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState } from '../lib/escrowFlow';
+import { settleDuel as settleDuelOnChain, refundTimeoutMatch, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState } from '../lib/escrowFlow';
 import { isEscrowConfigured, CHAIN, TOKENS, ECONOMY } from '../lib/chain';
 import { ethers } from 'ethers';
 import { realWeb3Manager } from '../lib/realWeb3';
@@ -84,7 +84,21 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   const [serverSession, setServerSession] = useState<ServerSession | null>(null);
   const [serverError, setServerError] = useState<string>('');
   const [settlementTxHash, setSettlementTxHash] = useState<string>('');
+  // P0-fix: keep the last server-signed proof + action feedback so a failed
+  // settleDuel can be retried and a timed-out duel can be refunded from the UI.
+  // Previously refundTimeoutMatch had zero call-sites and a failed claim left
+  // the user stuck with no retry and no deadline.
+  const [lastProof, setLastProof] = useState<{
+    matchId: string; winner: string; winnerTimeMs: number; loserTimeMs: number;
+    nonce: string; deadline: number; signature: string;
+  } | null>(null);
+  const [onchainAction, setOnchainAction] = useState<string>('');
   const isServerMode = currentStake > 0 && gameServerConfigured();
+
+function isWalletCancel(msg: string): boolean {
+  const m = (msg || '').toLowerCase();
+  return m.includes('user reject') || m.includes('user denied') || m.includes('cancelled') || m.includes('canceled') || m.includes('denied transaction') || m.includes('action rejected') || msg.includes('4001');
+}
 
   useEffect(() => {
     if (opponentName) setOpponent(opponentName);
@@ -293,8 +307,13 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
       setPhase('ready');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setServerError(msg);
-      setMatchResult({ outcome: 'void', yourTime: 0, opponentTime: 0, prize: 0, reason: msg });
+      // P0-fix: a wallet rejection is NOT cheating — surface it as a cancel
+      // with no funds moved, instead of the bot-detected/cheating shell.
+      const reason = isWalletCancel(msg)
+        ? `Wallet action cancelled — no funds moved. ${msg}`
+        : msg;
+      setServerError(reason);
+      setMatchResult({ outcome: 'void', yourTime: 0, opponentTime: 0, prize: 0, reason });
       setPhase('bot-detected'); // honest error shell; reason is rendered
     }
   }, [isServerMode, wallet.address, currentStake]);
@@ -687,7 +706,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
       if (iWon) {
         try {
           const bytes32 = await matchIdToBytes32(result.matchId);
-          txHash = await settleDuelOnChain({
+          const proof = {
             matchId: bytes32,
             winner: result.winner,
             winnerTimeMs: result.winnerTimeMs,
@@ -695,7 +714,9 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
             nonce: result.serverNonce.toString(),
             deadline: result.deadline,
             signature: result.signature,
-          });
+          };
+          setLastProof(proof);
+          txHash = await settleDuelOnChain(proof);
           setSettlementTxHash(txHash);
           sounds.playWin();
           try {
@@ -749,6 +770,35 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
       const msg = err instanceof Error ? err.message : String(err);
       setMatchResult({ outcome: 'void', yourTime, opponentTime: oppTime, prize: 0, reason: msg });
       setPhase('bot-detected');
+    }
+  };
+
+  // P0-fix: on-chain recovery actions. Retry re-submits the stored server proof;
+  // Refund calls refundTimeoutMatch (only succeeds after 30-min MATCH_TIMEOUT).
+  const retrySettle = async (): Promise<void> => {
+    if (!lastProof) return;
+    setOnchainAction('Retrying on-chain claim…');
+    try {
+      const txHash = await settleDuelOnChain(lastProof);
+      setSettlementTxHash(txHash);
+      setOnchainAction(`Claimed: ${txHash.slice(0, 10)}…${txHash.slice(-8)}`);
+      sounds.playWin();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setOnchainAction(isWalletCancel(msg) ? `Cancelled — no funds moved. ${msg}` : `Retry failed: ${msg}`);
+    }
+  };
+
+  const refundDuel = async (): Promise<void> => {
+    if (!serverMatch) return;
+    setOnchainAction('Requesting timeout refund… (succeeds after 30-min escrow timeout)');
+    try {
+      const bytes32 = await matchIdToBytes32(serverMatch.matchId);
+      const txHash = await refundTimeoutMatch(bytes32);
+      setOnchainAction(`Refund submitted: ${txHash.slice(0, 10)}…${txHash.slice(-8)}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setOnchainAction(isWalletCancel(msg) ? `Cancelled — no funds moved. ${msg}` : `Refund failed (likely before 30-min timeout): ${msg}`);
     }
   };
 
@@ -1475,7 +1525,9 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                 </div>
 
                 <h2 className="text-xl font-bold text-red-400">
-                  {isServerMode ? t('serverConnError') : t('antiCheatTriggered')}
+                  {matchResult.reason && isWalletCancel(matchResult.reason)
+                    ? 'Wallet action cancelled'
+                    : isServerMode ? t('serverConnError') : t('antiCheatTriggered')}
                 </h2>
                 <p className="text-xs text-zinc-400 mt-1.5 leading-relaxed px-3">
                   {matchResult.reason || 'Input pattern flagged as non-human.'}
@@ -1502,6 +1554,14 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                 </div>
 
                 <div className="flex flex-col gap-2 w-full mt-5">
+                  {isServerMode && serverMatch && (
+                    <>
+                      <button onClick={refundDuel} className="w-full btn-secondary py-3 text-xs cursor-pointer">
+                        Refund after 30-min timeout
+                      </button>
+                      {onchainAction && <p className="text-[10px] font-mono text-zinc-400">{onchainAction}</p>}
+                    </>
+                  )}
                   <button
                     onClick={handleRematch}
                     className="w-full btn-primary py-3 flex items-center justify-center gap-2 cursor-pointer text-xs"
@@ -1575,7 +1635,18 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
                   </motion.p>
                 )}
                 {isServerMode && matchResult.outcome === 'win' && matchResult.prize > 0 && !settlementTxHash && (
-                  <p className="text-[10px] text-amber-400/90 font-mono mt-1">{t('claimingPrize')}</p>
+                  <>
+                    <p className="text-[10px] text-amber-400/90 font-mono mt-1">{t('claimingPrize')}</p>
+                    <div className="flex flex-col gap-2 w-full mt-2">
+                      <button onClick={retrySettle} className="w-full btn-primary py-2.5 text-xs cursor-pointer">
+                        Retry on-chain claim
+                      </button>
+                      <button onClick={refundDuel} className="w-full btn-secondary py-2.5 text-xs cursor-pointer">
+                        Refund after 30-min timeout
+                      </button>
+                      {onchainAction && <p className="text-[10px] font-mono text-zinc-400">{onchainAction}</p>}
+                    </div>
+                  </>
                 )}
                 {settlementTxHash && (
                   <a

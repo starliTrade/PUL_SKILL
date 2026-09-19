@@ -11,6 +11,13 @@ __pycache__/
 .oracle_key_*.json
 *.tsbuildinfo
 
+# Foundry: deps + build artifacts + broadcast logs (contain deployer
+# addresses/salts) are local-only, never committed.
+contracts/lib/
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
 # Audit #7 R7 — Firebase web config carries the database id + OAuth client id;
 # it belongs in env vars, not in git.
 firebase-applet-config.json

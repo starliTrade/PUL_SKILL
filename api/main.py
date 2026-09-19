@@ -423,6 +423,11 @@ def health() -> dict[str, Any]:
         # Audit #10 (item 6): surface ledger health so a silently-dead economy
         # ledger shows up in monitoring, not in payout disputes.
         "ledger": economy.ledger_health(),
+        # P0-fix: ops visibility without leaking secrets — mismatch between
+        # ORACLE_CHAIN_ID / VITE_CHAIN_ID bricks every settlement sig.
+        "chainId": _CHAIN_ID,
+        "escrowConfigured": onchain.escrow_configured(),
+        "prodLike": _prod_like,
     }
 
 
@@ -448,8 +453,8 @@ class NonceRequest(BaseModel):
 
 
 class VerifyRequest(BaseModel):
-    message: str
-    signature: str = Field(pattern=r"^0x[0-9a-fA-F]+$")
+    message: str = Field(max_length=4096)
+    signature: str = Field(pattern=r"^0x[0-9a-fA-F]+$", max_length=512)
 
 
 class QueueRequest(BaseModel):
@@ -457,18 +462,20 @@ class QueueRequest(BaseModel):
 
 
 class CommitRequest(BaseModel):
-    matchId: str
+    # P0-fix: matchId is server-generated token_hex(16) — pin the shape so
+    # `a/b` can never become a Firestore subcollection reference.
+    matchId: str = Field(pattern=r"^[0-9a-f]{32}$")
     roundIndex: int
     intentHash: str = Field(pattern=r"^0x[0-9a-f]{64}$")
 
 
 class TargetRequest(BaseModel):
-    matchId: str
+    matchId: str = Field(pattern=r"^[0-9a-f]{32}$")
     roundIndex: int
 
 
 class ResultRequest(BaseModel):
-    matchId: str
+    matchId: str = Field(pattern=r"^[0-9a-f]{32}$")
     roundIndex: int
     measuredMs: float = Field(gt=0, le=5000)
     # P0-fix (audit #2): unforgeable per-player proof issued at reveal. Without
