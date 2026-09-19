@@ -48,7 +48,7 @@ contract PulsarEscrowTest is Test {
 
     uint256 constant EXPECTED_FEE_BPS = 200; // must equal PulsarEscrow.PLATFORM_FEE_BPS
 
-    function test_Pin_ContractFeeMatchesEconomyConstant() public pure {
+    function test_Pin_ContractFeeMatchesEconomyConstant() public view {
         assertEq(
             escrow.PLATFORM_FEE_BPS(),
             EXPECTED_FEE_BPS,
@@ -56,7 +56,7 @@ contract PulsarEscrowTest is Test {
         );
     }
 
-    function test_Pin_DuelMatchStructLayoutMatchesServerDecoder() public view {
+    function test_Pin_DuelMatchStructLayoutMatchesServerDecoder() public {
         // api/onchain.py decodes matches(bytes32) as 10 static words with
         // `status` at word index 6 (matchId, player1, player2, stakeAmount,
         // totalPool, createdAt, status, winner, winnerReactionMs,
@@ -71,7 +71,7 @@ contract PulsarEscrowTest is Test {
             ,
             ,
             ,
-            uint8 status_,
+            PulsarEscrow.MatchStatus status_,
             ,
             ,
 
@@ -79,10 +79,10 @@ contract PulsarEscrowTest is Test {
         assertEq(uint256(matchId_), uint256(mid), "word 0 must be matchId");
         assertEq(player1_, p1, "word 1 must be player1 (creator)");
         assertEq(player2_, p2, "word 2 must be player2 (joiner)");
-        assertEq(status_, uint8(2), "word 6 must be status (Active=2 after both stakes)");
+        assertEq(uint8(status_), 2, "word 6 must be status (Active=2 after both stakes)");
     }
 
-    function test_Pin_RefundHorizonIs30Minutes() public pure {
+    function test_Pin_RefundHorizonIs30Minutes() public view {
         assertEq(escrow.MATCH_TIMEOUT(), 30 minutes, "server copy promises a 30-min refund horizon");
     }
 
@@ -163,15 +163,18 @@ contract PulsarEscrowTest is Test {
         (bytes32 matchId, uint256 wMs, uint256 lMs, uint256 nonce, uint256 deadline) = _defaultProofParams();
         _createAndJoin(matchId);
 
-        assertEq(uint8(escrow.matches(matchId).status), uint8(PulsarEscrow.MatchStatus.Active));
-        assertEq(escrow.matches(matchId).totalPool, STAKE * 2);
+        // External struct getters return an unnamed 10-tuple — destructure
+        // with exact types (no named member access, no struct assignment).
+        (,,,,uint256 poolBefore,, PulsarEscrow.MatchStatus stBefore,,,) = escrow.matches(matchId);
+        assertEq(uint8(stBefore), uint8(PulsarEscrow.MatchStatus.Active));
+        assertEq(poolBefore, STAKE * 2);
 
         (bytes memory sig,) = _sign(matchId, p1, wMs, lMs, nonce, deadline);
         _settle(matchId, p1, wMs, lMs, nonce, deadline, sig);
 
-        PulsarEscrow.DuelMatch memory m = escrow.matches(matchId);
-        assertEq(uint8(m.status), uint8(PulsarEscrow.MatchStatus.Settled));
-        assertEq(m.winner, p1);
+        (,,,,,, PulsarEscrow.MatchStatus stSettled, address winner_,,) = escrow.matches(matchId);
+        assertEq(uint8(stSettled), uint8(PulsarEscrow.MatchStatus.Settled));
+        assertEq(winner_, p1);
 
         // 2% rake to treasury, 98% to winner
         uint256 fee = (STAKE * 2 * 200) / 10_000; // 40
@@ -190,12 +193,19 @@ contract PulsarEscrowTest is Test {
         // Fresh active match, same signed payload → digest is in usedSignatures
         bytes32 matchId2 = keccak256("test-match-2");
         usdt.faucet(p1, STAKE);
+        usdt.faucet(p2, STAKE);
         vm.prank(p1);
         escrow.createDuel(matchId2, STAKE);
         vm.prank(p2);
         escrow.joinDuel(matchId2);
 
-        vm.expectRevert("Signature already used");
+        // The digest commits to matchId, so the old signature on a NEW match
+        // is a different digest: fresh (unused) but signed for the wrong
+        // payload — the oracle check, not the replay check, must reject it.
+        // (A true same-digest replay can never reach the usedSignatures gate:
+        // the first settle flips status to Settled, so the status gate fires
+        // first. usedSignatures stays as defense-in-depth.)
+        vm.expectRevert("Invalid Oracle signature");
         _settle(matchId2, p1, wMs, lMs, nonce, deadline, sig);
     }
 
@@ -243,7 +253,7 @@ contract PulsarEscrowTest is Test {
     }
 
     function test_RevertWhen_ExpiredDeadline() public {
-        (bytes32 matchId, uint256 wMs, uint256 lMs, uint256 nonce) = _defaultProofParams();
+        (bytes32 matchId, uint256 wMs, uint256 lMs, uint256 nonce,) = _defaultProofParams();
         uint256 deadline = block.timestamp - 1;
         _createAndJoin(matchId);
         (bytes memory sig,) = _sign(matchId, p1, wMs, lMs, nonce, deadline);
@@ -272,7 +282,8 @@ contract PulsarEscrowTest is Test {
         vm.warp(block.timestamp + 30 minutes + 1);
         escrow.refundTimeoutMatch(matchId);
 
-        assertEq(uint8(escrow.matches(matchId).status), uint8(PulsarEscrow.MatchStatus.Cancelled));
+        (,,,,,, PulsarEscrow.MatchStatus stCancelled,,,) = escrow.matches(matchId);
+        assertEq(uint8(stCancelled), uint8(PulsarEscrow.MatchStatus.Cancelled));
         assertEq(usdt.balanceOf(p1), STAKE);
         assertEq(usdt.balanceOf(address(escrow)), 0);
     }
@@ -286,7 +297,8 @@ contract PulsarEscrowTest is Test {
         vm.warp(block.timestamp + 30 minutes + 1);
         escrow.refundTimeoutMatch(matchId);
 
-        assertEq(uint8(escrow.matches(matchId).status), uint8(PulsarEscrow.MatchStatus.Refunded));
+        (,,,,,, PulsarEscrow.MatchStatus stRefunded,,,) = escrow.matches(matchId);
+        assertEq(uint8(stRefunded), uint8(PulsarEscrow.MatchStatus.Refunded));
         assertEq(usdt.balanceOf(p1), STAKE);
         assertEq(usdt.balanceOf(p2), STAKE);
         assertEq(usdt.balanceOf(address(escrow)), 0);
@@ -308,18 +320,45 @@ contract PulsarEscrowTest is Test {
         assertEq(escrow.oracleSigner(), makeAddr("newOracle"));
     }
 
+    function test_OwnershipHandoverRequiresAccept() public {
+        address next = makeAddr("nextOwner");
+        vm.prank(deployer);
+        escrow.transferOwnership(next);
+        // Not transferred yet — fat-finger safe.
+        assertEq(escrow.owner(), deployer);
+        assertEq(escrow.pendingOwner(), next);
+        vm.prank(next);
+        escrow.acceptOwnership();
+        assertEq(escrow.owner(), next);
+        assertEq(escrow.pendingOwner(), address(0));
+    }
+
+    function test_RevertWhen_DustStakeBelowMinimum() public {
+        vm.prank(p1);
+        vm.expectRevert("Stake below minimum");
+        escrow.createDuel(keccak256("dust"), 1);
+    }
+
     // ---------- fuzz / property tests (audit #5, item 6) ----------
 
     /// The fee split is EXACT for every pool: fee + prize == pool, escrow ends
     /// empty, and no wei... no unit of token is ever created or lost.
     function testFuzz_FeeMathIsExact(uint256 stake) public {
-        stake = bound(stake, 1, 1_000e6);
+        stake = bound(stake, 1_000_000, 1_000e6);
         usdt.faucet(p1, stake);
         usdt.faucet(p2, stake);
         vm.prank(p1);
         usdt.approve(address(escrow), stake);
         vm.prank(p2);
         usdt.approve(address(escrow), stake);
+
+        // Foundry reuses chain state across fuzz runs of this function, so
+        // ABSOLUTE balances accumulate setUp faucets + prior runs and
+        // false-fail. Snapshot first, assert DELTAS.
+        uint256 p1Before = usdt.balanceOf(p1);
+        uint256 p2Before = usdt.balanceOf(p2);
+        uint256 treasuryBefore = usdt.balanceOf(treasury);
+        uint256 escrowBefore = usdt.balanceOf(address(escrow));
 
         bytes32 matchId = keccak256(abi.encodePacked("fuzz-exact", stake));
         vm.prank(p1);
@@ -332,15 +371,16 @@ contract PulsarEscrowTest is Test {
 
         uint256 pool = stake * 2;
         uint256 fee = (pool * 200) / 10_000;
-        assertEq(usdt.balanceOf(treasury), fee, "fee");
-        assertEq(usdt.balanceOf(p1), pool - fee, "prize");
-        assertEq(usdt.balanceOf(address(escrow)), 0, "escrow must be empty");
-        assertEq(usdt.balanceOf(p2), 0, "loser paid everything");
+        assertEq(usdt.balanceOf(treasury) - treasuryBefore, fee, "fee delta");
+        // p1 delta = -stake (create) + prize  =>  prize = delta + stake
+        assertEq(usdt.balanceOf(p1) - p1Before + stake, pool - fee, "prize delta");
+        assertEq(usdt.balanceOf(address(escrow)) - escrowBefore, 0, "escrow must net empty");
+        assertEq(p2Before - usdt.balanceOf(p2), stake, "loser paid exactly one stake");
     }
 
     /// A settled duel can NEVER be settled, joined, or re-created.
     function testFuzz_SettledIsTerminal(uint8 action, uint256 stake) public {
-        stake = bound(stake, 1, 1_000e6);
+        stake = bound(stake, 1_000_000, 1_000e6);
         usdt.faucet(p1, stake);
         usdt.faucet(p2, stake);
         vm.prank(p1);
@@ -374,7 +414,7 @@ contract PulsarEscrowTest is Test {
     /// joinDuel only ever transitions Created → Active; player1 can never join
     /// their own duel for any stake.
     function testFuzz_SelfJoinAndGhostJoinRevert(uint256 stake, uint8 state) public {
-        stake = bound(stake, 1, 1_000e6);
+        stake = bound(stake, 1_000_000, 1_000e6);
         usdt.faucet(p1, stake);
         vm.prank(p1);
         usdt.approve(address(escrow), stake);
@@ -408,10 +448,10 @@ contract PulsarEscrowTest is Test {
     /// Zero/negative-equivalent stakes are impossible; every accepted stake
     /// locks exactly 2×stake in the escrow pool.
     function testFuzz_StakeGateAndPoolAccounting(uint96 stake) public {
-        if (stake == 0) {
+        if (stake < 1_000_000) {
             vm.prank(p1);
-            vm.expectRevert("Stake must be > 0");
-            escrow.createDuel(keccak256("zero"), 0);
+            vm.expectRevert("Stake below minimum");
+            escrow.createDuel(keccak256("zero"), stake);
             return;
         }
         vm.assume(stake <= 1_000e6);
@@ -427,17 +467,19 @@ contract PulsarEscrowTest is Test {
         escrow.createDuel(matchId, stake);
         // F-19: totalPool is finalized on JOIN (balance-delta accounting),
         // not at create time — the pool is only real once both stakes landed.
-        assertEq(escrow.matches(matchId).totalPool, 0, "pool set on join");
+        (,,,,uint256 poolCreated,,,,,) = escrow.matches(matchId);
+        assertEq(poolCreated, 0, "pool set on join");
         assertEq(usdt.balanceOf(address(escrow)), stake);
         vm.prank(p2);
         escrow.joinDuel(matchId);
-        assertEq(escrow.matches(matchId).totalPool, stake * 2, "pool after join");
+        (,,,,uint256 poolJoined,,,,,) = escrow.matches(matchId);
+        assertEq(poolJoined, stake * 2, "pool after join");
         assertEq(usdt.balanceOf(address(escrow)), stake * 2, "both stakes locked");
     }
 
     /// A non-participant can never be declared winner, for any signature.
     function testFuzz_OutsiderWinnerImpossible(uint256 stake) public {
-        stake = bound(stake, 1, 1_000e6);
+        stake = bound(stake, 1_000_000, 1_000e6);
         usdt.faucet(p1, stake);
         usdt.faucet(p2, stake);
         vm.prank(p1);
