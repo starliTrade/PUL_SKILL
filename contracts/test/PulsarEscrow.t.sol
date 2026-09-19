@@ -193,12 +193,19 @@ contract PulsarEscrowTest is Test {
         // Fresh active match, same signed payload → digest is in usedSignatures
         bytes32 matchId2 = keccak256("test-match-2");
         usdt.faucet(p1, STAKE);
+        usdt.faucet(p2, STAKE);
         vm.prank(p1);
         escrow.createDuel(matchId2, STAKE);
         vm.prank(p2);
         escrow.joinDuel(matchId2);
 
-        vm.expectRevert("Signature already used");
+        // The digest commits to matchId, so the old signature on a NEW match
+        // is a different digest: fresh (unused) but signed for the wrong
+        // payload — the oracle check, not the replay check, must reject it.
+        // (A true same-digest replay can never reach the usedSignatures gate:
+        // the first settle flips status to Settled, so the status gate fires
+        // first. usedSignatures stays as defense-in-depth.)
+        vm.expectRevert("Invalid Oracle signature");
         _settle(matchId2, p1, wMs, lMs, nonce, deadline, sig);
     }
 
@@ -345,6 +352,14 @@ contract PulsarEscrowTest is Test {
         vm.prank(p2);
         usdt.approve(address(escrow), stake);
 
+        // Foundry reuses chain state across fuzz runs of this function, so
+        // ABSOLUTE balances accumulate setUp faucets + prior runs and
+        // false-fail. Snapshot first, assert DELTAS.
+        uint256 p1Before = usdt.balanceOf(p1);
+        uint256 p2Before = usdt.balanceOf(p2);
+        uint256 treasuryBefore = usdt.balanceOf(treasury);
+        uint256 escrowBefore = usdt.balanceOf(address(escrow));
+
         bytes32 matchId = keccak256(abi.encodePacked("fuzz-exact", stake));
         vm.prank(p1);
         escrow.createDuel(matchId, stake);
@@ -356,10 +371,11 @@ contract PulsarEscrowTest is Test {
 
         uint256 pool = stake * 2;
         uint256 fee = (pool * 200) / 10_000;
-        assertEq(usdt.balanceOf(treasury), fee, "fee");
-        assertEq(usdt.balanceOf(p1), pool - fee, "prize");
-        assertEq(usdt.balanceOf(address(escrow)), 0, "escrow must be empty");
-        assertEq(usdt.balanceOf(p2), 0, "loser paid everything");
+        assertEq(usdt.balanceOf(treasury) - treasuryBefore, fee, "fee delta");
+        // p1 delta = -stake (create) + prize  =>  prize = delta + stake
+        assertEq(usdt.balanceOf(p1) - p1Before + stake, pool - fee, "prize delta");
+        assertEq(usdt.balanceOf(address(escrow)) - escrowBefore, 0, "escrow must net empty");
+        assertEq(p2Before - usdt.balanceOf(p2), stake, "loser paid exactly one stake");
     }
 
     /// A settled duel can NEVER be settled, joined, or re-created.
