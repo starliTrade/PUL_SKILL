@@ -71,7 +71,7 @@ contract PulsarEscrowTest is Test {
             ,
             ,
             ,
-            uint8 status_,
+            PulsarEscrow.MatchStatus status_,
             ,
             ,
 
@@ -79,7 +79,7 @@ contract PulsarEscrowTest is Test {
         assertEq(uint256(matchId_), uint256(mid), "word 0 must be matchId");
         assertEq(player1_, p1, "word 1 must be player1 (creator)");
         assertEq(player2_, p2, "word 2 must be player2 (joiner)");
-        assertEq(status_, uint8(2), "word 6 must be status (Active=2 after both stakes)");
+        assertEq(uint8(status_), 2, "word 6 must be status (Active=2 after both stakes)");
     }
 
     function test_Pin_RefundHorizonIs30Minutes() public pure {
@@ -163,8 +163,11 @@ contract PulsarEscrowTest is Test {
         (bytes32 matchId, uint256 wMs, uint256 lMs, uint256 nonce, uint256 deadline) = _defaultProofParams();
         _createAndJoin(matchId);
 
-        assertEq(uint8(escrow.matches(matchId).status), uint8(PulsarEscrow.MatchStatus.Active));
-        assertEq(escrow.matches(matchId).totalPool, STAKE * 2);
+        // External struct getters return an unnamed tuple — bind to the struct
+        // type first (tuple-to-struct assignment), then read named fields.
+        PulsarEscrow.DuelMatch memory pre = escrow.matches(matchId);
+        assertEq(uint8(pre.status), uint8(PulsarEscrow.MatchStatus.Active));
+        assertEq(pre.totalPool, STAKE * 2);
 
         (bytes memory sig,) = _sign(matchId, p1, wMs, lMs, nonce, deadline);
         _settle(matchId, p1, wMs, lMs, nonce, deadline, sig);
@@ -272,7 +275,8 @@ contract PulsarEscrowTest is Test {
         vm.warp(block.timestamp + 30 minutes + 1);
         escrow.refundTimeoutMatch(matchId);
 
-        assertEq(uint8(escrow.matches(matchId).status), uint8(PulsarEscrow.MatchStatus.Cancelled));
+        PulsarEscrow.DuelMatch memory cancelled = escrow.matches(matchId);
+        assertEq(uint8(cancelled.status), uint8(PulsarEscrow.MatchStatus.Cancelled));
         assertEq(usdt.balanceOf(p1), STAKE);
         assertEq(usdt.balanceOf(address(escrow)), 0);
     }
@@ -286,7 +290,8 @@ contract PulsarEscrowTest is Test {
         vm.warp(block.timestamp + 30 minutes + 1);
         escrow.refundTimeoutMatch(matchId);
 
-        assertEq(uint8(escrow.matches(matchId).status), uint8(PulsarEscrow.MatchStatus.Refunded));
+        PulsarEscrow.DuelMatch memory refunded = escrow.matches(matchId);
+        assertEq(uint8(refunded.status), uint8(PulsarEscrow.MatchStatus.Refunded));
         assertEq(usdt.balanceOf(p1), STAKE);
         assertEq(usdt.balanceOf(p2), STAKE);
         assertEq(usdt.balanceOf(address(escrow)), 0);
@@ -446,11 +451,13 @@ contract PulsarEscrowTest is Test {
         escrow.createDuel(matchId, stake);
         // F-19: totalPool is finalized on JOIN (balance-delta accounting),
         // not at create time — the pool is only real once both stakes landed.
-        assertEq(escrow.matches(matchId).totalPool, 0, "pool set on join");
+        PulsarEscrow.DuelMatch memory created = escrow.matches(matchId);
+        assertEq(created.totalPool, 0, "pool set on join");
         assertEq(usdt.balanceOf(address(escrow)), stake);
         vm.prank(p2);
         escrow.joinDuel(matchId);
-        assertEq(escrow.matches(matchId).totalPool, stake * 2, "pool after join");
+        PulsarEscrow.DuelMatch memory joined = escrow.matches(matchId);
+        assertEq(joined.totalPool, stake * 2, "pool after join");
         assertEq(usdt.balanceOf(address(escrow)), stake * 2, "both stakes locked");
     }
 
