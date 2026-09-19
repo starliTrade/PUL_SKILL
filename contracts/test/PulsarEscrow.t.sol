@@ -48,7 +48,7 @@ contract PulsarEscrowTest is Test {
 
     uint256 constant EXPECTED_FEE_BPS = 200; // must equal PulsarEscrow.PLATFORM_FEE_BPS
 
-    function test_Pin_ContractFeeMatchesEconomyConstant() public pure {
+    function test_Pin_ContractFeeMatchesEconomyConstant() public view {
         assertEq(
             escrow.PLATFORM_FEE_BPS(),
             EXPECTED_FEE_BPS,
@@ -56,7 +56,7 @@ contract PulsarEscrowTest is Test {
         );
     }
 
-    function test_Pin_DuelMatchStructLayoutMatchesServerDecoder() public view {
+    function test_Pin_DuelMatchStructLayoutMatchesServerDecoder() public {
         // api/onchain.py decodes matches(bytes32) as 10 static words with
         // `status` at word index 6 (matchId, player1, player2, stakeAmount,
         // totalPool, createdAt, status, winner, winnerReactionMs,
@@ -82,7 +82,7 @@ contract PulsarEscrowTest is Test {
         assertEq(uint8(status_), 2, "word 6 must be status (Active=2 after both stakes)");
     }
 
-    function test_Pin_RefundHorizonIs30Minutes() public pure {
+    function test_Pin_RefundHorizonIs30Minutes() public view {
         assertEq(escrow.MATCH_TIMEOUT(), 30 minutes, "server copy promises a 30-min refund horizon");
     }
 
