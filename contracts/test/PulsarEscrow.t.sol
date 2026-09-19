@@ -172,9 +172,9 @@ contract PulsarEscrowTest is Test {
         (bytes memory sig,) = _sign(matchId, p1, wMs, lMs, nonce, deadline);
         _settle(matchId, p1, wMs, lMs, nonce, deadline, sig);
 
-        PulsarEscrow.DuelMatch memory m = escrow.matches(matchId);
-        assertEq(uint8(m.status), uint8(PulsarEscrow.MatchStatus.Settled));
-        assertEq(m.winner, p1);
+        (,,,,,, PulsarEscrow.MatchStatus stSettled, address winner_,,) = escrow.matches(matchId);
+        assertEq(uint8(stSettled), uint8(PulsarEscrow.MatchStatus.Settled));
+        assertEq(winner_, p1);
 
         // 2% rake to treasury, 98% to winner
         uint256 fee = (STAKE * 2 * 200) / 10_000; // 40
@@ -246,7 +246,7 @@ contract PulsarEscrowTest is Test {
     }
 
     function test_RevertWhen_ExpiredDeadline() public {
-        (bytes32 matchId, uint256 wMs, uint256 lMs, uint256 nonce) = _defaultProofParams();
+        (bytes32 matchId, uint256 wMs, uint256 lMs, uint256 nonce,) = _defaultProofParams();
         uint256 deadline = block.timestamp - 1;
         _createAndJoin(matchId);
         (bytes memory sig,) = _sign(matchId, p1, wMs, lMs, nonce, deadline);
