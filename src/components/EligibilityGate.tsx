@@ -33,6 +33,10 @@ export const EligibilityGate: React.FC<EligibilityGateProps> = ({ onProceed }) =
   const { t } = useLanguage();
   const [ageConfirmed, setAgeConfirmed] = useState(false);
   const [jurisdictionConfirmed, setJurisdictionConfirmed] = useState(false);
+  // P0-fix: accept() only wrote localStorage without touching state, so with
+  // no onProceed handler (App mounts <EligibilityGate /> bare) nothing
+  // re-rendered and the modal stayed stuck on screen. Dismiss locally too.
+  const [dismissed, setDismissed] = useState(false);
 
   const alreadyConsented = (() => {
     try {
@@ -42,7 +46,7 @@ export const EligibilityGate: React.FC<EligibilityGateProps> = ({ onProceed }) =
     }
   })();
 
-  if (alreadyConsented) return null;
+  if (alreadyConsented || dismissed) return null;
 
   const accept = () => {
     try {
@@ -51,6 +55,7 @@ export const EligibilityGate: React.FC<EligibilityGateProps> = ({ onProceed }) =
     } catch {
       /* storage unavailable */
     }
+    setDismissed(true);
     onProceed?.();
   };
 
