@@ -283,6 +283,20 @@ export interface SettledMatch {
 export const settleMatch = (session: ServerSession, matchId: string): Promise<SettledMatch> =>
   request<SettledMatch>(`/api/match/${encodeURIComponent(matchId)}/settle`, {}, session);
 
+export interface ClaimResult {
+  ok: boolean;
+  onChainProof: boolean;
+  reason?: string;
+}
+
+/** Persist a mined settlement only after the server verifies its receipt. */
+export const claimMatch = (
+  session: ServerSession,
+  matchId: string,
+  txHash: string,
+): Promise<ClaimResult> =>
+  request<ClaimResult>(`/api/match/${encodeURIComponent(matchId)}/claim`, { txHash }, session);
+
 // Audit #10 (item 8): username claims moved OFF the direct-Firestore path
 // (anyone could write usernames/{name} with any address — rules could not
 // prove ownership). The claim now runs server-side, authenticated by this

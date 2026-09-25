@@ -86,11 +86,14 @@ MATCH_SETTLE_GRACE_SECONDS = 480  # 8 minutes after activation (unchanged)
 
 
 def settlement_deadline(match: Any) -> int:
-    """Audit #10 (item 5): the last instant a settlement of `match` is worth
-    anything on-chain: activation + the contract's MATCH_TIMEOUT. After this
-    the duel is refundable and NO signature can pay the winner — every signed
-    deadline must be clamped to this."""
-    origin = float(getattr(match, "activated_at", 0.0) or getattr(match, "created_at", 0.0))
+    """Return the contract's refund horizon for this match.
+
+    PulsarEscrow starts MATCH_TIMEOUT at ``createdAt`` in createDuel(), which
+    is represented by the server's ``created_at``. Activation is a gameplay
+    clock only; using it here could leave a settlement proof valid after a
+    permissionless on-chain refund had already become available.
+    """
+    origin = float(getattr(match, "created_at", 0.0))
     return int(origin + MATCH_TIMEOUT_SECONDS)
 
 # Secret used to MAC result proofs.

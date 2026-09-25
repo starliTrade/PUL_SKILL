@@ -37,6 +37,7 @@ import {
   revealRoundTarget,
   submitRoundResult,
   settleMatch,
+  claimMatch,
   getMatch,
   matchIdToBytes32,
   type ServerSession,
@@ -117,7 +118,7 @@ function isWalletCancel(msg: string): boolean {
 
   const [lastRoundResult, setLastRoundResult] = useState<RoundResult | null>(null);
   const [roundTransitionMessage, setRoundTransitionMessage] = useState<string>('');
-  
+
   // Dynamic Spatial & Directional Anti-Cheat Target State
   const [spawnConfig, setSpawnConfig] = useState<TargetSpawnConfig | null>(null);
   const [verifyTarget, setVerifyTarget] = useState<{ x: number; y: number }>({ x: 50, y: 50 });
@@ -545,7 +546,7 @@ function isWalletCancel(msg: string): boolean {
     const elapsed = performance.now() - startTimeRef.current;
     reactionTimeRef.current = elapsed;
     sounds.playHit();
-    
+
     // Synthetic event check
     const isNativeTrusted = 'isTrusted' in e ? Boolean(e.isTrusted) : true;
     processVerification(elapsed, {
@@ -571,7 +572,7 @@ function isWalletCancel(msg: string): boolean {
     const elapsed = performance.now() - startTimeRef.current;
     reactionTimeRef.current = elapsed;
     sounds.playHit();
-    
+
     const isNativeTrusted = 'isTrusted' in e ? Boolean(e.isTrusted) : true;
     processVerification(elapsed, {
       isTrusted: isNativeTrusted,
@@ -718,6 +719,15 @@ function isWalletCancel(msg: string): boolean {
           setLastProof(proof);
           txHash = await settleDuelOnChain(proof);
           setSettlementTxHash(txHash);
+          try {
+            const claim = await claimMatch(serverSession, result.matchId, txHash);
+            if (!claim.onChainProof) {
+              setOnchainAction('Payout confirmed; server ledger verification is pending.');
+            }
+          } catch (claimError) {
+            reportError(claimError, { context: 'settlement_claim', matchId: result.matchId });
+            setOnchainAction('Payout confirmed; server ledger verification is pending.');
+          }
           sounds.playWin();
           try {
             confetti({ particleCount: 90, spread: 75, origin: { y: 0.6 }, colors: ['#38bdf8', '#10b981', '#ffffff', '#eab308'] });
@@ -781,7 +791,21 @@ function isWalletCancel(msg: string): boolean {
     try {
       const txHash = await settleDuelOnChain(lastProof);
       setSettlementTxHash(txHash);
-      setOnchainAction(`Claimed: ${txHash.slice(0, 10)}…${txHash.slice(-8)}`);
+      if (serverSession && serverMatch) {
+        try {
+          const claim = await claimMatch(serverSession, serverMatch.matchId, txHash);
+          setOnchainAction(
+            claim.onChainProof
+              ? `Claimed and recorded: ${txHash.slice(0, 10)}…${txHash.slice(-8)}`
+              : 'Payout confirmed; server ledger verification is pending.',
+          );
+        } catch (claimError) {
+          reportError(claimError, { context: 'settlement_claim_retry', matchId: serverMatch.matchId });
+          setOnchainAction('Payout confirmed; server ledger verification is pending.');
+        }
+      } else {
+        setOnchainAction(`Claimed: ${txHash.slice(0, 10)}…${txHash.slice(-8)}`);
+      }
       sounds.playWin();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1206,7 +1230,7 @@ function isWalletCancel(msg: string): boolean {
 
       {/* Main Interactive Stage */}
       <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-4 max-w-md mx-auto w-full pb-10">
-        
+
         {/* PHASE 0: Server Matchmaking (real staked matches) */}
         {phase === 'matchmaking' && (
           <motion.div
