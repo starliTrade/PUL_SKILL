@@ -189,12 +189,25 @@ def do_settle_mode():
 
     print("== on-chain deposits (cast) ==")
     k1, k2 = os.environ["PLAYER1_KEY"], os.environ["PLAYER2_KEY"]
-    tx_send(k1, TOKEN, "approve(address,uint256)", ESCROW, str(stake_units), gas_limit=100000)
-    tx_send(k1, ESCROW, "createDuel(bytes32,uint256)", b32, str(stake_units), gas_limit=300000)
-    check("duel Created on-chain", duel_status(b32) == 1)
-    tx_send(k2, TOKEN, "approve(address,uint256)", ESCROW, str(stake_units), gas_limit=100000)
-    tx_send(k2, ESCROW, "joinDuel(bytes32)", b32, gas_limit=300000)
-    check("duel Active on-chain (both stakes locked)", duel_status(b32) == 2)
+    # Resume-safe: a previous run may have deposited already (server replays
+    # the live match instead of pairing a new one). Never re-create.
+    chain = duel_status(b32)
+    if chain == 0:
+        tx_send(k1, TOKEN, "approve(address,uint256)", ESCROW, str(stake_units), gas_limit=100000)
+        tx_send(k1, ESCROW, "createDuel(bytes32,uint256)", b32, str(stake_units), gas_limit=300000)
+        check("duel Created on-chain", duel_status(b32) == 1)
+        tx_send(k2, TOKEN, "approve(address,uint256)", ESCROW, str(stake_units), gas_limit=100000)
+        tx_send(k2, ESCROW, "joinDuel(bytes32)", b32, gas_limit=300000)
+        check("duel Active on-chain (both stakes locked)", duel_status(b32) == 2)
+    elif chain == 1:
+        tx_send(k2, TOKEN, "approve(address,uint256)", ESCROW, str(stake_units), gas_limit=100000)
+        tx_send(k2, ESCROW, "joinDuel(bytes32)", b32, gas_limit=300000)
+        check("duel Active on-chain (both stakes locked)", duel_status(b32) == 2)
+    elif chain == 2:
+        print("deposits already locked from a previous run, skipping to rounds")
+        check("duel Active on-chain (both stakes locked)", True)
+    else:
+        raise SystemExit(f"unexpected on-chain duel status {chain}, resolve manually")
 
     print("== rounds (real timing) ==")
     for idx in range(3):
@@ -204,8 +217,13 @@ def do_settle_mode():
         if v.get("status") != "active":
             print(f"match {v.get('status')} after round {idx - 1}, stopping early")
             break
-        play_round(t1, mid, idx, 250)  # P1 faster -> should win
-        play_round(t2, mid, idx, 450)
+        try:
+            play_round(t1, mid, idx, 250)  # P1 faster -> should win
+            play_round(t2, mid, idx, 450)
+        except AssertionError as e:
+            # Round already decided/consumed (e.g. resumed run) -> settle.
+            print(f"round {idx} not playable ({e}), moving to settle")
+            break
         print(f"round {idx} submitted by both")
     check("deposit gate stayed green through rounds", duel_status(b32) == 2)
 
