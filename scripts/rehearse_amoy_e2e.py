@@ -198,6 +198,12 @@ def do_settle_mode():
 
     print("== rounds (real timing) ==")
     for idx in range(3):
+        # Bo3 can complete early (2-0 majority settles without round 2) —
+        # stop playing once the server no longer reports active.
+        v = s.get(f"/api/match/{mid}", headers=hdrs(t1)).json()
+        if v.get("status") != "active":
+            print(f"match {v.get('status')} after round {idx - 1}, stopping early")
+            break
         play_round(t1, mid, idx, 250)  # P1 faster -> should win
         play_round(t2, mid, idx, 450)
         print(f"round {idx} submitted by both")
