@@ -42,7 +42,7 @@ from eth_account.messages import encode_defunct
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
 import oracle as oracle_mod  # noqa: E402  (pure digest builder, no secrets at import)
 
-ORACLE_ADDR = os.environ.get("ORACLE_ADDRESS", "0x1949Cf88cE04a0e4EFc5132Cd1FDB436acDA0F4B").lower()
+ORACLE_ADDR = os.environ.get("ORACLE_ADDRESS", "0xa7b031019ef834dc651e47db895b2ef930c44432").lower()
 
 SERVER = os.environ.get("REHEARSE_SERVER", "http://127.0.0.1:8080")
 RPC = os.environ["REHEARSE_RPC"]
