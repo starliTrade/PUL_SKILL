@@ -66,10 +66,13 @@ def cast(*args, capture=True):
 
 
 def rpc_call(payload):
+    # NOTE: public RPCs (Cloudflare-fronted) 403 Python-urllib's default UA —
+    # send a browser-like UA (cast works for the same reason).
     req = urllib.request.Request(
         RPC,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json",
+                 "User-Agent": "Mozilla/5.0 (PULSAR-rehearsal)"},
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         out = json.load(resp)
