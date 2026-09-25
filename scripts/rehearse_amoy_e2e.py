@@ -39,6 +39,11 @@ import httpx
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
+import oracle as oracle_mod  # noqa: E402  (pure digest builder, no secrets at import)
+
+ORACLE_ADDR = os.environ.get("ORACLE_ADDRESS", "0x1949Cf88cE04a0e4EFc5132Cd1FDB436acDA0F4B").lower()
+
 SERVER = os.environ.get("REHEARSE_SERVER", "http://127.0.0.1:8080")
 RPC = os.environ["REHEARSE_RPC"]
 ESCROW = os.environ["ESCROW_ADDRESS"]
@@ -59,10 +64,15 @@ def check(name, cond):
 
 def cast(*args, capture=True):
     """Run cast (must be on PATH). Secrets passed via args stay in YOUR shell."""
-    r = subprocess.run(["cast", *args], capture_output=capture, text=True, timeout=120)
+    r = subprocess.run(["cast", *args], capture_output=capture, text=True, timeout=180)
     if r.returncode != 0:
         raise RuntimeError(f"cast {' '.join(args[:4])}... failed:\n{r.stderr[-2000:]}")
     return r.stdout.strip()
+
+
+def tx_receipt(tx_hash):
+    return rpc_call({"jsonrpc": "2.0", "id": 1, "method": "eth_getTransactionReceipt",
+                     "params": [tx_hash]})
 
 
 def rpc_call(payload):
@@ -236,13 +246,42 @@ def do_settle_mode():
     wkey = k1 if winner == P1.address.lower() else k2
     print(f"winner={st['winner']} prize proof nonce={st['serverNonce']} deadline={st['deadline']}")
 
+    print("== proof cross-check (local digest vs oracle) ==")
+    digest = oracle_mod.build_settlement_digest(
+        {"matchId": mid, "winner": st["winner"], "winnerTimeMs": st["winnerTimeMs"],
+         "loserTimeMs": st["loserTimeMs"], "deadline": st["deadline"]},
+        int(st["serverNonce"]), chain_id=80002, escrow_address=ESCROW)
+    if hasattr(Account, "recover_hash"):
+        rec = Account.recover_hash(digest, signature=st["signature"])
+    else:
+        rec = Account._recover_hash(digest, signature=st["signature"])
+    rec_addr = str(getattr(rec, "address", rec)).lower()
+    print(f"recovered={rec_addr} expected={ORACLE_ADDR}")
+    check("proof recovers to the oracle signer", rec_addr == ORACLE_ADDR)
+    # NOTE: build uses the SERVER matchId string; the contract digest uses the
+    # bytes32 conversion. If recovery matches but the chain still reverts,
+    # the bytes32 mapping (match_bytes32) is the prime suspect.
+
     print("== on-chain settleDuel (cast) ==")
     proof_tuple = (f"({b32},{st['winner']},{st['winnerTimeMs']},{st['loserTimeMs']},"
                    f"{st['serverNonce']},{st['deadline']},{st['signature']})")
-    tx_send(wkey, ESCROW,
-            "settleDuel((bytes32,address,uint256,uint256,uint256,uint256,bytes))",
-            proof_tuple, gas_limit=400000)
-    check("duel Settled on-chain", duel_status(b32) == 3)
+    out = tx_send(wkey, ESCROW,
+                  "settleDuel((bytes32,address,uint256,uint256,uint256,uint256,bytes))",
+                  proof_tuple, gas_limit=400000)
+    # cast send prints a receipt table; extract transactionHash for status check.
+    txh = ""
+    for line in out.splitlines():
+        if "transactionHash" in line:
+            txh = line.split()[-1].strip()
+    print(f"settle tx: {txh}")
+    print(f"EXPLORER-TX: https://amoy.polygonscan.com/tx/{txh}")
+    receipt = tx_receipt(txh) if txh else None
+    ok = bool(receipt) and receipt.get("status") == "0x1"
+    check("duel Settled on-chain (receipt status 1)", ok)
+    if ok:
+        check("duel status == Settled", duel_status(b32) == 3)
+    else:
+        print(f"RECEIPT: {json.dumps(receipt)[:500]}")
 
     print("== money verification ==")
     pool = stake_units * 2
