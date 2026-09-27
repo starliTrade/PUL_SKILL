@@ -67,7 +67,6 @@ def cast(*args, capture=True):
     r = subprocess.run(["cast", *args], capture_output=capture, text=True, timeout=180)
     if r.returncode != 0:
         # NEVER echo keys: tx_send passes --private-key in args. Redact it.
-        shown = ["--private-key", "<redacted>" ] if "--private-key" in args[:3] else []
         raise RuntimeError(f"cast send <redacted-key> failed:\n{r.stderr[-2000:]}")
     return r.stdout.strip()
 
