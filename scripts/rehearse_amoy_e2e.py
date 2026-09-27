@@ -66,7 +66,9 @@ def cast(*args, capture=True):
     """Run cast (must be on PATH). Secrets passed via args stay in YOUR shell."""
     r = subprocess.run(["cast", *args], capture_output=capture, text=True, timeout=180)
     if r.returncode != 0:
-        raise RuntimeError(f"cast {' '.join(args[:4])}... failed:\n{r.stderr[-2000:]}")
+        # NEVER echo keys: tx_send passes --private-key in args. Redact it.
+        shown = ["--private-key", "<redacted>" ] if "--private-key" in args[:3] else []
+        raise RuntimeError(f"cast send <redacted-key> failed:\n{r.stderr[-2000:]}")
     return r.stdout.strip()
 
 
