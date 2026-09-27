@@ -152,8 +152,17 @@ def hdrs(token):
 
 def play_round(token, match_id, idx, reaction_ms):
     intent = "0x" + hashlib.sha256(secrets.token_bytes(32)).hexdigest()
-    r = s.post("/api/round/commit", json={"matchId": match_id, "roundIndex": idx, "intentHash": intent},
-               headers=hdrs(token))
+    # The deposit gate reads live chain state; public RPCs hiccup — retry
+    # transient "temporarily unreadable" instead of failing the whole run.
+    last = None
+    for attempt in range(4):
+        r = s.post("/api/round/commit", json={"matchId": match_id, "roundIndex": idx, "intentHash": intent},
+                   headers=hdrs(token))
+        if r.status_code == 200 or "temporarily unreadable" not in r.text:
+            break
+        last = r.text
+        print(f"commit gate unreadable (attempt {attempt + 1}/4), waiting 15s...")
+        time.sleep(15)
     assert r.status_code == 200, f"commit: {r.text}"
     r = s.post("/api/round/target", json={"matchId": match_id, "roundIndex": idx}, headers=hdrs(token))
     assert r.status_code == 200, f"target: {r.text}"
@@ -183,7 +192,7 @@ def do_settle_mode():
     check("stake >= contract MIN_STAKE", stake_units >= 1_000_000)
     check("P1 holds enough MockUSDT", erc20_balance(TOKEN, P1.address) >= stake_units)
     check("P2 holds enough MockUSDT", erc20_balance(TOKEN, P2.address) >= stake_units)
-    treasury_before = erc20_balance(TOKEN, os.environ.get("TREASURY_ADDRESS", "0xF43492086D838bC9Dea5f7C28E4Ce0b1778f3E3a"))
+    treasury_before = erc20_balance(TOKEN, os.environ.get("TREASURY_ADDRESS", "0x04627462540E866349bB0eF7155ecC8AAcE397B8"))
     print(f"treasury before: {treasury_before}")
 
     print("== SIWE login ==")
@@ -241,6 +250,11 @@ def do_settle_mode():
     r = s.post(f"/api/match/{mid}/settle", json={}, headers=hdrs(t1))
     check("settle 200 + settled", r.status_code == 200 and r.json().get("status") == "settled")
     st = r.json()
+    if "winner" not in st:
+        # No completed rounds (e.g. gate blocked all commits) — report, don't crash.
+        print(f"settle body (no winner yet): {r.text[:500]}")
+        check("match produced a winner", False)
+        raise SystemExit(f"stopped: no winner. FAILURES: {failures}")
     winner = st["winner"].lower()
     check("P1 won (faster reactions)", winner == P1.address.lower())
     wkey = k1 if winner == P1.address.lower() else k2
