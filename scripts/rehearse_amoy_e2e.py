@@ -217,11 +217,11 @@ def do_settle_mode():
         tx_send(k1, ESCROW, "createDuel(bytes32,uint256)", b32, str(stake_units), gas_limit=300000)
         check("duel Created on-chain", duel_status(b32) == 1)
         tx_send(k2, TOKEN, "approve(address,uint256)", ESCROW, str(stake_units), gas_limit=100000)
-        tx_send(k2, ESCROW, "joinDuel(bytes32)", b32, gas_limit=300000)
+        tx_send(k2, ESCROW, "joinDuel(bytes32)", b32, gas_limit=200000)
         check("duel Active on-chain (both stakes locked)", duel_status(b32) == 2)
     elif chain == 1:
         tx_send(k2, TOKEN, "approve(address,uint256)", ESCROW, str(stake_units), gas_limit=100000)
-        tx_send(k2, ESCROW, "joinDuel(bytes32)", b32, gas_limit=300000)
+        tx_send(k2, ESCROW, "joinDuel(bytes32)", b32, gas_limit=200000)
         check("duel Active on-chain (both stakes locked)", duel_status(b32) == 2)
     elif chain == 2:
         print("deposits already locked from a previous run, skipping to rounds")
@@ -282,7 +282,7 @@ def do_settle_mode():
                    f"{st['serverNonce']},{st['deadline']},{st['signature']})")
     out = tx_send(wkey, ESCROW,
                   "settleDuel((bytes32,address,uint256,uint256,uint256,uint256,bytes))",
-                  proof_tuple, gas_limit=400000)
+                  proof_tuple, gas_limit=250000)
     # cast send prints a receipt table; extract transactionHash for status check.
     txh = ""
     for line in out.splitlines():
