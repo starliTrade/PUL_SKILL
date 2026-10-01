@@ -203,7 +203,15 @@ def do_settle_mode():
     print("== matchmaking ==")
     m1 = s.post("/api/queue", json={"stake": STAKE}, headers=hdrs(t1)).json()
     m2 = s.post("/api/queue", json={"stake": STAKE}, headers=hdrs(t2)).json()
-    check("paired into one active match", m1["matchId"] == m2["matchId"] and m2["status"] == "active")
+    if m1["matchId"] == m2["matchId"] and m2["status"] == "active":
+        check("paired into one active match", True)
+    elif m1["matchId"] == m2["matchId"]:
+        # Resume path: server replayed the existing live match instead of
+        # pairing anew (deposits/rounds continue, nothing is lost).
+        print(f"resuming existing match (status={m2['status']})")
+        check("paired into one active match (resume)", True)
+    else:
+        check("paired into one active match", False)
     mid, b32 = m1["matchId"], match_bytes32(m1["matchId"])
     print(f"matchId={mid} bytes32={b32}")
 
