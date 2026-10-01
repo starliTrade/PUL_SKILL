@@ -282,7 +282,7 @@ def do_settle_mode():
                    f"{st['serverNonce']},{st['deadline']},{st['signature']})")
     out = tx_send(wkey, ESCROW,
                   "settleDuel((bytes32,address,uint256,uint256,uint256,uint256,bytes))",
-                  proof_tuple, gas_limit=250000)
+                  proof_tuple, gas_limit=400000)
     # cast send prints a receipt table; extract transactionHash for status check.
     txh = ""
     for line in out.splitlines():
