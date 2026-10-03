@@ -622,6 +622,29 @@ class RealWeb3Manager {
     return openWalletConnectInNativeApp(walletId, uri);
   }
 
+  /** Accounts already approved in a live WalletConnect session (survives tab suspend). */
+  private activeSessionAccounts(provider: any): string[] {
+    const out: string[] = [];
+    try {
+      const activeSessions = provider?.client?.session?.getAll?.() || [];
+      if (activeSessions.length > 0) {
+        const latestSession = activeSessions[activeSessions.length - 1];
+        const namespaces = latestSession?.namespaces || {};
+        for (const ns of Object.values(namespaces) as any[]) {
+          if (ns?.accounts && Array.isArray(ns.accounts)) {
+            for (const acc of ns.accounts) {
+              const cleanAddr = String(acc).split(':').pop();
+              if (cleanAddr && cleanAddr.startsWith('0x')) {
+                out.push(cleanAddr);
+              }
+            }
+          }
+        }
+      }
+    } catch {}
+    return out;
+  }
+
   private startWalletConnectPairing(
     providerName: string,
     onUri?: (uri: string, deepLink: string, nativeScheme?: string) => void
@@ -629,6 +652,24 @@ class RealWeb3Manager {
     this.pendingWalletName = providerName;
 
     if (this.wcConnectPromise) {
+      // Fast-resume: the user may have approved in the wallet while iOS had
+      // this tab suspended — the pending connect() then never resolves and
+      // every re-tap would return the same stale promise (looks "stuck").
+      // If a session with accounts exists NOW, use it immediately.
+      try {
+        const p: any = this.wcProvider;
+        const sessAccts: string[] =
+          (p?.accounts?.length ? [...p.accounts] : null) ?? this.activeSessionAccounts(p);
+        if (p?.session && sessAccts?.length) {
+          this.wcConnectPromise = null;
+          this.lastWcUri = null;
+          return this.setConnectedAddress(
+            sessAccts[0],
+            providerName,
+            p.chainId || CHAIN.chainId
+          );
+        }
+      } catch {}
       if (this.lastWcUri && onUri) {
         onUri(
           this.lastWcUri,
@@ -678,21 +719,8 @@ class RealWeb3Manager {
 
         const accounts = provider.accounts || [];
         if (!accounts || accounts.length === 0) {
-          const activeSessions = provider?.client?.session?.getAll?.() || [];
-          if (activeSessions.length > 0) {
-            const latestSession = activeSessions[activeSessions.length - 1];
-            const namespaces = latestSession?.namespaces || {};
-            for (const ns of Object.values(namespaces) as any[]) {
-              if (ns?.accounts && Array.isArray(ns.accounts)) {
-                for (const acc of ns.accounts) {
-                  const cleanAddr = String(acc).split(':').pop();
-                  if (cleanAddr && cleanAddr.startsWith('0x')) {
-                    accounts.push(cleanAddr);
-                  }
-                }
-              }
-            }
-          }
+          const fromSession = this.activeSessionAccounts(provider);
+          for (const a of fromSession) accounts.push(a);
         }
 
         if (accounts && accounts.length > 0) {
