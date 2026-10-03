@@ -16,8 +16,11 @@
  * stays in practice mode. It never fakes a server response.
  */
 
+const _env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
+// Canonical: VITE_GAME_SERVER_URL. VITE_API_URL is accepted as a legacy alias
+// (ops set it in several runbooks) — either one configures the server bridge.
 const SERVER_URL: string = (
-  (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_GAME_SERVER_URL || ""
+  _env.VITE_GAME_SERVER_URL || _env.VITE_API_URL || ""
 ).replace(/\/+$/, "");
 
 export const gameServerConfigured = (): boolean => SERVER_URL.length > 0;
