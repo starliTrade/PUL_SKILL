@@ -999,7 +999,27 @@ class RealWeb3Manager {
 
   /** EIP-1193 provider of the currently connected wallet (injected or WalletConnect). */
   public getActiveEip1193Provider(): any | null {
-    if (this.wcProvider?.connected) return this.wcProvider;
+    const wc: any = this.wcProvider;
+    if (wc?.connected) {
+      // Validate the WC session before trusting it: after an iOS tab suspend
+      // or a stale restore the provider object can report `connected` while
+      // its internal namespace is gone — every request then throws
+      // "undefined is not an object (evaluating 'this.namespace...')".
+      // A zombie must NOT shadow the healthy injected provider.
+      let alive = false;
+      try {
+        const accts: string[] = Array.isArray(wc.accounts) ? wc.accounts : [];
+        alive = !!(wc.session && (accts.length > 0 || this.activeSessionAccounts(wc).length > 0));
+      } catch {
+        alive = false;
+      }
+      if (alive) return wc;
+      try {
+        if (typeof wc.disconnect === 'function') wc.disconnect().catch(() => {});
+      } catch {}
+      this.wcProvider = null;
+      this.wcConnectPromise = null;
+    }
     const injected = typeof window !== 'undefined' ? (window as any).ethereum : null;
     return injected || null;
   }
