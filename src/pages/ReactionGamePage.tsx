@@ -135,6 +135,8 @@ function isWalletCancel(msg: string): boolean {
   const reactionTimeRef = useRef<number>(0);
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const targetRevealRef = useRef<number>(0); // when this round's server target appeared
+  // Guards double-entry into the server match flow (double-tap / StrictMode).
+  const serverStartRef = useRef<boolean>(false);
   // P0-fix (audit #2): per-round proof from the reveal step. Every result
   // submission must carry it — the server rejects results without it.
   const resultProofRef = useRef<string>('');
@@ -167,6 +169,24 @@ function isWalletCancel(msg: string): boolean {
   // Human verify target clicked
   const handleVerifyNodeClick = () => {
     sounds.playTick();
+    if (isServerMode) {
+      // P2.2-fix: staked matches MUST go through the authoritative server
+      // flow (SIWE → queue → deposit). startServerMatch/recoverServerMatch
+      // existed but were never called — every "real" duel silently ran the
+      // local bot flow. Route here explicitly; both callees own their phases
+      // (matchmaking → ready on success, error shell on failure).
+      if (serverStartRef.current) return;
+      serverStartRef.current = true;
+      void (async () => {
+        try {
+          const resumed = await recoverServerMatch();
+          if (!resumed) await startServerMatch();
+        } finally {
+          serverStartRef.current = false;
+        }
+      })();
+      return;
+    }
     setPhase('ready');
     setCountdown(3);
   };
