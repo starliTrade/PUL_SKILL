@@ -645,11 +645,30 @@ class RealWeb3Manager {
     return out;
   }
 
-  private startWalletConnectPairing(
+  private async startWalletConnectPairing(
     providerName: string,
     onUri?: (uri: string, deepLink: string, nativeScheme?: string) => void
   ): Promise<ConnectedAccountState> {
     this.pendingWalletName = providerName;
+
+    // Fresh-load resume: iOS may have killed the tab mid-pairing, so no
+    // promise is pending — but the approval can still live in persisted WC
+    // storage. Reuse it instead of starting yet another pairing round.
+    try {
+      const existing: any = await this.ensureWcProvider();
+      const existingAccts: string[] =
+        (Array.isArray(existing?.accounts) && existing.accounts.length
+          ? [...existing.accounts]
+          : null) ?? this.activeSessionAccounts(existing);
+      if (existing?.session && existingAccts.length) {
+        this.lastWcUri = null;
+        return await this.setConnectedAddress(
+          existingAccts[0],
+          providerName,
+          existing.chainId || CHAIN.chainId
+        );
+      }
+    } catch {}
 
     if (this.wcConnectPromise) {
       // Fast-resume: the user may have approved in the wallet while iOS had
