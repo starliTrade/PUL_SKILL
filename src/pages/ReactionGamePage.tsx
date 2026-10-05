@@ -229,8 +229,21 @@ function isWalletCancel(msg: string): boolean {
     setServerError('');
     setPhase('matchmaking');
     try {
-      const provider = realWeb3Manager.getActiveEip1193Provider();
-      if (!provider) throw new Error('No active wallet to sign in with.');
+      // If the provider object is gone (page reload wipes the in-memory WC
+      // provider while the UI still shows the restored address), do NOT
+      // silently start a headless pairing — its approval URI would never be
+      // shown and the screen would spin forever. Clear the stale state so
+      // the header honestly shows disconnected, and tell the user to tap
+      // Connect (which has the full pairing UI) before retrying.
+      let provider = realWeb3Manager.getActiveEip1193Provider();
+      if (!provider) {
+        try {
+          realWeb3Manager.disconnect();
+        } catch {}
+        throw new Error(
+          'Wallet session expired after reload — tap Connect in the header to reconnect your wallet, then start the duel again.'
+        );
+      }
       // P0-fix (audit #2): the SIWE identity MUST be the full 40-hex address.
       // The display value (wallet.address) is `0x1234…abcd`; the server's
       // nonce endpoint requires ^0x[0-9a-fA-F]{40}$ and rejected it with 422,
@@ -355,8 +368,16 @@ function isWalletCancel(msg: string): boolean {
     setServerError('');
     setPhase('matchmaking');
     try {
+      // Same headless-pairing guard as startServerMatch (see above).
       const provider = realWeb3Manager.getActiveEip1193Provider();
-      if (!provider) throw new Error('No active wallet to sign in with.');
+      if (!provider) {
+        try {
+          realWeb3Manager.disconnect();
+        } catch {}
+        throw new Error(
+          'Wallet session expired after reload — tap Connect in the header to reconnect your wallet, then start the duel again.'
+        );
+      }
       const fullAddr = wallet.fullAddress || wallet.address;
       const session = await ensureSession(fullAddr, async (message: string) => {
         try {
