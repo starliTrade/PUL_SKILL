@@ -95,6 +95,21 @@ function requireEscrowAddress(): string {
   return ESCROW.address;
 }
 
+// Amoy's RPC nodes enforce a dynamic minimum gas price that spikes far above
+// what wallets estimate (observed: node min 25 gwei vs wallet suggestion
+// 15 gwei → eth_sendRawTransaction reverted code 32603). Always floor the
+// price at 30 gwei so wallet suggestions can never dip below the node floor.
+async function safeGasPrice(): Promise<bigint> {
+  const FLOOR = parseUnits('30', 'gwei');
+  try {
+    const fee = await requireInjected().getFeeData();
+    const suggested = fee.gasPrice ?? 0n;
+    return suggested > FLOOR ? suggested : FLOOR;
+  } catch {
+    return FLOOR;
+  }
+}
+
 export async function getUsdtBalance(address: string): Promise<string> {
   const provider = requireInjected();
   const token = new Contract(TOKENS.USDT, ERC20_ABI, provider);
@@ -116,7 +131,7 @@ export async function approveUsdt(stakeUsdt: number): Promise<string> {
   const signer = await provider.getSigner();
   const token = new Contract(TOKENS.USDT, ERC20_ABI, signer);
   const amount = parseUnits(String(stakeUsdt), TOKENS.USDT_DECIMALS);
-  const tx = await token.approve(requireEscrowAddress(), amount);
+  const tx = await token.approve(requireEscrowAddress(), amount, { gasPrice: await safeGasPrice() });
   await tx.wait();
   return tx.hash as string;
 }
@@ -128,7 +143,7 @@ export async function createDuel(matchIdBytes32: string, stakeUsdt: number): Pro
   const signer = await provider.getSigner();
   const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, signer);
   const amount = parseUnits(String(stakeUsdt), TOKENS.USDT_DECIMALS);
-  const tx = await escrow.createDuel(matchIdBytes32, amount);
+  const tx = await escrow.createDuel(matchIdBytes32, amount, { gasPrice: await safeGasPrice() });
   await tx.wait();
   return tx.hash as string;
 }
@@ -139,7 +154,7 @@ export async function joinDuel(matchIdBytes32: string): Promise<string> {
   const provider = requireInjected();
   const signer = await provider.getSigner();
   const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, signer);
-  const tx = await escrow.joinDuel(matchIdBytes32);
+  const tx = await escrow.joinDuel(matchIdBytes32, { gasPrice: await safeGasPrice() });
   await tx.wait();
   return tx.hash as string;
 }
@@ -168,7 +183,7 @@ export async function settleDuel(proof: SettlementProof): Promise<string> {
     nonce: proof.nonce,
     deadline: proof.deadline,
     signature: proof.signature,
-  });
+  }, { gasPrice: await safeGasPrice() });
   await tx.wait();
   return tx.hash as string;
 }
@@ -179,7 +194,7 @@ export async function refundTimeoutMatch(matchIdBytes32: string): Promise<string
   const provider = requireInjected();
   const signer = await provider.getSigner();
   const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, signer);
-  const tx = await escrow.refundTimeoutMatch(matchIdBytes32);
+  const tx = await escrow.refundTimeoutMatch(matchIdBytes32, { gasPrice: await safeGasPrice() });
   await tx.wait();
   return tx.hash as string;
 }
