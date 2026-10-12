@@ -28,7 +28,7 @@ vi.mock('./chain', async (importOriginal) => {
 });
 
 import { realWeb3Manager } from './realWeb3';
-import { withdrawPending, getPendingWithdrawal } from './escrowFlow';
+import { withdrawPending, getPendingWithdrawal, resetTokenDecimalsCache } from './escrowFlow';
 
 type Call = { method: string; params?: unknown[] };
 
@@ -54,9 +54,15 @@ function fakeProvider(opts: { pending?: bigint } = {}) {
           return '0x' + 'ab'.repeat(32);
         case 'eth_getTransactionReceipt':
           return { status: '0x1', transactionHash: '0x' + 'ab'.repeat(32) };
-        case 'eth_call':
+        case 'eth_call': {
+          const data = String((params?.[0] as { data?: string })?.data ?? '');
+          if (data.startsWith('0x313ce567')) {
+            // decimals() -> 6
+            return '0x' + (6).toString(16).padStart(64, '0');
+          }
           // pendingWithdrawals(address) -> uint256
           return '0x' + (opts.pending ?? 0n).toString(16).padStart(64, '0');
+        }
         default:
           return null;
       }
@@ -69,6 +75,7 @@ describe('deferred payouts (audit H17b)', () => {
     localStorage.clear();
     realWeb3Manager.disconnect();
     realWeb3Manager.bindActiveProvider(null);
+    resetTokenDecimalsCache();
     // The escrow configuration comes from the mocked ./chain module above.
   });
 

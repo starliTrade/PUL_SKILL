@@ -43,7 +43,7 @@ import {
   type ServerSession,
   type MatchView,
 } from '../lib/gameServerClient';
-import { settleDuel as settleDuelOnChain, refundTimeoutMatch, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState } from '../lib/escrowFlow';
+import { settleDuel as settleDuelOnChain, refundTimeoutMatch, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState, getTokenDecimals } from '../lib/escrowFlow';
 import { isEscrowConfigured, CHAIN, TOKENS, ECONOMY, REFUND_OPENS_AFTER_MINUTES } from '../lib/chain';
 import { ethers } from 'ethers';
 import { realWeb3Manager } from '../lib/realWeb3';
@@ -358,10 +358,10 @@ function isWalletCancel(msg: string): boolean {
             // funding, or a malicious creator deposits 0.000001 USDT while
             // the UI advertises the full prize.
             if (st.status === 1) {
-              const expectedUnits = ethers.parseUnits(String(currentStake), TOKENS.USDT_DECIMALS);
+              const expectedUnits = ethers.parseUnits(String(currentStake), await getTokenDecimals());
               if (st.stakeAmount !== expectedUnits) {
                 throw new Error(
-                  `On-chain stake (${ethers.formatUnits(st.stakeAmount, TOKENS.USDT_DECIMALS)} USDT) ` +
+                  `On-chain stake (${ethers.formatUnits(st.stakeAmount, await getTokenDecimals())} USDT) ` +
                     `does not match the agreed stake (${currentStake} USDT). Refusing to join.`,
                 );
               }

@@ -85,6 +85,39 @@ async function ensureCorrectChain(): Promise<void> {
   }
 }
 
+/**
+ * decimals() of the payment token, cached per token address (audit H13).
+ *
+ * The write path used the hard-coded `TOKENS.USDT_DECIMALS` (6) while the read
+ * path read the real value, so on any other token the stake was scaled by 10^k
+ * in the wrong direction — `createDuel(…, parseUnits("1", 6))` deposits 1e-12
+ * tokens on an 18-decimal token while the UI advertises a whole one. The
+ * joiner's check used the same constant, so nothing caught it.
+ *
+ * Cached because it is immutable for a given token and every write needs it.
+ */
+let _decimalsCache: { token: string; value: number } | null = null;
+
+export async function getTokenDecimals(): Promise<number> {
+  const token = TOKENS.USDT;
+  if (_decimalsCache && _decimalsCache.token === token) {
+    return _decimalsCache.value;
+  }
+  const provider = requireInjected();
+  const contract = new Contract(token, ERC20_ABI, provider);
+  const value = Number(await contract.decimals());
+  if (!Number.isInteger(value) || value < 0 || value > 36) {
+    throw new Error(`The payment token reports an implausible decimals() value: ${value}`);
+  }
+  _decimalsCache = { token, value };
+  return value;
+}
+
+/** Test seam: forget the cached decimals. */
+export function resetTokenDecimalsCache(): void {
+  _decimalsCache = null;
+}
+
 function requireEscrowAddress(): string {
   if (!ESCROW.address) {
     throw new Error('Escrow address is not configured. Real-money play is disabled.');
@@ -114,14 +147,14 @@ export async function getUsdtBalance(address: string): Promise<string> {
   const provider = requireInjected();
   const token = new Contract(TOKENS.USDT, ERC20_ABI, provider);
   const raw: bigint = await token.balanceOf(address);
-  return formatUnits(raw, TOKENS.USDT_DECIMALS);
+  return formatUnits(raw, await getTokenDecimals());
 }
 
 export async function getAllowance(owner: string): Promise<string> {
   const provider = requireInjected();
   const token = new Contract(TOKENS.USDT, ERC20_ABI, provider);
   const raw: bigint = await token.allowance(owner, requireEscrowAddress());
-  return formatUnits(raw, TOKENS.USDT_DECIMALS);
+  return formatUnits(raw, await getTokenDecimals());
 }
 
 /** ERC-20 approve for the escrow to pull `stakeUsdt`. Returns real tx hash. */
@@ -130,7 +163,7 @@ export async function approveUsdt(stakeUsdt: number): Promise<string> {
   const provider = requireInjected();
   const signer = await provider.getSigner();
   const token = new Contract(TOKENS.USDT, ERC20_ABI, signer);
-  const amount = parseUnits(String(stakeUsdt), TOKENS.USDT_DECIMALS);
+  const amount = parseUnits(String(stakeUsdt), await getTokenDecimals());
   const tx = await token.approve(requireEscrowAddress(), amount, { gasPrice: await safeGasPrice() });
   await tx.wait();
   return tx.hash as string;
@@ -142,7 +175,7 @@ export async function createDuel(matchIdBytes32: string, stakeUsdt: number): Pro
   const provider = requireInjected();
   const signer = await provider.getSigner();
   const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, signer);
-  const amount = parseUnits(String(stakeUsdt), TOKENS.USDT_DECIMALS);
+  const amount = parseUnits(String(stakeUsdt), await getTokenDecimals());
   const tx = await escrow.createDuel(matchIdBytes32, amount, { gasPrice: await safeGasPrice() });
   await tx.wait();
   return tx.hash as string;
@@ -200,7 +233,7 @@ export async function getPendingWithdrawal(address: string): Promise<string> {
   const provider = requireInjected();
   const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, provider);
   const raw: bigint = await escrow.pendingWithdrawals(address);
-  return formatUnits(raw, TOKENS.USDT_DECIMALS);
+  return formatUnits(raw, await getTokenDecimals());
 }
 
 /**

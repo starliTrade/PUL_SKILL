@@ -28,7 +28,7 @@ vi.mock('./chain', async (importOriginal) => {
 });
 
 import { realWeb3Manager } from './realWeb3';
-import { approveUsdt, createDuel, getTokenDecimals } from './escrowFlow';
+import { approveUsdt, createDuel, getTokenDecimals, resetTokenDecimalsCache } from './escrowFlow';
 
 const TOKEN = '0x' + '77'.repeat(20);
 
@@ -78,8 +78,9 @@ describe('token decimals (audit H13)', () => {
     localStorage.clear();
     realWeb3Manager.disconnect();
     realWeb3Manager.bindActiveProvider(null);
-    // The cache is module-level; a fresh token per test must not inherit it.
-    vi.resetModules();
+    // The cache is module-level and immutable per token, so a test with a
+    // different token must clear it explicitly.
+    resetTokenDecimalsCache();
   });
 
   it('reads decimals from the token', async () => {
