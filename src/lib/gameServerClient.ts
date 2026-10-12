@@ -73,6 +73,33 @@ const persistSession = (s: ServerSession): void => {
   }
 };
 
+/**
+ * Revoke the server session and drop it locally (audit H22b).
+ *
+ * H22 added `POST /api/auth/logout` so a stolen bearer token cannot stay valid
+ * for its full 2h TTL. Nothing called it, so disconnecting the wallet dropped
+ * the LOCAL session while the token stayed live server-side.
+ *
+ * The local session is cleared even when the request fails: the player asked to
+ * disconnect, and a network error must not leave them holding a session they
+ * cannot get rid of. The token then expires on its own TTL.
+ */
+export const logoutServerSession = async (): Promise<void> => {
+  const session = loadServerSession();
+  if (!session) return;
+
+  try {
+    await fetch(`${SERVER_URL}/api/auth/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${session.token}` },
+    });
+  } catch {
+    // Offline or the server is down — the local clear below still happens.
+  } finally {
+    clearServerSession();
+  }
+};
+
 export const clearServerSession = (): void => {
   try {
     localStorage.removeItem(SESSION_KEY);

@@ -17,6 +17,7 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 import { getDb } from './firebase';
+import { logoutServerSession } from './gameServerClient';
 import { CHAIN, TOKENS } from './chain';
 
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
@@ -1153,6 +1154,9 @@ class RealWeb3Manager {
   public disconnect(): void {
     this.bindActiveProvider(null);
     this.identityLockedReason = '';
+    // Audit H22b: revoke the SERVER session too. Dropping only the local copy
+    // left the bearer token valid server-side for the rest of its 2h TTL.
+    void logoutServerSession().catch(() => {});
     try {
       if (this.wcProvider?.connected) {
         this.wcProvider.disconnect().catch(() => {});

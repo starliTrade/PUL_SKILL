@@ -20,6 +20,7 @@ const ADDRESS = '0x' + '11'.repeat(20);
 vi.mock('./firebase', () => ({ getDb: () => null }));
 
 import { logoutServerSession, loadServerSession } from './gameServerClient';
+import { realWeb3Manager } from './realWeb3';
 
 describe('server session logout (audit H22b)', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -67,6 +68,20 @@ describe('server session logout (audit H22b)', () => {
 
     // The player asked to disconnect; a network failure must not leave them
     // holding a session they cannot get rid of.
+    expect(loadServerSession()).toBeNull();
+  });
+
+  it('disconnecting the wallet revokes the session', async () => {
+    // The actual bug was that NOTHING called the endpoint. Testing
+    // `logoutServerSession` in isolation would not have caught it — this is the
+    // wiring, and it is the part that was missing.
+    realWeb3Manager.disconnect();
+
+    await vi.waitFor(() => {
+      const called = fetchMock.mock.calls.some((c) => String(c[0]).includes('/api/auth/logout'));
+      expect(called, 'disconnect() never called /api/auth/logout').toBe(true);
+    });
+
     expect(loadServerSession()).toBeNull();
   });
 
