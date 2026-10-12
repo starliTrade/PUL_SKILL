@@ -764,6 +764,49 @@ def admin_force_settle(match_id: str, body: AdminActionRequest, request: Request
     return {"matchId": match_id, "reason": body.reason, "settlement": signed or result}
 
 
+class DisputeRequest(BaseModel):
+    matchId: str = Field(pattern=r"^[0-9a-f]{32}$")
+    # Bounded: an unbounded field is a way to fill the database.
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+@app.post("/api/dispute")
+def report_dispute(body: DisputeRequest, request: Request) -> dict[str, Any]:
+    """Report a match for review (phase 6.4 / G8).
+
+    A report is a REQUEST FOR REVIEW, not an action: this handler never touches
+    match state or the money path. The reporter cannot change the outcome, and
+    the test asserts that by inspecting this function's source.
+
+    Only a participant may report. Anyone else reporting a match they were not in
+    is noise at best and harassment at worst.
+    """
+    address = _auth(request)
+    m = _admin_get_match(body.matchId)
+    if m is None:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if address.lower() not in m.players:
+        # 404 rather than 403: a non-participant should not learn that the match
+        # exists.
+        raise HTTPException(status_code=404, detail="Match not found")
+
+    report = {
+        "matchId": body.matchId,
+        "reporter": address.lower(),
+        "reason": body.reason,
+        "at": int(timebase.now()),
+        "status": m.status,
+    }
+    # Stored under the match so an operator inspecting it finds the report
+    # alongside the state it is about.
+    store.record_dispute(body.matchId, report)
+    print(
+        f"[dispute] {body.matchId} from {address.lower()}: {body.reason[:120]!r}",
+        file=sys.stderr,
+    )
+    return {"ok": True, "matchId": body.matchId, "received": report["at"]}
+
+
 @app.get("/api/metrics")
 def metrics_endpoint() -> dict[str, Any]:
     """Operational metrics (phase 6.1).

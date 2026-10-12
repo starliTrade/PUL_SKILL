@@ -514,6 +514,8 @@ class DurableMatchStore:
     """
 
     def __init__(self, backend: str | None = None) -> None:
+        # Phase 6.4: match id -> list of dispute reports.
+        self.disputes: dict[str, list[dict]] = {}
         backend = backend or os.environ.get("PULSAR_MATCH_STORE", "auto")
         self.backend_name = "memory"
         self._firestore: Any = None
@@ -566,6 +568,15 @@ class DurableMatchStore:
             self._mirror(match)
             return match
         return self.memory.enqueue(address, stake, rtt_ms)
+
+    def record_dispute(self, match_id: str, report: dict) -> None:
+        """Attach a player's dispute report to a match (phase 6.4).
+
+        Kept on the match so an operator inspecting it finds the report
+        alongside the state it is about. In-process for now: persisting reports
+        durably needs their own collection, which is a separate change.
+        """
+        self.disputes.setdefault(match_id, []).append(report)
 
     def rating_for(self, address: str) -> float:
         """Audit H23: the durable store keeps ratings in the in-memory backend.
