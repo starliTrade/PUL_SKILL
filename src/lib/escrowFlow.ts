@@ -8,7 +8,15 @@
  */
 
 import { BrowserProvider, Contract, formatUnits, parseUnits } from 'ethers';
-import { CHAIN, TOKENS, PULSAR_ESCROW_ABI, ERC20_ABI, ESCROW, isPaymentTokenConfigured } from './chain';
+import {
+  CHAIN,
+  TOKENS,
+  PULSAR_ESCROW_ABI,
+  ERC20_ABI,
+  ESCROW,
+  isEscrowConfigured,
+  isPaymentTokenConfigured,
+} from './chain';
 import { realWeb3Manager } from './realWeb3';
 
 export interface EscrowStatus {
@@ -18,7 +26,11 @@ export interface EscrowStatus {
 }
 
 export function escrowStatus(): EscrowStatus {
-  if (!ESCROW.address) {
+  // Audit M33: ONE source of truth. This used to re-derive "is the escrow
+  // configured" from ESCROW.address and isPaymentTokenConfigured(), while
+  // chain.ts had its own predicate — so the UI showed a different answer
+  // depending on which module a component happened to import.
+  if (!isEscrowConfigured()) {
     return {
       configured: false,
       escrowAddress: '',

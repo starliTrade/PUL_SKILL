@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { interpolate } from '../lib/interpolate';
 import { SupportedLanguage, SUPPORTED_LANGUAGES, translations, LanguageInfo } from './translations';
 
 interface LanguageContextType {
@@ -77,13 +78,10 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const langDict = translations[currentLanguage] || translations.en;
     let text = (langDict as Record<string, string>)[key] || (translations.en as Record<string, string>)[key] || key;
 
-    if (params) {
-      Object.entries(params).forEach(([paramKey, paramVal]) => {
-        text = text.replace(new RegExp(`{${paramKey}}`, 'g'), String(paramVal));
-      });
-    }
-
-    return text;
+    // Audit M43: the old inline version built a RegExp from the KEY and passed
+    // the VALUE as a replacement string, so a key with a metacharacter broke the
+    // pattern and a value containing `$&` was interpreted as a replacement.
+    return interpolate(text, params);
   };
 
   return (
