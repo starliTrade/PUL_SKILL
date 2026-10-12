@@ -222,6 +222,18 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
      */
     mapping(address => uint256) public pendingWithdrawals;
 
+    /**
+     * @dev Audit H20 — when the joiner paired, i.e. when the duel became
+     * playable. Kept OUT of DuelMatch on purpose: the struct layout is decoded
+     * by the server (`onchain._decode_match`) and pinned by a test, so adding a
+     * field would be a cross-component change for a value only the contract
+     * needs.
+     *
+     * Zero means "never activated" — an unpaired duel, whose refund clock stays
+     * anchored to `createdAt`.
+     */
+    mapping(bytes32 => uint256) public activatedAt;
+
     uint256 public totalDuelsSettled;
     uint256 public totalVolumeDistributed;
     uint256 public totalFeesCollected;
@@ -281,6 +293,9 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         DuelMatch storage duel = matches[matchId];
         require(duel.status == MatchStatus.Created, "Match not available");
         require(duel.player1 != msg.sender, "Cannot play against self");
+        // Audit H20: joining a duel that is already refundable would produce an
+        // Active match that can be unwound one second later.
+        require(block.timestamp < duel.createdAt + MATCH_TIMEOUT, "Match expired");
 
         uint256 beforeBalance = paymentToken.balanceOf(address(this));
         SafeTransfer.safeTransferFrom(paymentToken, msg.sender, address(this), duel.stakeAmount);
@@ -290,6 +305,9 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         duel.player2 = msg.sender;
         duel.status = MatchStatus.Active;
         duel.totalPool = duel.stakeAmount * 2;
+        // Audit H20: the refund clock starts when the duel becomes playable,
+        // not when the first stake was deposited.
+        activatedAt[matchId] = block.timestamp;
 
         emit MatchJoined(matchId, msg.sender);
     }
@@ -305,6 +323,14 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         // P1.17: a signed settlement expires — the referee must re-sign with
         // fresh state if submission is delayed past the deadline.
         require(block.timestamp <= proof.deadline, "Settlement proof expired");
+        // Audit H18: the contract must enforce its OWN horizon. Without this,
+        // "the signature expires before the permissionless refund opens" was
+        // guaranteed only by the server's clamp — one over-long deadline and a
+        // settlement could land after refunds were live, racing them.
+        require(
+            proof.deadline <= duel.createdAt + MATCH_TIMEOUT,
+            "deadline exceeds horizon"
+        );
 
         // Verify cryptographic oracle signature
         // NOTE: preimage MUST stay byte-identical to api/oracle.py
@@ -358,7 +384,13 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
     function refundTimeoutMatch(bytes32 matchId) external nonReentrant {
         DuelMatch storage duel = matches[matchId];
         require(duel.status == MatchStatus.Created || duel.status == MatchStatus.Active, "Cannot refund");
-        require(block.timestamp >= duel.createdAt + MATCH_TIMEOUT, "Match not timed out");
+        // Audit H20: anchor on ACTIVATION when there was one, so a duel that
+        // paired late still gets its full play window. An unpaired duel keeps
+        // the deposit clock.
+        uint256 clockOrigin = activatedAt[matchId] > duel.createdAt
+            ? activatedAt[matchId]
+            : duel.createdAt;
+        require(block.timestamp >= clockOrigin + MATCH_TIMEOUT, "Match not timed out");
 
         uint256 refundAmount = duel.stakeAmount;
 

@@ -89,12 +89,18 @@ MATCH_SETTLE_GRACE_SECONDS = 480  # 8 minutes after activation (unchanged)
 def settlement_deadline(match: Any) -> int:
     """Return the contract's refund horizon for this match.
 
-    PulsarEscrow starts MATCH_TIMEOUT at ``createdAt`` in createDuel(), which
-    is represented by the server's ``created_at``. Activation is a gameplay
-    clock only; using it here could leave a settlement proof valid after a
-    permissionless on-chain refund had already become available.
+    Audit H20 changed the contract's anchor: `refundTimeoutMatch` now counts
+    MATCH_TIMEOUT from ACTIVATION when the duel was paired, and from the deposit
+    only for a duel that never paired. This must mirror that exactly — a clamp
+    anchored to the wrong instant either mints a proof the contract rejects or
+    leaves one valid after a permissionless refund became available.
+
+    (Before H20 the contract anchored on `createdAt` alone, which is why this
+    used to read `created_at` unconditionally.)
     """
-    origin = float(getattr(match, "created_at", 0.0))
+    created = float(getattr(match, "created_at", 0.0))
+    activated = float(getattr(match, "activated_at", 0.0) or 0.0)
+    origin = max(created, activated)
     return int(origin + MATCH_TIMEOUT_SECONDS)
 
 # Secret used to MAC result proofs.

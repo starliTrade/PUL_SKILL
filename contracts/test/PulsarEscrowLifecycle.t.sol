@@ -128,8 +128,15 @@ contract PulsarEscrowLifecycleTest is Test {
     }
 
     // --- H20 ------------------------------------------------------------------
-    // `activatedAt` is new API; its assertion is added with the fix, so this red
-    // baseline still compiles.
+    function test_activation_is_recorded() public {
+        bytes32 id = keccak256("h20-activated");
+        _create(id);
+        assertEq(escrow.activatedAt(id), 0, "an unpaired duel has no activation");
+
+        uint256 joinedAt = block.timestamp;
+        _join(id);
+        assertEq(escrow.activatedAt(id), joinedAt);
+    }
     function test_join_after_the_refund_horizon_reverts() public {
         bytes32 id = keccak256("h20-late-join");
         _create(id);
