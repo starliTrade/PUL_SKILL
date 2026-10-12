@@ -164,8 +164,9 @@ contract PulsarEscrowLifecycleTest is Test {
         vm.expectRevert("Match not timed out");
         escrow.refundTimeoutMatch(id);
 
-        // Once the full window has passed from ACTIVATION, the refund opens.
-        vm.warp(block.timestamp + TIMEOUT);
+        // Once the full window (plus the audit-H19 grace) has passed from
+        // ACTIVATION, the refund opens.
+        vm.warp(block.timestamp + TIMEOUT + escrow.REFUND_GRACE());
         escrow.refundTimeoutMatch(id);
         assertEq(uint8(_status(id)), uint8(PulsarEscrow.MatchStatus.Refunded));
     }
@@ -175,7 +176,7 @@ contract PulsarEscrowLifecycleTest is Test {
         bytes32 id = keccak256("h20-unpaired");
         _create(id);
 
-        vm.warp(block.timestamp + TIMEOUT + 1);
+        vm.warp(block.timestamp + TIMEOUT + escrow.REFUND_GRACE() + 1);
         escrow.refundTimeoutMatch(id);
         assertEq(uint8(_status(id)), uint8(PulsarEscrow.MatchStatus.Cancelled));
     }

@@ -379,8 +379,8 @@ def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
                 "reason": (
                     "On-chain duel does not match this match (stake or "
                     "participants differ) — the match is void. Both stakes "
-                    "refund via refundTimeoutMatch after the 30-minute escrow "
-                    "timeout."
+                    "refund via refundTimeoutMatch after the escrow timeout "
+                    "(MATCH_TIMEOUT + REFUND_GRACE)."
                 ),
             }
         return None  # both stakes locked AND the duel is genuinely this match — play on
@@ -399,7 +399,7 @@ def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
                 "reason": (
                     "Opponent stake deposit timed out — the match is void. The "
                     "creator's stake becomes refundable on-chain via "
-                    "refundTimeoutMatch after the 30-minute escrow timeout."
+                    "refundTimeoutMatch after the escrow timeout (MATCH_TIMEOUT + REFUND_GRACE)."
                 ),
             }
     raise HTTPException(

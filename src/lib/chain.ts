@@ -101,6 +101,9 @@ export const PULSAR_ESCROW_ABI = [
   'function pendingWithdrawals(address) view returns (uint256)',
   // Audit H20: when the duel became playable — the refund clock's anchor.
   'function activatedAt(bytes32) view returns (uint256)',
+  // Audit H19: the exclusive settlement window — the refund opens only after
+  // MATCH_TIMEOUT + REFUND_GRACE, so a stalling loser cannot deny the winner.
+  'function REFUND_GRACE() view returns (uint256)',
   'function matches(bytes32) view returns (bytes32 matchId, address player1, address player2, uint256 stakeAmount, uint256 totalPool, uint256 createdAt, uint8 status, address winner, uint256 winnerReactionMs, uint256 loserReactionMs)',
   'function paymentToken() view returns (address)',
   'function treasuryWallet() view returns (address)',

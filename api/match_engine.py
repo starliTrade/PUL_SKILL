@@ -66,9 +66,13 @@ ROUND_EXPIRY_SECONDS = 60
 # numbers the server reasons about; oracle.py imports them so a signature can
 # never outlive the on-chain refund horizon.
 MATCH_TIMEOUT_SECONDS = 30 * 60  # == PulsarEscrow.MATCH_TIMEOUT (30 min): the
-                                 # HARD ceiling — after this the contract lets
-                                 # anyone refund both stakes and a settlement
-                                 # signature is worthless.
+                                 # settlement window. Audit H19 added
+                                 # PulsarEscrow.REFUND_GRACE (10 min) on top:
+                                 # the permissionless refund opens only at
+                                 # MATCH_TIMEOUT + REFUND_GRACE, so a stalling
+                                 # loser cannot deny the winner. A signature is
+                                 # therefore worthless from MATCH_TIMEOUT on,
+                                 # which is what this clamp enforces.
 MATCH_EXPIRY_SECONDS = 600     # active-play expiry, counted from ACTIVATION
                                # (the moment the joiner paired), NOT from queue
                                # entry (audit #8 F-05). The on-chain refund

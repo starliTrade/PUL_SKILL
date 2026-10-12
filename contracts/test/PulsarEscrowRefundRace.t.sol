@@ -113,6 +113,12 @@ contract PulsarEscrowRefundRaceTest is Test {
         assertEq(uint8(_status(id)), uint8(PulsarEscrow.MatchStatus.Settled));
     }
 
+    function test_the_grace_is_not_optional() public {
+        // A zero grace would put the refund back in the same block as the
+        // expiry, which is the race this fixes.
+        assertGt(escrow.REFUND_GRACE(), 0, "the settlement grace must be non-zero");
+    }
+
     function test_the_refund_opens_after_the_grace() public {
         bytes32 id = keccak256("h19-after-grace");
         _activeDuel(id);

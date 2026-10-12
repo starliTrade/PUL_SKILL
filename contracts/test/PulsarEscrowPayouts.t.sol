@@ -184,7 +184,7 @@ contract PulsarEscrowPayoutsTest is Test {
         _duel(id);
 
         token.setBlocked(bob, true);
-        vm.warp(block.timestamp + 31 minutes);
+        vm.warp(block.timestamp + escrow.MATCH_TIMEOUT() + escrow.REFUND_GRACE() + 1);
 
         uint256 aliceBefore = token.balanceOf(alice);
         escrow.refundTimeoutMatch(id);

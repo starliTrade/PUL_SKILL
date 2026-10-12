@@ -167,6 +167,19 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
     // both stakes and negate the loss. 30 min guarantees the settle window is
     // provably closed (deadline expired) before any refund can open.
     uint256 public constant MATCH_TIMEOUT = 30 minutes;
+    /**
+     * @dev Audit H19 (decision D2, option A) — the exclusive settlement window.
+     *
+     * `refundTimeoutMatch` is permissionless and used to open at exactly the
+     * instant the settlement proof expired, so a losing player could stall past
+     * the horizon and refund — or front-run the winner's `settleDuel` in the
+     * same block — recovering their full stake and destroying the winner's
+     * prize. Timing out was a free option for the party that was losing.
+     *
+     * Settlement is now the ONLY exit until MATCH_TIMEOUT, and the refund opens
+     * this much later. The winner gets a full, uncontested window.
+     */
+    uint256 public constant REFUND_GRACE = 10 minutes;
     // P0-fix: anti-dust/anti-spam floor. Server ALLOWED_STAKES are 1/2/5/10 USDT
     // (6 decimals => 1 USDT = 1e6 units). Permissionless createDuel with
     // `stake > 0` let anyone squat matchIds and spam Created duels for ~1 wei.
@@ -390,7 +403,10 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         uint256 clockOrigin = activatedAt[matchId] > duel.createdAt
             ? activatedAt[matchId]
             : duel.createdAt;
-        require(block.timestamp >= clockOrigin + MATCH_TIMEOUT, "Match not timed out");
+        require(
+            block.timestamp >= clockOrigin + MATCH_TIMEOUT + REFUND_GRACE,
+            "Match not timed out"
+        );
 
         uint256 refundAmount = duel.stakeAmount;
 

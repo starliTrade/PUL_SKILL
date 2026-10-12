@@ -29,7 +29,7 @@ omit =
     api/requirements*.txt
 
 [report]
-fail_under = 79
+fail_under = 81
 show_missing = True
 skip_covered = False
 exclude_lines =
