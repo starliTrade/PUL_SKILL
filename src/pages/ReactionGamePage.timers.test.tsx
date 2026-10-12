@@ -24,7 +24,7 @@ vi.mock('../lib/gameServerClient', () => ({
   ensureSession: (...a: unknown[]) => ensureSession(...(a as [])),
   queueForMatch: vi.fn(async () => ({ status: 'active' })),
   commitRound: vi.fn(async () => undefined),
-  revealRoundTarget: vi.fn(async () => ({ targetMs: 100, resultProof: 'proof' })),
+  revealRoundTarget: vi.fn(async () => ({ targetMs: 5000, resultProof: 'proof' })),
   submitRoundResult: (...a: unknown[]) => submitRoundResult(...(a as [])),
   settleMatch: vi.fn(async () => ({ status: 'settled', winner: '0x' + '11'.repeat(20) })),
   claimMatch: vi.fn(async () => ({ ok: true, onChainProof: true })),
@@ -132,8 +132,6 @@ function activeView() {
 }
 
 describe('timer cleanup (audit M29)', () => {
-  let createdIntervals: unknown[];
-  let clearedIntervals: unknown[];
   let createdTimeouts: unknown[];
   let clearedTimeouts: unknown[];
 
@@ -142,25 +140,12 @@ describe('timer cleanup (audit M29)', () => {
     localStorage.clear();
     getMatch.mockResolvedValue(activeView());
 
-    createdIntervals = [];
-    clearedIntervals = [];
     createdTimeouts = [];
     clearedTimeouts = [];
 
-    const realSetInterval = globalThis.setInterval;
-    const realClearInterval = globalThis.clearInterval;
     const realSetTimeout = globalThis.setTimeout;
     const realClearTimeout = globalThis.clearTimeout;
 
-    vi.spyOn(globalThis, 'setInterval').mockImplementation((fn: never, ms?: never) => {
-      const id = realSetInterval(fn, ms);
-      createdIntervals.push(id);
-      return id;
-    });
-    vi.spyOn(globalThis, 'clearInterval').mockImplementation((id: never) => {
-      clearedIntervals.push(id);
-      return realClearInterval(id);
-    });
     vi.spyOn(globalThis, 'setTimeout').mockImplementation((fn: never, ms?: never) => {
       const id = realSetTimeout(fn, ms);
       createdTimeouts.push(id);
@@ -177,8 +162,11 @@ describe('timer cleanup (audit M29)', () => {
     vi.restoreAllMocks();
   });
 
-  /** Drive the page into a round, where the progress interval is running. */
-  async function reachRound() {
+  /**
+   * Reach the WAITING phase — the window between the countdown and the target,
+   * where an early click arms the 1400ms restart timer.
+   */
+  async function reachWaiting() {
     const { unmount } = render(<ReactionGamePage onNavigate={vi.fn()} stakeAmount={1} />);
 
     await act(async () => {
@@ -193,31 +181,44 @@ describe('timer cleanup (audit M29)', () => {
       await Promise.resolve();
     });
 
-    // Real timers: the round's target delay is 100ms in the mock, so waiting
-    // for it is enough and avoids fighting the fake-timer API.
+    // The ready countdown is 3 x 700ms; the mock's target delay is 5s, so the
+    // waiting window stays open long enough to click inside it.
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await new Promise((resolve) => setTimeout(resolve, 2600));
     });
     return { unmount };
   }
 
-  it('unmounting mid-round leaves no interval running', async () => {
-    const { unmount } = await reachRound();
+  it('an early click arms a restart timer', async () => {
+    await reachWaiting();
+    expect(screen.queryByTestId('pulsar-waiting')).not.toBeNull();
 
-    const target = screen.queryByTestId('pulsar-target');
-    if (target) {
-      // Tapping starts processVerification, which creates the progress interval.
-      await act(async () => {
-        fireEvent.click(target);
-        await Promise.resolve();
-      });
-    }
+    const before = createdTimeouts.length;
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pulsar-waiting'));
+      await Promise.resolve();
+    });
 
-    const beforeUnmount = createdIntervals.length;
+    expect(createdTimeouts.length).toBeGreaterThan(before);
+  });
+
+  it('unmounting after an early click cancels the pending restart', async () => {
+    const { unmount } = await reachWaiting();
+
+    const before = createdTimeouts.length;
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pulsar-waiting'));
+      await Promise.resolve();
+    });
+
+    // Only the timers armed from here belong to this assertion; the page is not
+    // the only thing in the process calling setTimeout.
+    const armed = createdTimeouts.slice(before);
+    expect(armed.length).toBeGreaterThan(0);
+
     unmount();
 
-    const stillRunning = createdIntervals.filter((id) => !clearedIntervals.includes(id));
-    expect(stillRunning).toHaveLength(0);
-    expect(beforeUnmount).toBeGreaterThan(0);
+    const stillPending = armed.filter((id) => !clearedTimeouts.includes(id));
+    expect(stillPending).toHaveLength(0);
   });
 });

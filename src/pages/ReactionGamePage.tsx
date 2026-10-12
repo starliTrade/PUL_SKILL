@@ -162,6 +162,11 @@ function isWalletCancel(msg: string): boolean {
   const waitTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const roundTransitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Audit M29: these two were untracked — the progress interval lived in a
+  // local variable (so the unmount effect could not clear it) and the
+  // early-click timeout had no ref at all.
+  const verifyProgressIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const earlyClickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const trajectoryRef = useRef<MouseTrajectoryPoint[]>([]);
   const reactionTimeRef = useRef<number>(0);
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
@@ -267,6 +272,10 @@ function isWalletCancel(msg: string): boolean {
       if (waitTimeoutRef.current) clearTimeout(waitTimeoutRef.current);
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
       if (roundTransitionTimeoutRef.current) clearTimeout(roundTransitionTimeoutRef.current);
+      // Audit M29: without these two, leaving mid-round left an interval ticking
+      // and a pending timeout that would start the next round on a dead page.
+      if (verifyProgressIntervalRef.current) clearInterval(verifyProgressIntervalRef.current);
+      if (earlyClickTimeoutRef.current) clearTimeout(earlyClickTimeoutRef.current);
     };
   }, []);
 
@@ -620,7 +629,8 @@ function isWalletCancel(msg: string): boolean {
       if (waitTimeoutRef.current) clearTimeout(waitTimeoutRef.current);
       sounds.playLoss();
       setEarlyClickWarning(true);
-      setTimeout(() => {
+      // Audit M29: tracked so leaving the page cancels it.
+      earlyClickTimeoutRef.current = setTimeout(() => {
         setEarlyClickWarning(false);
         startWaitingPhase();
       }, 1400);
@@ -934,9 +944,11 @@ function isWalletCancel(msg: string): boolean {
     setPhase('verifying');
     setVerifyProgress(0);
 
+    // Audit M29: tracked in a ref so the unmount effect can clear it.
     const progressInterval = setInterval(() => {
       setVerifyProgress((prev) => Math.min(prev + 20, 92));
     }, 70);
+    verifyProgressIntervalRef.current = progressInterval;
 
     const userTime = Math.round(timeMs);
 
@@ -1498,6 +1510,7 @@ function isWalletCancel(msg: string): boolean {
             {/* PHASE 3: Waiting Phase (Spatial Target Masking - Anti-Photodiode) */}
             {phase === 'waiting' && (
               <div
+                data-testid="pulsar-waiting"
                 onClick={handleEarlyClick}
                 className="w-full flex-1 flex flex-col items-center justify-center cursor-pointer p-4 select-none min-h-[320px]"
               >
