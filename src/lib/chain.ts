@@ -94,6 +94,11 @@ export const PULSAR_ESCROW_ABI = [
   'function joinDuel(bytes32 matchId) external',
   'function settleDuel((bytes32 matchId, address winner, uint256 winnerTimeMs, uint256 loserTimeMs, uint256 nonce, uint256 deadline, bytes signature) proof) external',
   'function refundTimeoutMatch(bytes32 matchId) external',
+  // Audit H17: a payout the token refused (blacklist / paused / reverting
+  // recipient) is credited instead of reverting the settlement, and the
+  // beneficiary pulls it here.
+  'function withdraw() external',
+  'function pendingWithdrawals(address) view returns (uint256)',
   'function matches(bytes32) view returns (bytes32 matchId, address player1, address player2, uint256 stakeAmount, uint256 totalPool, uint256 createdAt, uint8 status, address winner, uint256 winnerReactionMs, uint256 loserReactionMs)',
   'function paymentToken() view returns (address)',
   'function treasuryWallet() view returns (address)',
@@ -105,6 +110,8 @@ export const PULSAR_ESCROW_ABI = [
   'event MatchSettled(bytes32 indexed matchId, address indexed winner, uint256 prizePaid, uint256 platformFee)',
   'event MatchCancelled(bytes32 indexed matchId, string reason)',
   'event MatchRefunded(bytes32 indexed matchId, uint256 refundPerPlayer)',
+  'event PayoutDeferred(address indexed to, uint256 amount)',
+  'event Withdrawn(address indexed to, uint256 amount)',
 ] as const;
 
 export const ERC20_ABI = [

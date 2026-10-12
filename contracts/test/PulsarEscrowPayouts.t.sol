@@ -115,14 +115,68 @@ contract PulsarEscrowPayoutsTest is Test {
             prize,
             "the winner must be paid even when the treasury cannot receive (audit H17)"
         );
-        // The deferred credit is asserted in the fix commit, once the pull API
-        // exists.
+        assertEq(
+            escrow.pendingWithdrawals(treasury),
+            (pool * FEE_BPS) / DENOM,
+            "the undeliverable fee must be credited, not lost (audit H17)"
+        );
     }
 
-    // The pull path (`pendingWithdrawals` / `withdraw`) is exercised by the
-    // tests added in the fix commit — they cannot compile before the API exists,
-    // and a red baseline that breaks compilation would take the whole contract
-    // suite down with it.
+    // --- the pull path -------------------------------------------------------
+    function test_blocked_winner_can_withdraw_later() public {
+        bytes32 id = keccak256("blocked-winner-withdraw");
+        uint256 pool = _duel(id);
+
+        token.setBlocked(alice, true);
+        _settle(id, alice);
+
+        uint256 prize = pool - (pool * FEE_BPS) / DENOM;
+        assertEq(escrow.pendingWithdrawals(alice), prize);
+
+        // The block is lifted (Tether un-blacklists) and the winner pulls.
+        token.setBlocked(alice, false);
+        uint256 before = token.balanceOf(alice);
+        vm.prank(alice);
+        escrow.withdraw();
+        assertEq(token.balanceOf(alice) - before, prize);
+        assertEq(escrow.pendingWithdrawals(alice), 0);
+    }
+
+    function test_withdraw_requires_a_credit() public {
+        vm.prank(alice);
+        vm.expectRevert("Nothing to withdraw");
+        escrow.withdraw();
+    }
+
+    function test_withdraw_cannot_be_replayed() public {
+        bytes32 id = keccak256("withdraw-replay");
+        uint256 pool = _duel(id);
+        token.setBlocked(alice, true);
+        _settle(id, alice);
+        token.setBlocked(alice, false);
+
+        vm.prank(alice);
+        escrow.withdraw();
+
+        vm.prank(alice);
+        vm.expectRevert("Nothing to withdraw");
+        escrow.withdraw();
+
+        uint256 prize = pool - (pool * FEE_BPS) / DENOM;
+        assertEq(token.balanceOf(alice), 100e6 - STAKE + prize);
+    }
+
+    function test_an_unblocked_recipient_is_paid_directly_with_no_credit() public {
+        // The normal path must not leave anything pending — `withdraw()` is a
+        // recovery path, not the default one.
+        bytes32 id = keccak256("normal-path");
+        uint256 pool = _duel(id);
+        _settle(id, alice);
+
+        assertEq(escrow.pendingWithdrawals(alice), 0);
+        assertEq(escrow.pendingWithdrawals(treasury), 0);
+        assertEq(token.balanceOf(alice), 100e6 - STAKE + pool - (pool * FEE_BPS) / DENOM);
+    }
 
     // --- the refund path has the same shape ----------------------------------
     function test_refund_survives_one_blocked_player() public {
@@ -140,7 +194,7 @@ contract PulsarEscrowPayoutsTest is Test {
             STAKE,
             "player1's refund must not be blocked by player2's failed transfer (audit H17)"
         );
-        // The deferred credit is asserted in the fix commit.
+        assertEq(escrow.pendingWithdrawals(bob), STAKE);
     }
 
 

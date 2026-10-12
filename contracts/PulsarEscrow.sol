@@ -44,6 +44,33 @@ library SafeTransfer {
         return ok;
     }
 
+    /**
+     * @dev Non-reverting transfer: returns false instead of bubbling a revert.
+     *
+     * Audit H17: the escrow must be able to attempt a payout without the whole
+     * transaction reverting, because a single undeliverable recipient would
+     * otherwise freeze the counterparty's funds too.
+     */
+    function tryTransfer(IERC20 token, address to, uint256 amount) internal returns (bool) {
+        (bool success, bytes memory data) = address(token).call(
+            abi.encodeWithSelector(token.transfer.selector, to, amount)
+        );
+        if (!success) {
+            return false;
+        }
+        if (data.length == 0) {
+            return true; // non-standard token (e.g. USDT): no return value
+        }
+        if (data.length < 32) {
+            return false;
+        }
+        bool ok;
+        assembly {
+            ok := mload(add(data, 0x20))
+        }
+        return ok;
+    }
+
     function safeTransfer(IERC20 token, address to, uint256 amount) internal {
         (bool success, bytes memory data) = address(token).call(
             abi.encodeWithSelector(token.transfer.selector, to, amount)
@@ -184,6 +211,17 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
     mapping(bytes32 => DuelMatch) public matches;
     mapping(bytes32 => bool) public usedSignatures;
 
+    /**
+     * @dev Audit H17 — payouts that could not be delivered at settlement time.
+     *
+     * Real USDT can pause and blacklist addresses, and a participant can be a
+     * contract that reverts on receipt. Settling both sides in one transaction
+     * meant one bad recipient reverted the whole call and froze the other
+     * party's funds indefinitely. An undeliverable payout is credited here
+     * instead, and the beneficiary pulls it later with `withdraw()`.
+     */
+    mapping(address => uint256) public pendingWithdrawals;
+
     uint256 public totalDuelsSettled;
     uint256 public totalVolumeDistributed;
     uint256 public totalFeesCollected;
@@ -194,6 +232,8 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
     event MatchCancelled(bytes32 indexed matchId, string reason);
     event MatchRefunded(bytes32 indexed matchId, uint256 refundPerPlayer);
     event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
+    event PayoutDeferred(address indexed to, uint256 amount);
+    event Withdrawn(address indexed to, uint256 amount);
     event OracleSignerUpdated(address indexed oldOracle, address indexed newOracle);
 
     constructor(
@@ -306,11 +346,11 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         totalVolumeDistributed += winnerPrize;
         totalFeesCollected += platformFee;
 
-        // Execute Non-Custodial Token Transfers (F-19: SafeERC20 semantics)
-        SafeTransfer.safeTransfer(paymentToken, proof.winner, winnerPrize);
-        if (platformFee > 0) {
-            SafeTransfer.safeTransfer(paymentToken, treasuryWallet, platformFee);
-        }
+        // Execute Non-Custodial Token Transfers (F-19: SafeERC20 semantics).
+        // Audit H17: `_pay` credits instead of reverting, so a blocked winner
+        // cannot stop the treasury fee and vice versa.
+        _pay(proof.winner, winnerPrize);
+        _pay(treasuryWallet, platformFee);
 
         emit MatchSettled(proof.matchId, proof.winner, winnerPrize, platformFee);
     }
@@ -324,14 +364,48 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
 
         if (duel.status == MatchStatus.Created) {
             duel.status = MatchStatus.Cancelled;
-            SafeTransfer.safeTransfer(paymentToken, duel.player1, refundAmount);
+            // Audit H17: credit instead of reverting (see _pay).
+            _pay(duel.player1, refundAmount);
             emit MatchCancelled(matchId, "Timeout cancelled");
         } else {
             duel.status = MatchStatus.Refunded;
-            SafeTransfer.safeTransfer(paymentToken, duel.player1, refundAmount);
-            SafeTransfer.safeTransfer(paymentToken, duel.player2, refundAmount);
+            _pay(duel.player1, refundAmount);
+            _pay(duel.player2, refundAmount);
             emit MatchRefunded(matchId, refundAmount);
         }
+    }
+
+    /**
+     * @dev Deliver `amount` to `to`, or credit it for a later pull (audit H17).
+     *
+     * The direct transfer is attempted first — the normal path, no extra gas
+     * and no extra transaction for the recipient. Only when the token rejects
+     * it is the amount credited, so that the OTHER party's payout still lands
+     * in the same transaction.
+     */
+    function _pay(address to, uint256 amount) internal {
+        if (amount == 0) {
+            return;
+        }
+        if (SafeTransfer.tryTransfer(paymentToken, to, amount)) {
+            return;
+        }
+        pendingWithdrawals[to] += amount;
+        emit PayoutDeferred(to, amount);
+    }
+
+    /**
+     * @dev Pull a payout that could not be delivered when the duel settled.
+     *
+     * Deliberately reverting when there is nothing to withdraw: a silent no-op
+     * would look like a successful claim.
+     */
+    function withdraw() external nonReentrant {
+        uint256 amount = pendingWithdrawals[msg.sender];
+        require(amount > 0, "Nothing to withdraw");
+        pendingWithdrawals[msg.sender] = 0;
+        SafeTransfer.safeTransfer(paymentToken, msg.sender, amount);
+        emit Withdrawn(msg.sender, amount);
     }
 
     function setTreasuryWallet(address _newTreasury) external onlyOwner {
