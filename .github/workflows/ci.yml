@@ -28,9 +28,29 @@ jobs:
         # silently exercises the memory store — the exact blind spot that let
         # the NameError/@firestore.transactional crash ship unnoticed.
         run: |
-          pip install -r api/requirements.txt
-          pip install httpx
+          pip install -r api/requirements-dev.txt
           sudo apt-get update -y && sudo apt-get install -y python3-sqlite3
+      - name: Lint (ruff) — plan item 0.4
+        run: python3 -m ruff check api scripts tests
+      - name: Start the Firestore emulator — plan item 0.7
+        # Without this, test_firestore_integration.py SKIPS and every Firestore
+        # bug ships unseen (audit C1/H3/H4 all live on this path). The runner
+        # ships a JDK, so only the emulator jar is needed.
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/firestore-emulator.jar \
+            https://storage.googleapis.com/firebase-preview-drop/emulator/cloud-firestore-emulator-v1.19.8.jar
+          nohup java -jar /tmp/firestore-emulator.jar --host=127.0.0.1 --port=8081 > /tmp/fsemu.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null "http://127.0.0.1:8081/"; then echo "emulator up"; exit 0; fi
+            sleep 1
+          done
+          echo "emulator failed to start"; tail -40 /tmp/fsemu.log; exit 1
+      - name: Server tests (pytest) — plan item 0.3
+        env:
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8081
+          GCLOUD_PROJECT: demo-pulsar
+        run: python3 -m pytest -q
       - name: Protocol smoke tests (SIWE, commit-reveal, settlement, oracle, store roundtrip)
         run: python3 scripts/test_game_server.py
       - name: HTTP end-to-end tests (real FastAPI request layer)
@@ -41,7 +61,10 @@ jobs:
         run: python3 scripts/test_game_server.py
       - name: Deposit gate + distributed rate limiter + matchmaking probe (audit #5)
         run: python3 scripts/probe_a5.py
-      - name: Firestore integration suite (skips without credentials, runs in any env that has them)
+      - name: Firestore integration suite against the REAL emulator (no longer skips)
+        env:
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8081
+          GCLOUD_PROJECT: demo-pulsar
         run: python3 scripts/test_firestore_integration.py
 
   contracts:
@@ -53,10 +76,38 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: nightly
-      - name: Install forge-std (test dependency)
-        run: cd contracts && (test -d lib/forge-std || git clone --depth 1 https://github.com/foundry-rs/forge-std.git lib/forge-std)
+          # Pinned, not `nightly`: a floating toolchain makes a green run
+          # unreproducible and can break the suite without a repo change.
+          version: v1.8.5
+      # CI-1 fix: the contract suite imports BOTH forge-std (Test.sol) and
+      # OpenZeppelin (contracts/test/MockUSDT.sol -> ERC20.sol). Only forge-std
+      # used to be installed, so `forge test` failed to compile and the 21
+      # contract tests NEVER RAN in CI. The compile gate below hid it because
+      # compile_check.js re-shims MockUSDT with its own minimal ERC20.
+      # Versions are pinned for reproducibility; bump them deliberately.
+      - name: Install Solidity test dependencies (forge-std + OpenZeppelin)
+        run: |
+          set -euo pipefail
+          cd contracts
+          test -d lib/forge-std || git clone --depth 1 --branch v1.9.7 \
+            https://github.com/foundry-rs/forge-std.git lib/forge-std
+          test -d lib/openzeppelin-contracts || git clone --depth 1 --branch v5.7.0 \
+            https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts
+          # Fail loudly if a clone silently produced nothing (the failure mode
+          # that let this job look configured while never compiling).
+          test -f lib/forge-std/src/Test.sol
+          test -f lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol
       - name: forge test (includes struct-layout + fee pins vs the server decoder)
         run: cd contracts && forge test -vvv
+      - name: Assert the contract suite actually ran (CI-1 regression guard)
+        # A green `forge test` that ran zero tests is the exact failure this
+        # workflow shipped with. Count the executed tests explicitly.
+        run: |
+          set -euo pipefail
+          cd contracts
+          out="$(forge test --json 2>/dev/null || true)"
+          ran="$(printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(len(v.get("test_results",{})) for v in d.values()))')"
+          echo "contract tests executed: $ran"
+          test "$ran" -ge 21
       - name: Contract compile gate (solc 0.8.20, paris + shanghai)
         run: bun run test:contract

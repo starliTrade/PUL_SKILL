@@ -173,7 +173,7 @@ def record_settlement(match: Any) -> None:
         packet = signed if isinstance(signed, dict) else {}
         raw_times = packet.get("validatedTimes", {}) or {}
         validated_times: dict[str, list[float]] = {
-            a: [float(t) for t in (raw_times.get(a) or []) if isinstance(t, (int, float))]
+            a: [float(t) for t in (raw_times.get(a) or []) if isinstance(t, int | float)]
             for a in players
         }
         forfeit = any(bool(v) for v in (packet.get("forfeits", {}) or {}).values())

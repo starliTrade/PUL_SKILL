@@ -24,21 +24,20 @@ import os
 import secrets
 import threading
 import time
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
+import match_engine as _default_engine  # engine fns for transactional mutations
 from match_engine import (
     MATCH_EXPIRY_SECONDS,
     QUEUE_EXPIRY_SECONDS,
-    ROUND_EXPIRY_SECONDS,
     Match,
     MatchError,
     Round,
 )
-import match_engine as _default_engine  # engine fns for transactional mutations
 
 try:  # optional dependency — absent in local dev until credentials exist
     from google.cloud import firestore as _firestore  # type: ignore
-    from google.cloud.firestore_v1.transaction import Transaction  # type: ignore
 
     _FIRESTORE_AVAILABLE = True
 except Exception:  # pragma: no cover
@@ -277,7 +276,7 @@ class FirestoreStore:
             self.player_match.pop(addr, None)
         queue_ref = self._queue_ref(stake)
 
-        def _txn_body(transaction: Any) -> Optional[Match]:
+        def _txn_body(transaction: Any) -> Match | None:
             snap = queue_ref.get(transaction=transaction)
             waiting_id = (snap.to_dict() or {}).get("waitingMatchId") if snap.exists else None
             if waiting_id:
@@ -477,7 +476,7 @@ class DurableMatchStore:
       - falls back to InMemoryStore when Firestore is unavailable
     """
 
-    def __init__(self, backend: Optional[str] = None) -> None:
+    def __init__(self, backend: str | None = None) -> None:
         backend = backend or os.environ.get("PULSAR_MATCH_STORE", "auto")
         self.backend_name = "memory"
         self._firestore: Any = None
@@ -605,7 +604,7 @@ class DurableMatchStore:
         try:
             docs = (
                 self._fs_store.db.collection(COLLECTION)
-                .where("players.%s.address" % addr, "==", addr)
+                .where(f"players.{addr}.address", "==", addr)
                 .limit(5)
                 .stream()
             )

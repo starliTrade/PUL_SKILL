@@ -24,14 +24,13 @@ os.environ["ORACLE_SIGNING_SECRET"] = "e2e-test-secret"
 os.environ["ORACLE_PRIVATE_KEY"] = "0x" + "11" * 32
 os.environ["ESCROW_ADDRESS"] = "0x" + "ab" * 20
 
+import main as server  # noqa: E402
 from eth_account import Account  # noqa: E402
 from eth_account.messages import encode_defunct  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
 from fastapi import HTTPException as _HTTPException  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
-import main as server  # noqa: E402
 import auth as auth_module  # noqa: E402
-
 
 failures = []
 
@@ -47,6 +46,7 @@ def check(name, cond):
 # the bytes32 match-id convention were only ever tested in isolation. These
 # pins make any future drift a RED test in the SAME suite.
 import hashlib as _hashlib  # noqa: E402
+
 import onchain as _onchain  # noqa: E402
 import oracle as _oracle  # noqa: E402
 

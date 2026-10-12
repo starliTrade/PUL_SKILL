@@ -98,7 +98,6 @@ def eth_call(to, data, block="latest"):
 
 
 def selector(sig):
-    import hashlib as _h
     from Crypto.Hash import keccak as _k
     k = _k.new(digest_bits=256)
     k.update(sig.encode())
@@ -125,7 +124,7 @@ def duel_status(match_bytes32):
 
 def tx_send(key_addr_hex, to, sig, *tx_args, gas_limit, value=0):
     """Send a legacy tx via cast with tight caps. key_addr_hex is never logged."""
-    acct = Account.from_key(key_addr_hex)
+    Account.from_key(key_addr_hex)  # validate the key parses; value unused
     out = cast("send", "--private-key", key_addr_hex, "--rpc-url", RPC,
                "--legacy", "--gas-price", "30000000000",
                "--gas-limit", str(gas_limit), to, sig, *tx_args)
@@ -155,13 +154,13 @@ def play_round(token, match_id, idx, reaction_ms):
     intent = "0x" + hashlib.sha256(secrets.token_bytes(32)).hexdigest()
     # The deposit gate reads live chain state; public RPCs hiccup — retry
     # transient "temporarily unreadable" instead of failing the whole run.
-    last = None
+    # (no accumulator needed — the loop below breaks on the first usable response)
     for attempt in range(4):
         r = s.post("/api/round/commit", json={"matchId": match_id, "roundIndex": idx, "intentHash": intent},
                    headers=hdrs(token))
         if r.status_code == 200 or "temporarily unreadable" not in r.text:
             break
-        last = r.text
+        _last = r.text  # noqa: F841 — kept for post-mortem debugging
         print(f"commit gate unreadable (attempt {attempt + 1}/4), waiting 15s...")
         time.sleep(15)
     assert r.status_code == 200, f"commit: {r.text}"

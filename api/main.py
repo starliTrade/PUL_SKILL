@@ -35,10 +35,6 @@ from pydantic import BaseModel, Field
 
 import auth as _auth_module
 import economy
-from auth import issue_nonce, issue_session, verify_session, verify_siwe
-from match_engine import MatchError, match_completed
-from oracle import sign_settlement
-from store import create_store, install_persistence
 
 # Single source of truth for the chain this deployment runs on. The SIWE
 # statement, the oracle digest and the client (VITE_CHAIN_ID → CHAIN.chainId)
@@ -47,6 +43,10 @@ from store import create_store, install_persistence
 import onchain
 from auth import EXPECTED_CHAIN_ID as _CHAIN_ID
 from auth import NONCE_WINDOW_SECONDS as _NONCE_WINDOW
+from auth import issue_nonce, issue_session, verify_session, verify_siwe
+from match_engine import MatchError, match_completed
+from oracle import sign_settlement
+from store import create_store, install_persistence
 
 # --- Distributed rate limiting (audit #5, item 8) ----------------------------
 # The audit asked for distributed limiting; there was NO limiter at all. This
@@ -260,7 +260,7 @@ def _siwe_message(address: str, nonce: str, domain: str) -> str:
 
     window = _auth_module.nonce_window(nonce) or 0
     issued_at = _dt.datetime.fromtimestamp(
-        window * _NONCE_WINDOW, tz=_dt.timezone.utc
+        window * _NONCE_WINDOW, tz=_dt.UTC
     ).isoformat()
     return (
         f"{domain} wants you to sign in with your Polygon account:\n"

@@ -33,6 +33,8 @@ import os
 import secrets
 import time
 from dataclasses import dataclass
+from datetime import UTC
+from typing import Any
 
 from eth_account import Account
 from eth_account.messages import encode_defunct
@@ -330,10 +332,10 @@ def verify_siwe(message: str, signature: str, expected_domain: str) -> str | Non
         return None
     try:
         if fields.expiration_time:
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             expiry = datetime.fromisoformat(fields.expiration_time.replace("Z", "+00:00"))
-            if datetime.now(timezone.utc) >= expiry:
+            if datetime.now(UTC) >= expiry:
                 return None
         recovered = Account.recover_message(
             encode_defunct(text=message), signature=signature

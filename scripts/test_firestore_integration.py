@@ -24,7 +24,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
 os.environ.setdefault("ORACLE_SIGNING_SECRET", "fs-itest-secret")
 os.environ.setdefault("ORACLE_PRIVATE_KEY", "0x" + "11" * 32)
 
-import match_engine as me  # noqa: E402
 from store import DurableMatchStore  # noqa: E402
 
 failures: list[str] = []

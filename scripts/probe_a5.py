@@ -30,9 +30,10 @@ def check(name, cond):
 # fastapi import first (TestClient + HTTPException)
 import time as _time  # noqa: E402
 
+import main as server  # noqa: E402
+
 import match_engine as me  # noqa: E402
 import onchain  # noqa: E402
-import main as server  # noqa: E402
 
 m = me.Match(match_id="ab" * 32, stake=1.0, created_at=_time.time())
 m.players["0x" + "a" * 40] = {"address": "0x" + "a" * 40, "joinedAt": 0}
@@ -56,9 +57,8 @@ m2.players["0x" + "b" * 40] = {"address": "0x" + "b" * 40, "joinedAt": 0}
 m2.creator = "0x" + "b" * 40
 m2.status = "active"
 m2.created_at = 0  # ancient
-import urllib.request  # noqa: E402
-import json as _json  # noqa: E402
 import hashlib as _hashlib  # noqa: E402
+import json as _json  # noqa: E402
 
 
 def _rpc_status_payload(status: int) -> str:
@@ -256,7 +256,7 @@ class _FakeWrongChain(_FakeCreated):
             result = "0x1"
         else:
             result = _rpc_status_payload(2)
-        return '{"jsonrpc":"2.0","id":1,"result":"' + result + '"}'.encode()
+        return '{"jsonrpc":"2.0","id":1,"result":"' + result + b'"}'
 
 
 onchain._chain_id_checked = False
