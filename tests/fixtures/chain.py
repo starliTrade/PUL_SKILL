@@ -141,27 +141,39 @@ class LocalChain:
         account = Account.from_key(private_key)
         sender = account.address
 
-        # No retry loop on purpose: a retry after a "nonce too low" error can
-        # double-send when the first transaction actually landed, which shows up
-        # as a mysterious extra balance change in an unrelated test. A fresh
-        # nonce read per transaction is enough for a single-writer test chain.
-        tx = {
-            "nonce": self._next_nonce(sender),
-            "to": to,
-            "value": value,
-            "gas": GAS_LIMIT,
-            "gasPrice": GAS_PRICE,
-            "chainId": self.chain_id,
-            "data": data,
-        }
-        signed = account.sign_transaction(tx)
-        raw = signed.raw_transaction.hex()
-        raw = raw if raw.startswith("0x") else "0x" + raw
-        tx_hash = self.rpc("eth_sendRawTransaction", [raw])
-        receipt = self.wait(tx_hash)
-        if int(receipt.get("status", "0x0"), 16) != 1:
-            raise RuntimeError(f"tx reverted: {tx_hash}")
-        return tx_hash
+        # A fresh nonce read per transaction is enough for a single writer, but
+        # two concurrent test processes sharing one anvil (e.g. two `verify`
+        # runs, or a CI job racing a local one) will both read the same pending
+        # nonce and one will lose with "nonce too low". Retrying is safe here:
+        # that error means the node REJECTED the transaction, so no duplicate
+        # can be created by re-sending with a corrected nonce.
+        last_error: Exception | None = None
+        for attempt in range(3):
+            nonce = self._next_nonce(sender)
+            tx = {
+                "nonce": nonce,
+                "to": to,
+                "value": value,
+                "gas": GAS_LIMIT,
+                "gasPrice": GAS_PRICE,
+                "chainId": self.chain_id,
+                "data": data,
+            }
+            signed = account.sign_transaction(tx)
+            raw = signed.raw_transaction.hex()
+            raw = raw if raw.startswith("0x") else "0x" + raw
+            try:
+                tx_hash = self.rpc("eth_sendRawTransaction", [raw])
+            except RuntimeError as exc:
+                last_error = exc
+                if "nonce too low" in str(exc) and attempt < 2:
+                    continue
+                raise RuntimeError(f"{exc} (sender={sender} nonce={nonce} attempt={attempt})") from exc
+            receipt = self.wait(tx_hash)
+            if int(receipt.get("status", "0x0"), 16) != 1:
+                raise RuntimeError(f"tx reverted: {tx_hash}")
+            return tx_hash
+        raise RuntimeError(f"could not send transaction: {last_error}")
 
     def wait(self, tx_hash: str, tries: int = 60) -> dict[str, Any]:
         import time
