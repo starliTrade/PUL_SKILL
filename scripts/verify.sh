@@ -127,6 +127,22 @@ else
   skip_gate "contract tests (forge test)" "forge not installed"
 fi
 
+# --- 6b. Local EVM: anvil + deployed escrow — plan item 0.8 --------------------
+# The three-way contract (oracle digest <-> onchain decoder <-> Solidity) can
+# only be proven on a real EVM. Auto-start a background chain when one is not
+# already up, so the gate runs instead of skipping on a dev machine.
+if command -v anvil >/dev/null 2>&1 && [[ -f "$ROOT/contracts/lib/forge-std/src/Test.sol" ]]; then
+  if ! curl -sf -o /dev/null -X POST -H 'Content-Type: application/json' \
+       --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+       "http://127.0.0.1:${PULSAR_ANVIL_PORT:-8545}" 2>/dev/null; then
+    echo "starting a background anvil for the chain gate…"
+    bash "$ROOT/scripts/start_anvil.sh" --bg >/dev/null 2>&1 || true
+  fi
+  run_gate "chain tests (anvil + escrow)" "$PY" -m pytest -q -m chain
+else
+  skip_gate "chain tests (anvil + escrow)" "anvil or contract deps missing (plan item 0.8)"
+fi
+
 # --- 7. Contract compile gate (solc, no Foundry needed) -----------------------
 if [[ -f "$ROOT/contracts/test/compile_check.js" ]]; then
   run_gate "contract compile gate (solc 0.8.20)" bun run test:contract

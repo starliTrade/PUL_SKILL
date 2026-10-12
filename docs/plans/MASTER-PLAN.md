@@ -2,10 +2,10 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  نسخه:        1.2-LOCKED                                                 ║
+║  نسخه:        1.3-LOCKED                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     d4d20aa6574a838e…40771d9e853b2958                                                   ║
+║  SHA-256:     75357122cc39142a…ee4656d7cd3e323d                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -85,8 +85,8 @@
   پذیرش: ✅ `tests/unit/test_onchain_gate.py` — ۸ تست سبز که gate واقعی را با fake RPC می‌رانند + ۲ baseline قرمز C2
 - [~] **0.7** Firestore Emulator در CI — `scripts/start_emulator.sh` + fixture `firestore_emulator`
   پذیرش: تست Firestore در CI **اجرا** شود (نه skip) و C1 را بازتولید کند
-- [ ] **0.8** Anvil + escrow در CI — `tests/fixtures/chain.py`, `scripts/start_anvil.sh`
-  پذیرش: یک تست نمونه `createDuel` روی anvil و تأیید موجودی
+- [x] **0.8** Anvil + escrow در CI — `scripts/start_anvil.sh` (anvil + deploy خودکار + manifest)، `tests/fixtures/chain.py` (کلاینت JSON-RPC با eth_abi/eth_account، بدون web3)، `tests/integration/test_chain_smoke.py`
+  پذیرش: ✅ ۷ تست سبز روی EVM واقعی — createDuel موجودی را قفل می‌کند، joinDuel استخر را دو برابر می‌کند، **تسویه با امضای واقعی `api/oracle.py` روی قرارداد مستقر پذیرفته می‌شود** (۹۸٪ برنده + ۲٪ treasury)، و امضای غیر-oracle رد می‌شود
 - [ ] **0.9** Vitest + React Testing Library — `vitest.config.ts`؛ پذیرش: یک تست نمونه روی `xpSystem.ts` سبز
 - [ ] **0.10** Playwright + کیف پول mock — `e2e/`, `e2e/fixtures/mockWallet.ts`
   پذیرش: تست نمونه اپ را load کند و connect را بزند
@@ -542,3 +542,4 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.0-LOCKED | 2026-10-12 | نسخه‌ی اول، قفل‌شده | ⬜ |
 | 1.1-LOCKED | 2026-10-12 | **H24 اضافه شد** (کشف‌شده در فاز ۰: رها کردن مسابقه آپشن رایگان است). دامنه ۱۰۸ → ۱۰۹ یافته. آیتم‌های 0.1/0.2/0.4 تیک خوردند. | ⬜ |
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
+| 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |

@@ -109,5 +109,17 @@ jobs:
           ran="$(printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(len(v.get("test_results",{})) for v in d.values()))')"
           echo "contract tests executed: $ran"
           test "$ran" -ge 21
+      # Plan item 0.8: the settlement digest / decoder / Solidity contract are a
+      # three-way agreement that unit tests cannot verify. Run the real money
+      # path against a local EVM.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install server deps for the chain gate
+        run: pip install -r api/requirements-dev.txt
+      - name: Start anvil + deploy the escrow
+        run: bash scripts/start_anvil.sh --bg
+      - name: Chain tests (real EVM: create -> join -> settle with an oracle signature)
+        run: python3 -m pytest -q -m chain
       - name: Contract compile gate (solc 0.8.20, paris + shanghai)
         run: bun run test:contract
