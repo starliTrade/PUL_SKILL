@@ -24,3 +24,10 @@ firebase-applet-config.json
 
 # Local anvil deployment manifest (contains anvil test keys + addresses)
 contracts/deployments/
+
+# Coverage artefacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/
