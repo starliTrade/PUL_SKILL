@@ -1,22 +1,38 @@
 name: CI
 
+# Plan item 0.13: CI runs the same gates as `bun run verify`, split across three
+# jobs so a failure names the area that broke:
+#   frontend   -> typecheck (tsc), and later vitest + playwright + axe
+#   game-server-> ruff, pytest (+coverage ratchet), legacy suites, Firestore emulator
+#   contracts  -> forge test, the "did tests actually run" guard, anvil chain tests
+# `bun run verify` remains the local entrypoint; it also auto-starts the
+# emulator and anvil, which CI starts explicitly.
 on:
   push:
     branches: [main]
   pull_request:
 
+concurrency:
+  # A superseded run on the same ref is cancelled: the newest commit is the one
+  # that matters, and the contract job is the slowest.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun tsc --noEmit
 
   game-server:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -46,11 +62,13 @@ jobs:
             sleep 1
           done
           echo "emulator failed to start"; tail -40 /tmp/fsemu.log; exit 1
-      - name: Server tests (pytest) — plan item 0.3
+      - name: Server tests (pytest + coverage ratchet) — plan items 0.3, 0.12
         env:
           FIRESTORE_EMULATOR_HOST: 127.0.0.1:8081
           GCLOUD_PROJECT: demo-pulsar
-        run: python3 -m pytest -q
+        # `.coveragerc` sets fail_under; it may only ever go up. The chain-marked
+        # tests skip here (no anvil in this job) and run in the contracts job.
+        run: python3 -m pytest -q --cov=api --cov-report=term-missing
       - name: Protocol smoke tests (SIWE, commit-reveal, settlement, oracle, store roundtrip)
         run: python3 scripts/test_game_server.py
       - name: HTTP end-to-end tests (real FastAPI request layer)
@@ -69,10 +87,12 @@ jobs:
 
   contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
@@ -119,7 +139,7 @@ jobs:
         run: pip install -r api/requirements-dev.txt
       - name: Start anvil + deploy the escrow
         run: bash scripts/start_anvil.sh --bg
-      - name: Chain tests (real EVM: create -> join -> settle with an oracle signature)
+      - name: "Chain tests (real EVM: create -> join -> settle with an oracle signature)"
         run: python3 -m pytest -q -m chain
       - name: Contract compile gate (solc 0.8.20, paris + shanghai)
         run: bun run test:contract

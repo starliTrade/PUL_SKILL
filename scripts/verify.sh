@@ -98,7 +98,10 @@ if [[ -f "$ROOT/pytest.ini" ]] && "$PY" -m pytest --version >/dev/null 2>&1; the
   if [[ -z "${FIRESTORE_EMULATOR_HOST:-}" ]] && curl -sf -o /dev/null "http://127.0.0.1:8081/" 2>/dev/null; then
     PYTEST_ENV=(env FIRESTORE_EMULATOR_HOST=127.0.0.1:8081 "GCLOUD_PROJECT=${GCLOUD_PROJECT:-demo-pulsar}")
   fi
-  run_gate "server tests (pytest)" "${PYTEST_ENV[@]}" "$PY" -m pytest -q
+  # Plan item 0.12: coverage is a ratchet — .coveragerc's fail_under may
+  # only go up, and it is passed explicitly so a missing config cannot silently
+  # disable the gate.
+  run_gate "server tests (pytest)" "${PYTEST_ENV[@]}" "$PY" -m pytest -q --cov=api --cov-report=term-missing
 else
   skip_gate "server tests (pytest)" "pytest not wired up yet (plan item 0.3)"
 fi

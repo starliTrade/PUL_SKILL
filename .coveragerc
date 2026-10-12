@@ -1,0 +1,32 @@
+# PULSAR — coverage configuration (plan item 0.12).
+#
+# The floor is a RATCHET: it may only go up. It starts at the level the suite
+# actually reached when the gate was introduced, so the gate is honest from day
+# one instead of being a permanently-red number nobody reads.
+#
+#   phase 0 (now)   48%   <- current
+#   phase 1         55%   (C1-C4 regression tests)
+#   phase 2         65%   (server money path)
+#   phase 3         70%   (contract + chain)
+#   phase 7         80%   (MEDIUM sweep)
+#
+# Raise `fail_under` in the same commit that adds the tests, never before.
+#
+# Note: the legacy suites in scripts/ run as subprocesses and therefore do NOT
+# contribute to this number. It measures the pytest suite only — which is why
+# api/store.py and api/auth.py still read low: their coverage lives in the
+# legacy scripts until plan item 0.3 finishes the migration.
+[run]
+source = api
+omit =
+    api/requirements*.txt
+
+[report]
+fail_under = 48
+show_missing = True
+skip_covered = False
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    raise NotImplementedError
+    \.\.\.
