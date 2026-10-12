@@ -1051,8 +1051,20 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     # different replica (or a recycled process) cannot mint an orphan match
     # the client might fund twice.
     live = store.player_live_match(address)
-    if live is not None and live.stake == body.stake:
-        return live.public_view(for_address=address)
+    if live is not None:
+        if live.stake == body.stake:
+            return live.public_view(for_address=address)
+        # Audit M14: falling through to `enqueue` returned the SAME live match
+        # (enqueue is idempotent), so a player who asked for 5 USDT silently got
+        # their live 1 USDT match back and the UI showed a stake they never
+        # chose. Refuse, and say why.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"You already have a live match at {live.stake:g} USDT. "
+                f"Finish or leave it before queueing at {body.stake:g}."
+            ),
+        )
     match = store.enqueue(address, body.stake, body.rttMs)
     return match.public_view(for_address=address)
 
@@ -1379,6 +1391,12 @@ def claim_match(match_id: str, body: ClaimRequest, request: Request) -> dict[str
     except MatchError as e:
         raise HTTPException(status_code=404, detail=str(e))
     winner = (getattr(match, "winner", "") or "").lower()
+    # Audit M11: the on-chain check below proves the TX settled this match and
+    # paid `winner` — it says nothing about who is CALLING. Without this, the
+    # loser could POST a claim and have `onChain: true` recorded against the
+    # match, so the ledger says the wrong player claimed.
+    if not winner or address.lower() != winner:
+        raise HTTPException(status_code=403, detail="Only the winner may claim")
     verified = onchain.verify_settlement_tx(body.txHash, match_id, winner)
     if not verified:
         return {
