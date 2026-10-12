@@ -5,7 +5,7 @@
 ║  نسخه:        1.8-CLOSED (فاز ۱ بسته)                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     ebb9b4e52b571bf6…4f8646a31dbe299e                                                   ║
+║  SHA-256:     12ced0f964a69110…88699373f6d794a1                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -162,7 +162,7 @@
 - [x] **H8** `sweep_expired` ماتچ کامل‌شده را void می‌کند — `api/store.py:226-230, 393-399`
   تغییر: قبل از void، اگر `match_completed(m)` یا داخل پنجره‌ی escrow → اول `_settle_once` (forfeit)
   تست: `tests/unit/test_sweep.py::test_completed_match_is_settled_not_voided` + `::test_active_match_past_play_expiry_still_settles_within_escrow_window`
-- [ ] **H9** sweep روی هر poll + ایندکس composite غایب — `api/main.py:532-535`, `api/store.py:376, 409-413, 447-453`
+- [x] **H9** sweep روی هر poll + ایندکس composite غایب — `api/main.py:532-535`, `api/store.py:376, 409-413, 447-453`
   تغییر: sweep به job زمان‌بندی‌شده؛ `firestore.indexes.json`؛ خطای ایندکس لاگ + health-counter
   تست: `tests/integration/test_sweep_cost.py::test_queue_poll_does_not_scan_collections`
   پذیرش: هر poll صف صفر collection scan
@@ -565,6 +565,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 2.3 | 2026-10-12 | H9 رفع شد (throttle روی sweep + ایندکس composite + شکست‌ها دیگر بی‌صدا نیستند). coverage ۷۷٪ (کاهش ۷۸→۷۷ به‌دلیل ایزوله‌شدن درست تست H4، نه regression). **فاز ۲: ۵/۹** | ⬜ |
 | 2.2 | 2026-10-12 | H5 و H8 رفع شدند. coverage ۷۷ → ۷۸٪. | ⬜ |
 | 2.1 | 2026-10-12 | H4 رفع شد (ledger بعد از commit تراکنش؛ همان باگ در `_settle_once` هم بود). coverage ۷۲ → ۷۷٪. fixture زنجیره در برابر فرستنده‌های همزمان مقاوم شد. | ⬜ |
 | 2.0 | 2026-10-12 | **فاز ۲ شروع شد.** H3 رفع شد (گیت idempotency اتمیک شد؛ کامیت قرمز جدا قبل از fix طبق R1). coverage ۶۹ → ۷۲٪. | ⬜ |
