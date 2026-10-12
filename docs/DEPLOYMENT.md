@@ -65,6 +65,13 @@ When moving to mainnet (137): set `PAYMENT_TOKEN_ADDRESS=0xc2132D05D31c914a87C66
 give it only signing authority. Consider moving production signing to AWS KMS
 or GCP KMS (the signing surface in `api/oracle.py` is designed for it).
 
+⚠️ **Rotating the oracle or the treasury is a two-step, timelocked operation**
+(audit M24). `setOracleSigner` / `setTreasuryWallet` only SCHEDULE the change;
+it takes effect after `ADMIN_TIMELOCK` (2 days) via `applyOracleSigner()` /
+`applyTreasuryWallet()`, and `cancelPendingAdminChanges()` aborts both. Plan a
+rotation two days ahead, and remember that an oracle rotation invalidates every
+settlement signature the old key has already issued.
+
 ⚠️ Chain binding: `ORACLE_CHAIN_ID` on the server **must equal** `VITE_CHAIN_ID`
 on the client. `settleDuel()` hashes `block.chainid`, so a mismatch makes every
 settlement signature invalid on-chain (the oracle defaults to 80002 = Amoy,
@@ -173,5 +180,8 @@ template. Before enabling real-money mode:
 - [ ] Legal docs reviewed + placeholders replaced; geo-blocking at edge active
 - [ ] Sentry (client + server) receiving test events
 - [ ] End-to-end test with real wallet on **Polygon Amoy testnet first**: approve → createDuel → joinDuel → play → settleDuel; verify winner receives 98% and treasury 2%
-- [ ] `refundTimeoutMatch` verified: create a duel, wait 30 minutes (MATCH_TIMEOUT), refund works
+- [ ] `refundTimeoutMatch` verified: create a duel, wait **MATCH_TIMEOUT + REFUND_GRACE (40 minutes)**, refund works.
+      The window is 40 minutes, not 30: audit H19 added an exclusive settlement
+      window so a stalling loser cannot refund the winner's prize away. A refund
+      attempted at 30 minutes reverts with "Match not timed out".
 - [ ] Rollback plan: keep `VITE_ESCROW_ADDRESS` unset → app reverts to honest practice-only mode instantly

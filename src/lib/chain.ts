@@ -78,6 +78,27 @@ export const TREASURY = resolveConfigured('treasury', 'VITE_TREASURY_WALLET_ADDR
 /** Oracle signer — verifies settleDuel signatures. Set VITE_ORACLE_WALLET_ADDRESS. */
 export const ORACLE_SIGNER = resolveConfigured('oracle', 'VITE_ORACLE_WALLET_ADDRESS', '');
 
+/**
+ * Escrow timing — must mirror `contracts/PulsarEscrow.sol`.
+ *
+ * Audit H19 added `REFUND_GRACE`: the permissionless refund opens only at
+ * MATCH_TIMEOUT + REFUND_GRACE, so a stalling loser cannot deny the winner.
+ * Every user-facing string that tells a player when they can refund has to use
+ * these, or the player follows the instruction and gets a revert.
+ *
+ * `src/lib/chain.test.ts` pins both against the Solidity source.
+ */
+export const ESCROW_TIMING = {
+  /** == PulsarEscrow.MATCH_TIMEOUT (30 min): the settlement window. */
+  matchTimeoutSeconds: 30 * 60,
+  /** == PulsarEscrow.REFUND_GRACE (10 min). */
+  refundGraceSeconds: 10 * 60,
+} as const;
+
+/** Minutes a player must wait before `refundTimeoutMatch` will succeed. */
+export const REFUND_OPENS_AFTER_MINUTES =
+  (ESCROW_TIMING.matchTimeoutSeconds + ESCROW_TIMING.refundGraceSeconds) / 60;
+
 export const ECONOMY = {
   /** Platform rake in basis points — must match contract PLATFORM_FEE_BPS (200 = 2%). */
   platformFeeBps: 200,

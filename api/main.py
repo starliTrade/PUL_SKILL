@@ -50,7 +50,7 @@ except Exception:  # pragma: no cover - local dev without the SDK
 from auth import EXPECTED_CHAIN_ID as _CHAIN_ID
 from auth import NONCE_WINDOW_SECONDS as _NONCE_WINDOW
 from auth import issue_nonce, issue_session, verify_session, verify_siwe
-from match_engine import MatchError, match_completed
+from match_engine import MATCH_TIMEOUT_SECONDS, MatchError, match_completed
 from oracle import sign_settlement
 from store import create_store, install_persistence
 
@@ -281,10 +281,17 @@ def sweep_health() -> dict[str, Any]:
     }
 
 
+# Audit H19: the contract's permissionless refund opens at
+# MATCH_TIMEOUT + REFUND_GRACE, not at MATCH_TIMEOUT. User-facing copy must
+# state the real window or a player follows the instruction and gets a revert.
+REFUND_GRACE_SECONDS = 10 * 60  # == PulsarEscrow.REFUND_GRACE
+REFUND_HORIZON_SECONDS = MATCH_TIMEOUT_SECONDS + REFUND_GRACE_SECONDS
+
+
 # Joiner-deposit timeout (audit #5, item 3): if the joiner's stake never lands
 # on-chain within this window after matchmaking, the match is voided so the
 # creator can refund (refundTimeoutMatch) instead of being locked for the
-# 30-minute on-chain refund horizon.
+# on-chain refund horizon (MATCH_TIMEOUT + REFUND_GRACE).
 DEPOSIT_TIMEOUT_SECONDS = 300.0
 
 
@@ -343,7 +350,7 @@ def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
         participants (depositing from a different wallet then playing as
         another one makes the winner unpayable — the contract rejects a
         winner that is not player1/player2, so the honest player would burn
-        30 minutes of locked stake on an unwinnable match).
+        the full refund horizon of locked stake on an unwinnable match).
     Also voids the server-side match when the joiner's deposit never arrives
     (audit #8 F-05: the deposit timeout counts from ACTIVATION, not queue
     entry)."""
@@ -982,7 +989,7 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
             "status": "void",
             "reason": (
                 "Match was voided — each stake refunds on-chain via "
-                "refundTimeoutMatch after the 30-minute escrow timeout."
+                f"refundTimeoutMatch after the {int(REFUND_HORIZON_SECONDS // 60)}-minute escrow timeout."
             ),
         }
     try:

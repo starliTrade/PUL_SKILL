@@ -44,7 +44,7 @@ import {
   type MatchView,
 } from '../lib/gameServerClient';
 import { settleDuel as settleDuelOnChain, refundTimeoutMatch, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState } from '../lib/escrowFlow';
-import { isEscrowConfigured, CHAIN, TOKENS, ECONOMY } from '../lib/chain';
+import { isEscrowConfigured, CHAIN, TOKENS, ECONOMY, REFUND_OPENS_AFTER_MINUTES } from '../lib/chain';
 import { ethers } from 'ethers';
 import { realWeb3Manager } from '../lib/realWeb3';
 import { reportError } from '../lib/monitoring';
@@ -310,7 +310,7 @@ function isWalletCancel(msg: string): boolean {
       } else {
         // P0-fix — the joiner MUST approve before joinDuel(): the escrow pulls
         // the joiner's stake via transferFrom, which reverts without allowance
-        // (its usual result: the creator's deposit locked for 30 minutes).
+        // (its usual result: the creator's deposit locked for the full window).
         await approveUsdt(currentStake);
         // The joiner then WAITS for the creator's createDuel to confirm
         // on-chain — calling joinDuel earlier reverts ("Match not available")
@@ -721,8 +721,8 @@ function isWalletCancel(msg: string): boolean {
           opponentTime: oppTime,
           prize: 0,
           // H4: honest horizon — the contract releases refunds only after
-          // its 30-minute MATCH_TIMEOUT, not immediately at void time.
-          reason: 'Match voided — each stake refunds on-chain after the 30-minute escrow timeout.',
+          // its MATCH_TIMEOUT + REFUND_GRACE, not immediately at void time.
+          reason: `Match voided — each stake refunds on-chain after the ${REFUND_OPENS_AFTER_MINUTES}-minute escrow timeout.`,
           rounds,
           userScore,
           opponentScore: oppScore,
@@ -740,7 +740,7 @@ function isWalletCancel(msg: string): boolean {
           yourTime,
           opponentTime: oppTime,
           prize: 0,
-          reason: 'Match could not be settled — each stake refunds on-chain after the 30-minute escrow timeout.',
+          reason: `Match could not be settled — each stake refunds on-chain after the ${REFUND_OPENS_AFTER_MINUTES}-minute escrow timeout.`,
           rounds,
           userScore,
           opponentScore: oppScore,
@@ -841,7 +841,7 @@ function isWalletCancel(msg: string): boolean {
   };
 
   // P0-fix: on-chain recovery actions. Retry re-submits the stored server proof;
-  // Refund calls refundTimeoutMatch (only succeeds after 30-min MATCH_TIMEOUT).
+  // Refund calls refundTimeoutMatch (only succeeds after MATCH_TIMEOUT + REFUND_GRACE).
   const retrySettle = async (): Promise<void> => {
     if (!lastProof) return;
     setOnchainAction('Retrying on-chain claim…');
@@ -872,14 +872,14 @@ function isWalletCancel(msg: string): boolean {
 
   const refundDuel = async (): Promise<void> => {
     if (!serverMatch) return;
-    setOnchainAction('Requesting timeout refund… (succeeds after 30-min escrow timeout)');
+    setOnchainAction(`Requesting timeout refund… (succeeds after the ${REFUND_OPENS_AFTER_MINUTES}-minute escrow timeout)`);
     try {
       const bytes32 = await matchIdToBytes32(serverMatch.matchId);
       const txHash = await refundTimeoutMatch(bytes32);
       setOnchainAction(`Refund submitted: ${txHash.slice(0, 10)}…${txHash.slice(-8)}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setOnchainAction(isWalletCancel(msg) ? `Cancelled — no funds moved. ${msg}` : `Refund failed (likely before 30-min timeout): ${msg}`);
+      setOnchainAction(isWalletCancel(msg) ? `Cancelled — no funds moved. ${msg}` : `Refund failed (likely before the ${REFUND_OPENS_AFTER_MINUTES}-minute timeout): ${msg}`);
     }
   };
 
@@ -1654,7 +1654,7 @@ function isWalletCancel(msg: string): boolean {
                   {isServerMode && serverMatch && (
                     <>
                       <button onClick={refundDuel} className="w-full btn-secondary py-3 text-xs cursor-pointer">
-                        Refund after 30-min timeout
+                        Refund after {REFUND_OPENS_AFTER_MINUTES}-min timeout
                       </button>
                       {onchainAction && <p className="text-[10px] font-mono text-zinc-400">{onchainAction}</p>}
                     </>
@@ -1739,7 +1739,7 @@ function isWalletCancel(msg: string): boolean {
                         Retry on-chain claim
                       </button>
                       <button onClick={refundDuel} className="w-full btn-secondary py-2.5 text-xs cursor-pointer">
-                        Refund after 30-min timeout
+                        Refund after {REFUND_OPENS_AFTER_MINUTES}-min timeout
                       </button>
                       {onchainAction && <p className="text-[10px] font-mono text-zinc-400">{onchainAction}</p>}
                     </div>

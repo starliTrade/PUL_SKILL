@@ -94,6 +94,16 @@ if [[ -f "$ROOT/pytest.ini" ]] && "$PY" -m pytest --version >/dev/null 2>&1; the
   # assume the in-memory store, and a global FIRESTORE_EMULATOR_HOST makes
   # `store.create_store()` connect to the emulator, which changes their
   # behaviour (and made the HTTP E2E suite fail when this was exported).
+  # The coverage ratchet must be DETERMINISTIC, and the Firestore integration
+  # tests are what cover the Firestore code paths. Start the emulator if it is
+  # not already up, exactly like the chain gate does for anvil — otherwise the
+  # measured number wobbles by several points depending on whether those tests
+  # could run, and a ratchet that wobbles produces false failures.
+  if ! curl -sf -o /dev/null "http://127.0.0.1:8081/" 2>/dev/null; then
+    echo "starting a background Firestore emulator for the coverage gate…"
+    bash "$ROOT/scripts/start_emulator.sh" --bg >/dev/null 2>&1 || true
+  fi
+
   PYTEST_ENV=()
   if [[ -z "${FIRESTORE_EMULATOR_HOST:-}" ]] && curl -sf -o /dev/null "http://127.0.0.1:8081/" 2>/dev/null; then
     PYTEST_ENV=(env FIRESTORE_EMULATOR_HOST=127.0.0.1:8081 "GCLOUD_PROJECT=${GCLOUD_PROJECT:-demo-pulsar}")

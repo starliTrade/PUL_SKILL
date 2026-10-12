@@ -137,8 +137,26 @@ def clock(monkeypatch):
     return c
 
 
+# The rate limiter is keyed by IP and every test shares one TestClient IP, so a
+# test that polls the queue a few times can trip a bucket another test needs.
+# Clearing the buckets per test is not enough on its own — the Firestore-backed
+# path writes asynchronously enough that a clear can lose a race. Raising the
+# ceilings for the test process removes the interaction entirely; the tests that
+# VERIFY the limiter pass an explicit limit to `_rl_check` and are unaffected.
+_RL_LIMIT_NAMES = (
+    "RL_AUTH_MAX",
+    "RL_VERIFY_MAX",
+    "RL_QUEUE_MAX",
+    "RL_COMMIT_MAX",
+    "RL_ROUND_MAX",
+    "RL_SETTLE_MAX",
+    "RL_CLAIM_MAX",
+    "RL_USERNAME_LOOKUP_MAX",
+)
+
+
 @pytest.fixture(autouse=True)
-def _isolate_server_store():
+def _isolate_server_store(monkeypatch):
     """Reset the server's in-process match state around every test.
 
     `main.store` is a module-level singleton, so a match left WAITING by one
@@ -156,11 +174,40 @@ def _isolate_server_store():
         yield
         return
 
+    for name in _RL_LIMIT_NAMES:
+        if hasattr(server, name):
+            monkeypatch.setattr(server, name, 1_000_000)
+
     def _clear() -> None:
         mem = server.store.memory
         mem.matches.clear()
         mem.queue.clear()
         mem.player_match.clear()
+        # Audit H9 throttles the maintenance sweep to once per
+        # SWEEP_MIN_INTERVAL_SECONDS. Without resetting it here, whether a test
+        # exercises the sweep depends on how recently another test polled the
+        # queue — which made the coverage ratchet wobble by ~2 points between
+        # runs. A ratchet must be deterministic.
+        if hasattr(server, "_reset_sweep_clock"):
+            server._reset_sweep_clock()
+        # The rate limiter is keyed by IP, and every test comes from the same
+        # TestClient IP — so buckets accumulate across tests and eventually
+        # return 429. That surfaced as an INTERMITTENT pytest failure (and, via
+        # the aborted run, a coverage number that wobbled by 5 points).
+        server._rl_window.clear()
+        if hasattr(server, "_rl_fallback_last"):
+            server._rl_fallback_last.clear()
+        # ...and when the server boots Firestore-backed the limiter uses the
+        # `rate_limits` COLLECTION, not `_rl_window` — so clearing the in-process
+        # window is not enough. The documents persist in the emulator across
+        # tests and the bucket eventually returns 429.
+        fs = getattr(server.store, "_fs_store", None)
+        if fs is not None:
+            try:
+                for doc in fs.db.collection("rate_limits").stream():
+                    doc.reference.delete()
+            except Exception:
+                pass  # emulator unavailable: the in-process reset still applies
 
     _clear()
     yield
