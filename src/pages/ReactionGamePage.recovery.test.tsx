@@ -36,6 +36,8 @@ const ensureSession = vi.fn(async () => ({ token: 't', address: '0x' + '11'.repe
 vi.mock('../lib/gameServerClient', () => ({
   gameServerConfigured: () => true,
   ensureSession: (...a: unknown[]) => ensureSession(...(a as [])),
+  // Audit H1: the submit path measures the round trip.
+  measureServerRttMs: async () => 20,
   queueForMatch: vi.fn(async () => ({ status: 'active' })),
   commitRound: vi.fn(async () => undefined),
   revealRoundTarget: vi.fn(async () => ({ targetMs: 100, resultProof: 'proof' })),

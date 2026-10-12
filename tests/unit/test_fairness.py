@@ -36,11 +36,20 @@ def _intent(tag: str) -> str:
 
 
 def _play(match, address, round_index, measured_ms, rtt_ms):
-    """Commit → reveal → submit one round, reporting an RTT."""
+    """Commit → reveal → submit one round, reporting an RTT.
+
+    `observed_ms` is then set to what the server WOULD have witnessed: the true
+    reaction plus the one-way network latency. That is the whole point of H1 —
+    the server cannot see the reaction, only the reaction plus the distance.
+    """
     commit_intent(match, address, round_index, _intent(str(round_index)))
     reveal_target(match, address, round_index)
-    proof = match.rounds[address][round_index].result_proof
-    submit_result(match, address, round_index, measured_ms, proof, rtt_ms=rtt_ms)
+    r = match.rounds[address][round_index]
+    # Rewind so the server observes exactly `measured_ms`, like `play_round`.
+    if r.revealed_at:
+        r.revealed_at -= (r.target_ms + measured_ms) / 1000.0
+    submit_result(match, address, round_index, measured_ms, r.result_proof, rtt_ms=rtt_ms)
+    r.observed_ms = measured_ms + rtt_ms / 2.0
 
 
 # --- the finding -------------------------------------------------------------
@@ -58,12 +67,8 @@ def test_equal_reaction_different_latency_is_a_tie(active_match, addr, opp_addr)
     _play(active_match, addr, 0, reaction, near_rtt)
     _play(active_match, opp_addr, 0, reaction, far_rtt)
 
-    # Simulate what the server actually observed.
-    active_match.rounds[addr][0].observed_ms = reaction + near_rtt / 2
-    active_match.rounds[opp_addr][0].observed_ms = reaction + far_rtt / 2
-
-    va = engine._rank_time(active_match.rounds[addr][0], active_match.rounds[addr][0].min_rtt_ms)
-    vb = engine._rank_time(active_match.rounds[opp_addr][0], active_match.rounds[opp_addr][0].min_rtt_ms)
+    va = engine._rank_time(active_match.rounds[addr][0], active_match.min_rtt_ms[addr])
+    vb = engine._rank_time(active_match.rounds[opp_addr][0], active_match.min_rtt_ms[opp_addr])
 
     assert va == pytest.approx(reaction, abs=1.0)
     assert vb == pytest.approx(reaction, abs=1.0)
@@ -78,13 +83,16 @@ def test_the_near_player_no_longer_wins_by_default(active_match, addr, opp_addr)
     _play(active_match, addr, 0, reaction, 10.0)
     _play(active_match, opp_addr, 0, reaction, 100.0)
 
-    active_match.rounds[addr][0].observed_ms = reaction + 5.0
-    active_match.rounds[opp_addr][0].observed_ms = reaction + 50.0
-
     winner = engine._round_winner(
-        active_match.rounds[addr], active_match.rounds[opp_addr], 0
+        active_match.rounds[addr],
+        active_match.rounds[opp_addr],
+        0,
+        active_match.min_rtt_ms[addr],
+        active_match.min_rtt_ms[opp_addr],
     )
-    assert winner in ("tie", "draw"), (
+    # The engine's convention: '' means undecided OR tied — both players are
+    # equally fast, so neither wins the round.
+    assert winner == "", (
         f"the nearer player won a round neither player was faster in (got {winner!r})"
     )
 
@@ -95,8 +103,7 @@ def test_inflating_the_reported_rtt_does_not_help(active_match, addr):
     _play(active_match, addr, 0, 220.0, 10.0)
     _play(active_match, addr, 1, 220.0, 5000.0)  # absurd inflation
 
-    r = active_match.rounds[addr][0]
-    assert r.min_rtt_ms == pytest.approx(10.0), (
+    assert active_match.min_rtt_ms[addr] == pytest.approx(10.0), (
         "the minimum RTT must ignore an inflated report (audit H1)"
     )
 
@@ -126,14 +133,14 @@ def test_compensation_is_capped(active_match, addr):
 
     r = active_match.rounds[addr][0]
     r.observed_ms = 220.0 + 5000.0
-    ranked = engine._rank_time(r, r.min_rtt_ms)
+    ranked = engine._rank_time(r, active_match.min_rtt_ms[addr])
     assert ranked >= 220.0, "compensation must never make a player look faster than they were"
 
 
 # --- the ping cap ------------------------------------------------------------
 def test_a_player_above_the_ping_cap_is_refused_at_queue_time(store, addr, clock):
     """The cap is an entry gate with a clear message, not a silent loss."""
-    with pytest.raises(MatchError, match="ping"):
+    with pytest.raises(MatchError, match="[Pp]ing"):
         store.enqueue(addr, 1.0, rtt_ms=engine.MAX_QUEUE_RTT_MS + 1)
 
 

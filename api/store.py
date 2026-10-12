@@ -683,17 +683,22 @@ def install_persistence(store: DurableMatchStore, engine_module: Any) -> None:
             store.put(match)
         return result
 
-    def commit_intent(match: Match, address: str, round_index: int, intent_hash: str):
-        return _save(original_commit, match, address, round_index, intent_hash)
+    # Audit H1: these wrappers must be SIGNATURE-TRANSPARENT. They used to
+    # restate the engine's parameters, so adding one to the engine (H1 added
+    # `rtt_ms` to submit_result) made the wrapper reject it — and the failure
+    # only appeared when `main` had been imported, i.e. in the full suite but
+    # not in a focused run. Forwarding *args/**kwargs cannot drift.
+    def commit_intent(*args: Any, **kwargs: Any):
+        return _save(original_commit, *args, **kwargs)
 
-    def reveal_target(match: Match, address: str, round_index: int):
-        return _save(original_reveal, match, address, round_index)
+    def reveal_target(*args: Any, **kwargs: Any):
+        return _save(original_reveal, *args, **kwargs)
 
-    def submit_result(match: Match, address: str, round_index: int, measured_ms: float, result_proof: str = ""):
-        return _save(original_submit, match, address, round_index, measured_ms, result_proof)
+    def submit_result(*args: Any, **kwargs: Any):
+        return _save(original_submit, *args, **kwargs)
 
-    def settle(match: Match):
-        return _save(original_settle, match)
+    def settle(*args: Any, **kwargs: Any):
+        return _save(original_settle, *args, **kwargs)
 
     # Transactional mutations: expose the ORIGINAL engine functions to
     # DurableMatchStore.update so mutate(m, engine) runs hook-free inside the

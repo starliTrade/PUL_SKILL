@@ -293,9 +293,37 @@ export const submitRoundResult = (
   matchId: string,
   roundIndex: number,
   measuredMs: number,
-  resultProof?: string
+  resultProof?: string,
+  rttMs?: number
 ): Promise<SubmitResult> =>
-  request("/api/round/result", { matchId, roundIndex, measuredMs, resultProof }, session);
+  // Audit H1: `rttMs` lets the server compensate the reaction it observed for
+  // network distance. Without it the ranking is `observed`, which latency can
+  // only inflate — so the player nearer the server wins ties they did not earn.
+  request("/api/round/result", { matchId, roundIndex, measuredMs, resultProof, rttMs }, session);
+
+/**
+ * Measure the round trip to the game server (audit H1).
+ *
+ * The server keeps the MINIMUM across the match, so an inflated report buys
+ * nothing and a deflated one only reduces the player's own compensation. This
+ * is a best-effort measurement: a failure returns `undefined` and the round is
+ * submitted uncompensated rather than not at all.
+ */
+export const measureServerRttMs = async (session: ServerSession): Promise<number | undefined> => {
+  if (!gameServerConfigured()) return undefined;
+  try {
+    const started = performance.now();
+    const res = await fetch(`${SERVER_URL}/api/health`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${session.token}` },
+    });
+    if (!res.ok) return undefined;
+    await res.json();
+    return Math.round(performance.now() - started);
+  } catch {
+    return undefined;
+  }
+};
 
 export interface SettledMatch {
   matchId: string;

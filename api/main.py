@@ -702,6 +702,12 @@ class ResultRequest(BaseModel):
     # it the stored result was disconnected from its commit (any 90ms claim
     # after any commit was accepted).
     resultProof: str = ""
+    # Audit H1: the client's measured round trip, used to compensate the
+    # server-observed reaction for network distance. Optional so an older client
+    # still plays (uncompensated) rather than failing; bounded so an absurd
+    # report cannot be used to farm compensation — the engine keeps the MINIMUM
+    # across the match anyway.
+    rttMs: float | None = Field(default=None, ge=0, le=10_000)
 
 
 class ClaimRequest(BaseModel):
@@ -879,7 +885,9 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
         _gate_or_void(body.matchId)
 
         def _mutate(m: Any, eng: Any) -> dict[str, Any]:
-            res = eng.submit_result(m, address, body.roundIndex, body.measuredMs, body.resultProof)
+            res = eng.submit_result(
+                m, address, body.roundIndex, body.measuredMs, body.resultProof, rtt_ms=body.rttMs
+            )
             if m.status == "active" and eng.match_completed(m):
                 try:
                     result = eng.settle(m)

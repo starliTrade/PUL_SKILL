@@ -90,6 +90,23 @@ FORFEIT_SENTINEL_MS = 0.0      # audit #8 F-15: declared forfeit time in the
 MATCH_SETTLE_GRACE_SECONDS = 480  # 8 minutes after activation (unchanged)
 
 
+# Audit H1 — latency fairness (D1 = option D: real money).
+#
+# `observed_ms` = elapsed − target_ms, where `elapsed` runs from when the server
+# SENT the target to when the submission ARRIVED. Network latency can only
+# inflate it, so a player 10ms from the server and one 100ms away who react
+# identically differ by ~45ms — decisive in a game whose range is ~150-400ms.
+#
+# The ranking value is `observed − min_rtt/2`. The MINIMUM is what makes this
+# safe: a naive `observed − rtt/2` rewards INFLATING the reported RTT (a larger
+# rtt yields a smaller compensated time, i.e. looking faster). The minimum
+# cannot be inflated — the true value stays in the set — and cannot be deflated
+# below the network floor, and deflating only REDUCES the compensation, so there
+# is no incentive in either direction.
+MAX_COMPENSATION_MS = 150.0  # never credit more than this, whatever is reported
+MAX_QUEUE_RTT_MS = 400.0  # entry gate: above this the experience is unplayable
+
+
 def settlement_deadline(match: Any) -> int:
     """Return the contract's refund horizon for this match.
 
@@ -186,6 +203,9 @@ class Match:
     # role is persisted and restored with the match instead of being inferred
     # from an on-chain read that cannot succeed yet.
     joiner: str = ""  # second player — deposits after the creator's deposit is visible
+    # Audit H1: the MINIMUM RTT each player has reported this match. Per match,
+    # not per round, so a player cannot "warm up" a good value late.
+    min_rtt_ms: dict[str, float] = field(default_factory=dict)
 
     def play_started_at(self) -> float:
         """The instant the PLAY clock started (activation, falling back to
@@ -277,7 +297,18 @@ class MatchStore:
         # the first player forever in matchmaking while P2 played alone).
         self.player_match: dict[str, str] = {}
 
-    def enqueue(self, address: str, stake: float) -> Match:
+    def enqueue(self, address: str, stake: float, rtt_ms: float | None = None) -> Match:
+        """Queue a player. `rtt_ms` is the client's measured round trip.
+
+        Audit H1: the ping cap is an ENTRY GATE with a clear message, not a
+        silent loss. Above MAX_QUEUE_RTT_MS the compensation cannot make the
+        match fair, so the player is told rather than quietly losing.
+        """
+        if rtt_ms is not None and rtt_ms > MAX_QUEUE_RTT_MS:
+            raise MatchError(
+                f"Ping too high to play fairly: {rtt_ms:.0f}ms round trip, "
+                f"the limit is {MAX_QUEUE_RTT_MS:.0f}ms. Try a better connection."
+            )
         addr = address.lower()
         live = self.player_match.get(addr)
         if live:
@@ -430,6 +461,7 @@ def submit_result(
     round_index: int,
     measured_ms: float,
     result_proof: str = "",
+    rtt_ms: float | None = None,
 ) -> dict[str, Any]:
     """
     Validate one submitted time and store it for settlement. The submission
@@ -437,6 +469,15 @@ def submit_result(
     was never followed by an honest reveal cannot produce a valid result.
     """
     _ensure_active(match, address)
+    # Audit H1: record the player's best observed round trip BEFORE anything
+    # else, so a rejected submission still contributes its measurement.
+    if rtt_ms is not None:
+        if rtt_ms < 0:
+            raise MatchError("Invalid rtt: must not be negative")
+        me = address.lower()
+        current = match.min_rtt_ms.get(me)
+        if current is None or rtt_ms < current:
+            match.min_rtt_ms[me] = float(rtt_ms)
     rounds = match.rounds.setdefault(address.lower(), {})
     r = rounds.get(round_index)
     if r is None or not r.revealed:
@@ -508,29 +549,42 @@ def _ensure_active(match: Match, address: str) -> None:
         raise MatchError("Not a participant of this match")
 
 
-def _rank_time(r: Round | None) -> float | None:
-    """The ranking time for one player's round.
+def _rank_time(r: Round | None, min_rtt_ms: float | None = None) -> float | None:
+    """The ranking time for one player's round, latency-compensated.
 
-    Audit #8 F-01: the server-OBSERVED reaction time (elapsed − target_ms)
-    is authoritative, because network latency can only ever inflate it. A
-    client that fabricates a 105ms claim while really reacting in 450ms
-    cannot outrank an honest 220ms player anymore — its OBSERVED time is
-    450ms and it loses the round. Falls back to the claim for legacy
+    Audit #8 F-01: the server-OBSERVED reaction (elapsed − target_ms) is
+    authoritative, because network latency can only ever inflate it. A client
+    that fabricates a 105ms claim while really reacting in 450ms cannot outrank
+    an honest 220ms player — its observed time is 450ms.
+
+    Audit H1: observed is then compensated by half the player's MINIMUM round
+    trip, so the ranking reflects the reaction rather than the network distance.
+    The compensation is capped at MAX_COMPENSATION_MS so a wild report cannot
+    make a player look faster than they were. Falls back to the claim for legacy
     documents written before observed_ms existed.
     """
     if r is None or not r.valid or r.result_ms is None:
         return None
-    if r.observed_ms is not None:
+    if r.observed_ms is None:
+        return r.result_ms
+    if min_rtt_ms is None:
         return r.observed_ms
-    return r.result_ms
+    compensation = min(max(min_rtt_ms, 0.0) / 2.0, MAX_COMPENSATION_MS)
+    return r.observed_ms - compensation
 
 
-def _round_winner(mine: dict[int, Round], theirs: dict[int, Round], idx: int) -> str:
+def _round_winner(
+    mine: dict[int, Round],
+    theirs: dict[int, Round],
+    idx: int,
+    min_rtt_a: float | None = None,
+    min_rtt_b: float | None = None,
+) -> str:
     """'a' (mine wins) | 'b' (theirs wins) | '' (undecided) for one round."""
     ra = mine.get(idx)
     rb = theirs.get(idx)
-    va = _rank_time(ra)
-    vb = _rank_time(rb)
+    va = _rank_time(ra, min_rtt_a)
+    vb = _rank_time(rb, min_rtt_b)
     if va is None and vb is None:
         return ""
     if vb is None:
@@ -569,10 +623,12 @@ def _majority_reached(match: Match) -> bool:
     rounds_b = match.rounds.get(b, {}) or {}
     wins_needed = ROUNDS // 2 + 1
     wins_a = wins_b = 0
+    rtt_a = match.min_rtt_ms.get(a)
+    rtt_b = match.min_rtt_ms.get(b)
     for idx in range(ROUNDS):
         if not _round_decidable(rounds_a, rounds_b, idx):
             continue
-        w = _round_winner(rounds_a, rounds_b, idx)
+        w = _round_winner(rounds_a, rounds_b, idx, rtt_a, rtt_b)
         if w == "a":
             wins_a += 1
         elif w == "b":
@@ -629,11 +685,13 @@ def settle(match: Match) -> dict[str, Any]:
     forfeit_a = forfeit_b = False
     times_a: list[float] = []
     times_b: list[float] = []
+    rtt_a = match.min_rtt_ms.get(a)
+    rtt_b = match.min_rtt_ms.get(b)
     for idx in range(ROUNDS):
         ra = rounds_a.get(idx)
         rb = rounds_b.get(idx)
-        va = _rank_time(ra)
-        vb = _rank_time(rb)
+        va = _rank_time(ra, rtt_a)
+        vb = _rank_time(rb, rtt_b)
         if va is not None:
             times_a.append(va)
         if vb is not None:

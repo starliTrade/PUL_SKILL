@@ -32,6 +32,7 @@ import { XPSystem, XPSummary } from '../lib/xpSystem';
 import {
   gameServerConfigured,
   ensureSession,
+  measureServerRttMs,
   queueForMatch,
   commitRound,
   revealRoundTarget,
@@ -957,7 +958,18 @@ function isWalletCancel(msg: string): boolean {
       try {
         // P0-fix (audit #2): the result MUST carry the per-player proof issued
         // at reveal — without it the server rejects the submission outright.
-        const res = await submitRoundResult(serverSession, serverMatch.matchId, roundIndex, userTime, resultProofRef.current || undefined);
+        // Audit H1: submit the measured round trip so the server can rank on
+        // the reaction rather than on the distance to the server. Best-effort —
+        // a failed measurement submits uncompensated rather than not at all.
+        const rttMs = await measureServerRttMs(serverSession).catch(() => undefined);
+        const res = await submitRoundResult(
+          serverSession,
+          serverMatch.matchId,
+          roundIndex,
+          userTime,
+          resultProofRef.current || undefined,
+          rttMs
+        );
         // Refresh the authoritative view (includes mutually-disclosed
         // opponent time for this round, if both have submitted).
         const view = await getMatch(serverSession, serverMatch.matchId);
