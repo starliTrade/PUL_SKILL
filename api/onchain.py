@@ -219,6 +219,20 @@ def _eth_call(to: str, data: str) -> str | None:
     return result
 
 
+def chain_reachable() -> bool:
+    """Public wrapper for /api/health (phase 6.2).
+
+    The module's own probes are private by convention; the health endpoint needs
+    a stable public name rather than reaching into an underscore helper.
+    """
+    return _chain_ok()
+
+
+def rpc_chain_id() -> int | None:
+    """The chain id the configured RPC reports, or None (phase 6.2)."""
+    return _rpc_chain_id()
+
+
 def _chain_ok() -> bool:
     """Chain-binding cross-check with a cooldown (audit #8 F-16).
 

@@ -47,6 +47,7 @@ try:  # optional dependency — absent until Firestore credentials exist
 except Exception:  # pragma: no cover - local dev without the SDK
     _gcf = None  # type: ignore[assignment]
 
+import oracle
 from auth import EXPECTED_CHAIN_ID as _CHAIN_ID
 from auth import NONCE_WINDOW_SECONDS as _NONCE_WINDOW
 from auth import issue_nonce, issue_session, verify_session, verify_siwe
@@ -616,6 +617,18 @@ def health() -> dict[str, Any]:
         # Audit H9: a dead sweep (e.g. a missing composite index) must be
         # visible in monitoring, not discovered when a prize goes unclaimed.
         "sweep": sweep_health(),
+        # Audit 6.2: the three questions an operator asks during an incident and
+        # could not previously answer from the server. No secret and no URL:
+        # this endpoint is unauthenticated, so anything here is public.
+        "rpc": {
+            "configured": bool(os.environ.get("ESCROW_RPC_URL")),
+            "reachable": onchain.chain_reachable(),
+            "chainId": onchain.rpc_chain_id(),
+        },
+        "tokenDecimals": onchain.token_decimals(),
+        # Public by design: it is in every settlement packet. An operator needs
+        # it to confirm the deployed contract trusts the key we hold.
+        "oracleAddress": oracle.oracle_address(),
         "rateLimit": {
             "backend": "firestore" if getattr(store, "_fs_store", None) is not None else "memory",
             "fallbacks": _rl_fallback_count,
