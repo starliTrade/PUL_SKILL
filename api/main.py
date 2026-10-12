@@ -679,6 +679,10 @@ class VerifyRequest(BaseModel):
 
 class QueueRequest(BaseModel):
     stake: float
+    # Audit H1: the ping cap needs the round trip AT QUEUE TIME. It was only
+    # sent with the round result, so the cap was unreachable from HTTP and the
+    # gate existed only in the unit tests.
+    rttMs: float | None = Field(default=None, ge=0, le=10_000)
 
 
 class CommitRequest(BaseModel):
@@ -802,7 +806,7 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     live = store.player_live_match(address)
     if live is not None and live.stake == body.stake:
         return live.public_view(for_address=address)
-    match = store.enqueue(address, body.stake)
+    match = store.enqueue(address, body.stake, body.rttMs)
     return match.public_view(for_address=address)
 
 

@@ -318,7 +318,10 @@ function isWalletCancel(msg: string): boolean {
         }
       });
       applyServerSession(session);
-      let view = await queueForMatch(session, currentStake);
+      // Audit H1: measure the round trip BEFORE queueing, so the ping cap is
+      // evaluated at the entry gate rather than after the first round.
+      const queueRtt = await measureServerRttMs(session).catch(() => undefined);
+      let view = await queueForMatch(session, currentStake, queueRtt);
       // Poll while waiting in the queue (queueForMatch is idempotent: it
       // returns the caller's waiting match or their active match).
       // Audit #6 C3: the fixed 2.5s cadence = 24 req/min exceeded the old
@@ -331,7 +334,7 @@ function isWalletCancel(msg: string): boolean {
       while (view.status === 'waiting' && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, backoffMs));
         backoffMs = Math.min(backoffMs + 2500, 10_000);
-        view = await queueForMatch(session, currentStake);
+        view = await queueForMatch(session, currentStake, queueRtt);
       }
       if (view.status === 'waiting') throw new Error('No opponent joined within 90 seconds. Try again.');
       applyServerMatch(view);
@@ -460,7 +463,8 @@ function isWalletCancel(msg: string): boolean {
       if (view.status === 'waiting') {
         // Still unmatched — fall through to the normal queue loop by
         // re-queuing (idempotent) rather than dead-waiting.
-        const queued = await queueForMatch(session, view.stake || currentStake);
+        const requeueRtt = await measureServerRttMs(session).catch(() => undefined);
+        const queued = await queueForMatch(session, view.stake || currentStake, requeueRtt);
         if (queued.status === 'waiting') throw new Error('No opponent joined yet — retry in a moment.');
         applyServerMatch(queued);
       }

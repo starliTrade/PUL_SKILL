@@ -256,8 +256,13 @@ export interface MatchView {
 }
 
 /** Enter the matchmaking queue for a stake. Resolves when paired (server side). */
-export const queueForMatch = (session: ServerSession, stake: number): Promise<MatchView> =>
-  request<MatchView>("/api/queue", { stake }, session);
+export const queueForMatch = (
+  session: ServerSession,
+  stake: number,
+  rttMs?: number
+): Promise<MatchView> =>
+  // Audit H1: the ping cap is evaluated at queue time.
+  request<MatchView>("/api/queue", { stake, rttMs }, session);
 
 export const getMatch = (session: ServerSession, matchId: string): Promise<MatchView> =>
   request<MatchView>(`/api/match/${encodeURIComponent(matchId)}`, undefined, session, "GET");
