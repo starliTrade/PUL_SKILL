@@ -312,6 +312,16 @@ const updateBenchmarkSpeed = async (speedMs: number) => {
   setUserData({ ...data });
 };
 
+/**
+ * Test seam: the current snapshot without rendering React.
+ *
+ * The store's state is otherwise reachable only through the hook, which makes
+ * the account-switch race (audit H14) untestable at the unit level.
+ */
+export function getStoreSnapshot(): PulsarSnapshot {
+  return snapshot;
+}
+
 export function usePulsarStore() {
   bootstrap();
 
