@@ -326,6 +326,20 @@ const updateBenchmarkSpeed = async (speedMs: number) => {
  * The store's state is otherwise reachable only through the hook, which makes
  * the account-switch race (audit H14) untestable at the unit level.
  */
+/**
+ * Audit M30 — the subscription function, hoisted to module scope.
+ *
+ * `useSyncExternalStore` compares `subscribe` by IDENTITY. An inline arrow is a
+ * new function every render, so React tore the subscription down and rebuilt it
+ * on every re-render — a subscribe/unsubscribe storm on a page that re-renders
+ * per animation frame, with a window to miss a store change at every teardown.
+ */
+const subscribeToStore = (onChange: () => void): (() => void) =>
+  realWeb3Manager.subscribe(onChange);
+
+/** The snapshot is a module-level value, so this is stable too. */
+const getSnapshot = (): PulsarSnapshot => snapshot;
+
 export function getStoreSnapshot(): PulsarSnapshot {
   return snapshot;
 }
@@ -333,11 +347,7 @@ export function getStoreSnapshot(): PulsarSnapshot {
 export function usePulsarStore() {
   bootstrap();
 
-  const state = useSyncExternalStore(
-    (onChange) => realWeb3Manager.subscribe(onChange),
-    () => snapshot,
-    () => snapshot
-  );
+  const state = useSyncExternalStore(subscribeToStore, getSnapshot, getSnapshot);
 
   const currentUsdtBalance =
     state.account.balanceUSDT !== undefined && !isNaN(state.account.balanceUSDT)

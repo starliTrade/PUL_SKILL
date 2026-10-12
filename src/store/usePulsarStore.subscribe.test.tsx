@@ -10,14 +10,14 @@
  * subscribe/unsubscribe storm, and every teardown is a window in which a store
  * change can be missed.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react';
 import React, { useState } from 'react';
 
 // `vi.mock` is hoisted above ordinary declarations, so the values the factory
 // closes over must be hoisted with it.
 const { subscribeSpy, account } = vi.hoisted(() => ({
-  subscribeSpy: vi.fn(() => () => undefined),
+  subscribeSpy: vi.fn((_listener: () => void) => () => undefined),
   account: {
     address: '',
     shortAddress: '',
@@ -60,6 +60,10 @@ function Probe() {
 describe('store subscription identity (audit M30)', () => {
   beforeEach(() => {
     subscribeSpy.mockClear();
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   it('re-rendering does not resubscribe', async () => {
@@ -105,5 +109,3 @@ describe('store subscription identity (audit M30)', () => {
     expect(subscribeSpy.mock.calls.length).toBe(callsAtMount);
   });
 });
-
-void cleanup;
