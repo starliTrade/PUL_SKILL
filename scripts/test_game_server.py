@@ -259,6 +259,11 @@ _parity_record = {
     "validatedTimes": {"a": [234], "b": [301]},
     "deadline": 1_900_000_000,
 }
+# Audit M7: the oracle refuses an unstamped record. The parity record is built
+# by hand to pin the digest, so it must carry the engine's stamp like a real one.
+import match_engine as _engine  # noqa: E402
+
+_engine.stamp_settlement(_parity_record)
 _parity_nonce = 123456789
 
 packed_independent = b"".join(

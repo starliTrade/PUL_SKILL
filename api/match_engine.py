@@ -712,6 +712,63 @@ def match_completed(match: Match) -> bool:
     return True
 
 
+# Audit M7: a MAC over the settlement's identity, so the oracle can prove a
+# record came from THIS engine rather than from a caller that built a dict with
+# the right keys. The key is the same proof secret the round proofs use, so no
+# new secret is introduced.
+def stamp_settlement(record: dict[str, Any]) -> None:
+    """Stamp a settlement record as engine-produced (audit M7)."""
+    record["engineStamp"] = _settlement_stamp(record)
+
+
+def _settlement_stamp(record: dict[str, Any]) -> str:
+    payload = "|".join(
+        [
+            str(record.get("matchId", "")),
+            str(record.get("winner", "")),
+            str(record.get("loser", "")),
+            str(record.get("winnerTimeMs", "")),
+            str(record.get("loserTimeMs", "")),
+            str(record.get("status", "")),
+        ]
+    ).encode()
+    return hmac.new(_PROOF_SECRET, payload, hashlib.sha256).hexdigest()
+
+
+def settlement_is_stamped(record: dict[str, Any]) -> bool:
+    """True when the record carries a valid engine stamp (audit M7)."""
+    supplied = record.get("engineStamp")
+    if not isinstance(supplied, str) or not supplied:
+        return False
+    return hmac.compare_digest(supplied, _settlement_stamp(record))
+
+
+def settlement_record_for_resign(match: Match) -> dict[str, Any]:
+    """Rebuild a settlement record from a SETTLED match, stamped (audit M7).
+
+    The F-12 re-sign path used to build this dict by hand and hand it to
+    `sign_settlement` — which is exactly the hole M7 closes: a caller that can
+    build a dict with the right keys got a signature over real money. The record
+    is now reconstructed from the match the ENGINE owns, and stamped, so the
+    oracle can verify its provenance.
+
+    The values come from the stored envelope (the engine's own earlier output),
+    never from the caller.
+    """
+    envelope = match.signed_settlement or {}
+    record = {
+        "status": "settled",
+        "matchId": match.match_id,
+        "winner": match.winner,
+        "loser": envelope.get("loser", ""),
+        "winnerTimeMs": int(envelope.get("winnerTimeMs", 0)),
+        "loserTimeMs": int(envelope.get("loserTimeMs", 0)),
+        "validatedTimes": envelope.get("validatedTimes", {}),
+    }
+    stamp_settlement(record)
+    return record
+
+
 def apply_settlement_ratings(store: MatchStore, result: dict[str, Any]) -> None:
     """Update both players' ratings from a settled result (audit H23).
 
@@ -860,7 +917,7 @@ def settle(match: Match) -> dict[str, Any]:
     match.winner = winner
     match.status = "settled"
     match.settled_at = timebase.now()
-    return {
+    settled = {
         "status": "settled",
         "matchId": match.match_id,
         "winner": winner,
@@ -873,3 +930,6 @@ def settle(match: Match) -> dict[str, Any]:
         "winnerTimeMs": winner_ms,
         "loserTimeMs": loser_ms,
     }
+    # Audit M7: stamp it, so the oracle can prove this came from the engine.
+    stamp_settlement(settled)
+    return settled

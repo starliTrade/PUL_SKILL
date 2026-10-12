@@ -49,6 +49,33 @@ _KMS_KEY_ENV = "ORACLE_PRIVATE_KEY"
 _DEFAULT_CHAIN_ID = int(os.environ.get("ORACLE_CHAIN_ID", "80002"))
 
 
+_signer_cache: Account | None = None
+_signer_cache_key: str | None = None
+
+
+def reset_signer_cache() -> None:
+    """Test seam: forget the cached signer."""
+    global _signer_cache, _signer_cache_key
+    _signer_cache = None
+    _signer_cache_key = None
+
+
+def load_signer() -> Account:
+    """The referee signer, loaded ONCE (audit M8).
+
+    `Account.from_key` performs an EC scalar multiplication — the expensive part
+    of signing — and this used to run on every signature. Cached per key, so a
+    key rotation is still picked up.
+    """
+    global _signer_cache, _signer_cache_key
+    key = os.environ.get(_KMS_KEY_ENV, "")
+    if _signer_cache is not None and _signer_cache_key == key:
+        return _signer_cache
+    _signer_cache = _load_signer()
+    _signer_cache_key = key
+    return _signer_cache
+
+
 def _load_signer() -> Account:
     key = os.environ.get(_KMS_KEY_ENV, "")
     if not key:
@@ -60,7 +87,7 @@ def _load_signer() -> Account:
 
 
 def oracle_address() -> str:
-    return _load_signer().address
+    return load_signer().address
 
 
 # secp256k1 group order — needed for low-s (EIP-2) normalization, which the
@@ -76,9 +103,19 @@ def _signature_to_low_s_bytes(raw: bytes) -> bytes:
     r = int.from_bytes(raw[:32], "big")
     s = int.from_bytes(raw[32:64], "big")
     v = raw[64]
+    # Audit M6: `v` was never validated. A raw recovery id (0/1) or any other
+    # byte passed straight through and reached the CONTRACT, which rejects it —
+    # so the failure surfaced as an on-chain revert AFTER a settlement was
+    # announced. Reject it here, where the caller can still do something.
+    if v not in (27, 28):
+        raise ValueError(f"invalid signature v value: {v} (expected 27 or 28)")
     if s > _SECP256K1_HALF_N:
         s = _SECP256K1_N - s
-        v ^= 0x01  # flips 27<->28 and 0<->1 alike
+        # Audit M6 (found by the test): this was `v ^= 0x01` with a comment
+        # claiming it "flips 27<->28". It does not — 27 ^ 1 is 26, which the
+        # contract rejects. The recovery id is `v - 27`, so flipping it means
+        # `v = 27 + (1 - (v - 27))` = `55 - v`.
+        v = 55 - v
     return r.to_bytes(32, "big") + s.to_bytes(32, "big") + bytes([v])
 
 
@@ -183,6 +220,17 @@ def sign_settlement(
     env-configured deployment chain (used by tests); production callers omit
     it so the signer and the deployed escrow always share ORACLE_CHAIN_ID.
     """
+    # Audit M7: the shape checks below prove the record LOOKS like engine
+    # output. They cannot prove it IS — any caller that can build a dict with
+    # these keys got a signature over real money. The engine stamps its records
+    # and the stamp is a MAC, so it cannot be forged by a caller.
+    import match_engine as _engine
+
+    if not _engine.settlement_is_stamped(record):
+        raise ValueError(
+            "Refusing to sign: record carries no valid engine stamp "
+            "(only match_engine.settle() output may be signed)"
+        )
     if record.get("status") != "settled":
         raise ValueError("Refusing to sign: settlement status is not 'settled'")
     if not record.get("winner"):
@@ -224,7 +272,7 @@ def sign_settlement(
         server_nonce,
         chain_id=_DEFAULT_CHAIN_ID if chain_id is None else int(chain_id),
     )
-    signed = _sign_hash_bytes(_load_signer(), digest)
+    signed = _sign_hash_bytes(load_signer(), digest)
     raw_sig = bytes(signed.signature) if not isinstance(signed.signature, bytes) else signed.signature
     low_s = _signature_to_low_s_bytes(raw_sig)
     signature = "0x" + low_s.hex()

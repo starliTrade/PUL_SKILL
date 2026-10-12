@@ -19,6 +19,7 @@ import time
 import pytest
 from eth_account import Account
 
+import match_engine as engine
 import onchain
 import oracle
 from tests.fixtures.chain import ChainUnavailable, LocalChain, match_id_bytes
@@ -144,6 +145,9 @@ def test_settlement_with_a_real_oracle_signature_pays_the_winner(
         "loserTimeMs": 310,
         "validatedTimes": {p1["address"].lower(): [220.0], p2["address"].lower(): [310.0]},
     }
+    # Audit M7: the oracle refuses an unstamped record, so a hand-built one must
+    # carry the engine's stamp — exactly as a real settlement does.
+    engine.stamp_settlement(record)
     envelope = oracle.sign_settlement(record, chain_id=chain.chain_id)
     assert envelope["oracleAddress"].lower() == chain.oracle.lower()
 
@@ -189,6 +193,7 @@ def test_settlement_from_a_foreign_signer_reverts(chain: LocalChain, funded, mon
         "loserTimeMs": 300,
         "validatedTimes": {p1["address"].lower(): [200.0], p2["address"].lower(): [300.0]},
     }
+    engine.stamp_settlement(record)
     envelope = oracle.sign_settlement(record, chain_id=chain.chain_id)
 
     with pytest.raises(RuntimeError, match="reverted"):

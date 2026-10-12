@@ -1232,15 +1232,11 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
         # signature can pay (sign_settlement raises and the stale envelope
         # is returned; the refund path is the only money exit left).
         try:
+            # Audit M7: the record is rebuilt by the ENGINE from the match it
+            # owns and stamped, rather than hand-built here — a caller that can
+            # build a dict with the right keys must not get a signature.
             fresh = sign_settlement(
-                {
-                    "status": "settled",
-                    "matchId": m.match_id,
-                    "winner": m.winner,
-                    "winnerTimeMs": int(envelope.get("winnerTimeMs", 0)),
-                    "loserTimeMs": int(envelope.get("loserTimeMs", 0)),
-                    "validatedTimes": envelope.get("validatedTimes", {}),
-                },
+                engine.settlement_record_for_resign(m),
                 matchish=m,
             )
         except Exception:

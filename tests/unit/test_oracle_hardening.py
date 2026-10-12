@@ -21,15 +21,15 @@ settlement path this is pure waste.
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "api"))
 
-import oracle  # noqa: E402
 from eth_account import Account  # noqa: E402
+
+import oracle  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
