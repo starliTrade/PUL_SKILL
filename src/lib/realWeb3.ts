@@ -1360,10 +1360,16 @@ class RealWeb3Manager {
   public async saveUserDataAsync(data: UserWalletData): Promise<void> {
     if (!data.address) return;
     this.saveToLocal(data);
-    if (this.currentAccount.address === data.address) {
-      this.currentAccount.balanceUSDT = data.vaultBalance;
-      this.notify();
-    }
+    // Audit H12: do NOT write `balanceUSDT` from the profile record.
+    //
+    // `vaultBalance` is a deprecated field: it is 0.0 on every fresh profile and
+    // nothing updates it (P1.16 removed the vault). Assigning it here turned a
+    // real on-chain balance — say $25.00 with `balanceUnknown === false` — into
+    // a stated $0.00 after any recordMatch or updatePlayerTag, and tripped the
+    // insufficient-balance gate in the lobby and the game.
+    //
+    // The chain is the only source of truth for the balance; `balanceUnknown`
+    // says whether it has been read yet. `fetchLiveOnChainBalances` owns both.
     await this.syncToFirestore(data);
   }
 
