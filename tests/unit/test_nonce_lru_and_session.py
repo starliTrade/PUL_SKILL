@@ -21,12 +21,11 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "api"))
 
-import auth  # noqa: E402
 import timebase  # noqa: E402
+
+import auth  # noqa: E402
 
 
 # --- M5: a malformed payload is rejected, not fatal ---------------------------
@@ -90,6 +89,7 @@ def test_eviction_does_not_scan_the_whole_order(monkeypatch):
 
     monkeypatch.setattr(auth, "_used_nonces", set())
     monkeypatch.setattr(auth, "_used_nonces_order", _CountingList())
+    monkeypatch.setattr(auth, "_used_nonce_counts", {})
 
     # Fill well past the cap so eviction runs many times.
     for i in range(cap + 200):
@@ -106,6 +106,7 @@ def test_the_cache_still_bounds_itself(monkeypatch):
     """The fix must not remove the bound."""
     monkeypatch.setattr(auth, "_used_nonces", set())
     monkeypatch.setattr(auth, "_used_nonces_order", [])
+    monkeypatch.setattr(auth, "_used_nonce_counts", {})
 
     cap = auth._USED_NONCE_MAX
     for i in range(cap + 500):
@@ -119,6 +120,7 @@ def test_a_recent_nonce_is_not_evicted(monkeypatch):
     """Eviction must drop the OLDEST, not an arbitrary entry."""
     monkeypatch.setattr(auth, "_used_nonces", set())
     monkeypatch.setattr(auth, "_used_nonces_order", [])
+    monkeypatch.setattr(auth, "_used_nonce_counts", {})
 
     cap = auth._USED_NONCE_MAX
     auth._remember_used("the-newest")

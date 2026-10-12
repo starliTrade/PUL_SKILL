@@ -53,6 +53,9 @@ EXPECTED_CHAIN_ID = int(os.environ.get("ORACLE_CHAIN_ID", "80002"))
 # Audit-#3 fix: nonce single-use replay protection. Each nonce burns exactly
 # once, on first successful verification.
 _used_nonces: set[str] = set()
+# Audit M4: how many times each nonce appears in _used_nonces_order, so eviction
+# is O(1) instead of scanning the order list.
+_used_nonce_counts: dict[str, int] = {}
 _used_nonces_order: list[str] = []
 _USED_NONCE_MAX = 4096  # memory-mode fallback cap ONLY (see F-02 comment)
 
@@ -278,13 +281,25 @@ def _is_already_exists(exc: BaseException) -> bool:
 
 
 def _remember_used(nonce: str) -> None:
+    """Remember a burned nonce, evicting the oldest past the cap.
+
+    Audit M4: eviction used `any(n == evicted for n in _used_nonces_order)` — an
+    O(n) scan of the whole order list on EVERY eviction, on the authentication
+    path. Past the cap that is ~4096 comparisons per verification. A count map
+    makes it O(1).
+    """
     if nonce in _used_nonces:
         return
     _used_nonces.add(nonce)
     _used_nonces_order.append(nonce)
+    _used_nonce_counts[nonce] = _used_nonce_counts.get(nonce, 0) + 1
     while len(_used_nonces_order) > _USED_NONCE_MAX:
         evicted = _used_nonces_order.pop(0)
-        if not any(n == evicted for n in _used_nonces_order):
+        remaining = _used_nonce_counts.get(evicted, 0) - 1
+        if remaining > 0:
+            _used_nonce_counts[evicted] = remaining
+        else:
+            _used_nonce_counts.pop(evicted, None)
             _used_nonces.discard(evicted)
 
 
@@ -470,9 +485,20 @@ def verify_session(token: str) -> str | None:
         payload = json.loads(_from_b64url(body))
     except (ValueError, json.JSONDecodeError):
         return None
-    if int(payload.get("e", 0)) < timebase.now():
+    if not isinstance(payload, dict):
+        return None
+    # Audit M5: the payload's TYPES were trusted. `int(payload["e"])` on a
+    # string, null or list raises OUTSIDE this try, so a malformed token became
+    # a 500 — a crash on the authentication path is also a denial of service.
+    expiry = payload.get("e")
+    if not isinstance(expiry, int) or isinstance(expiry, bool):
+        return None
+    if expiry < timebase.now():
+        return None
+    address = payload.get("a")
+    if not isinstance(address, str) or not address:
         return None
     # Audit #8 F-06: revoked (logged-out / compromised) sessions are dead.
     if _jti_is_revoked(str(payload.get("j", ""))):
         return None
-    return str(payload.get("a")) or None
+    return address.lower()
