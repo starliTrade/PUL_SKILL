@@ -130,3 +130,51 @@ def test_replay_of_the_same_settlement_is_a_no_op(ledger, fs_db):
     user = fs_db.collection("users").document(winner).get().to_dict() or {}
     assert int(user.get("wins", 0)) == 1
     assert int(user.get("totalMatches", 0)) == 1
+
+
+def test_settlement_id_helper_matches_production(ledger, fs_db):
+    """H5 — the test helper must produce the SAME id the ledger actually wrote.
+
+    `settlement_id_for` hard-coded an empty fifth component while
+    `record_settlement` hashed the real validated times, so any test that used
+    the helper to assert idempotency passed no matter what production did — a
+    test that could not fail. This compares the helper against the id that
+    actually landed in Firestore.
+    """
+    import economy
+
+    match_id, winner, loser = _fresh_ids("h5")
+    match = FakeMatch(match_id, winner, loser)
+    ledger.record_settlement(match)
+
+    doc = fs_db.collection("matches").document(match_id).get().to_dict() or {}
+    written = doc.get("settlementId")
+    assert written, "record_settlement wrote no settlementId"
+
+    validated_times = {
+        winner: [float(t) for t in match.signed_settlement["validatedTimes"][winner]],
+        loser: [float(t) for t in match.signed_settlement["validatedTimes"][loser]],
+    }
+    expected = economy.settlement_id_for(
+        match_id, winner, match.stake, match.settled_at, validated_times
+    )
+    assert written == expected, (
+        "settlement_id_for does not reproduce the production id — a test using "
+        "it to prove idempotency would pass regardless of what the ledger did "
+        "(audit H5)"
+    )
+
+
+def test_settlement_id_is_stable_for_the_same_facts(ledger, fs_db):
+    """The same settled facts must always hash to the same id."""
+    import economy
+
+    times = {"0x" + "aa" * 20: [220.0], "0x" + "bb" * 20: [310.0]}
+    first = economy.settlement_id_for("m1", "0x" + "aa" * 20, 1.0, 1_700_000_000, times)
+    second = economy.settlement_id_for("m1", "0x" + "aa" * 20, 1.0, 1_700_000_000, times)
+    assert first == second
+
+    # Different facts must produce a different id — otherwise the gate would
+    # suppress a genuinely different settlement.
+    other = economy.settlement_id_for("m1", "0x" + "aa" * 20, 1.0, 1_700_000_000, {"x": [1.0]})
+    assert other != first
