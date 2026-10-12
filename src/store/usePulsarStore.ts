@@ -55,10 +55,18 @@ function commit() {
 
 function reloadUserDataIfStale() {
   if (account.connected && account.address && account.address !== lastLoadedAddress) {
-    lastLoadedAddress = account.address;
+    // Audit H14: capture WHICH account this load belongs to. `lastLoadedAddress`
+    // is set before the request resolves, so without this a slow response for a
+    // previous account lands after a switch and renders one person's wins/XP/
+    // history under another person's wallet.
+    const requested = account.address;
+    lastLoadedAddress = requested;
     realWeb3Manager
-      .loadUserDataAsync(account.address)
+      .loadUserDataAsync(requested)
       .then((data) => {
+        // Drop a response that belongs to an account we have since left, or to
+        // a wallet that has been disconnected.
+        if (!account.connected || account.address !== requested) return;
         userData = data;
         commit();
       })
