@@ -17,9 +17,9 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
-import time
 from typing import Any
 
+import timebase
 from eth_account import Account
 
 # EIP-191 personal-message prefix the contract applies before ecrecover.
@@ -195,7 +195,7 @@ def sign_settlement(
         )
 
     server_nonce = secrets.randbelow(2**48)
-    deadline = int(time.time()) + SETTLEMENT_DEADLINE_SECONDS
+    deadline = int(timebase.now()) + SETTLEMENT_DEADLINE_SECONDS
     # Audit #10 (item 5): clamp to the on-chain refund horizon when the caller
     # can identify the match (activated_at + contract MATCH_TIMEOUT). Without
     # the clamp, a re-sign issued near minute 30 would mint a proof valid past
@@ -207,7 +207,7 @@ def sign_settlement(
             deadline = min(deadline, _me.settlement_deadline(matchish))
         except Exception:  # clamping must never block settlement
             pass
-    if deadline <= int(time.time()):
+    if deadline <= int(timebase.now()):
         raise ValueError(
             "Refusing to sign: the on-chain MATCH_TIMEOUT has elapsed — "
             "this duel can only refund via refundTimeoutMatch."

@@ -2,10 +2,10 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  نسخه:        1.1-LOCKED  (H24 اضافه شد)                                                 ║
+║  نسخه:        1.2-LOCKED                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     37a4b57034617252…9dae93e2d71318ef                                                   ║
+║  SHA-256:     d4d20aa6574a838e…40771d9e853b2958                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -79,9 +79,10 @@
   مهاجرت ۶ اسکریپت `scripts/test_*.py` و `probe_*.py`؛ اسکریپت‌های فعلی wrapper نازک بمانند
   پذیرش: `pytest` ≥۹۰ تست سبز (≥ تعداد `check()`های فعلی)
 - [x] **0.4** `api/requirements-dev.txt` + `ruff.toml` — pytest, pytest-cov, pytest-asyncio, hypothesis, time-machine, respx, ruff, mypy, httpx
-- [ ] **0.5** ⚠️ **تزریق ساعت (Clock injection)** در `api/match_engine.py` — `def now()` + جایگزینی ۱۲ فراخوانی `time.time()`
-  پذیرش: هیچ `time.time()` مستقیمی در موتور نماند؛ تست‌ها بدون دست‌کاری state زمان را جلو ببرند
-- [ ] **0.6** Fixture رسمی `tests/fixtures/fake_rpc.py` — پاسخ به `eth_chainId`/`eth_call`/`eth_getTransactionReceipt`، قابل‌تنظیم برای timeout/error/payload خراب
+- [x] **0.5** ⚠️ **تزریق ساعت (Clock injection)** — `api/timebase.py` (`now()`/`now_ms()`) + مسیردهی **۳۳ خواندن ساعت در ۷ ماژول** (match_engine, store, main, auth, onchain, oracle, economy)
+  پذیرش: ✅ هیچ `time.time()` مستقیمی بیرون از seam نماند (تست `test_no_module_reads_the_clock_directly` آن را تضمین می‌کند)؛ `clock` fixture زمان را برای کل سرور جلو می‌برد
+- [x] **0.6** Fixture رسمی `tests/fixtures/fake_rpc.py` — پاسخ به `eth_chainId`/`eth_call`(paymentToken/decimals/matches)/`eth_getTransactionReceipt`؛ تزریق خطا: `fail_next(n)` و `break_call(selector)`
+  پذیرش: ✅ `tests/unit/test_onchain_gate.py` — ۸ تست سبز که gate واقعی را با fake RPC می‌رانند + ۲ baseline قرمز C2
 - [~] **0.7** Firestore Emulator در CI — `scripts/start_emulator.sh` + fixture `firestore_emulator`
   پذیرش: تست Firestore در CI **اجرا** شود (نه skip) و C1 را بازتولید کند
 - [ ] **0.8** Anvil + escrow در CI — `tests/fixtures/chain.py`, `scripts/start_anvil.sh`
@@ -540,3 +541,4 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 |---|---|---|---|
 | 1.0-LOCKED | 2026-10-12 | نسخه‌ی اول، قفل‌شده | ⬜ |
 | 1.1-LOCKED | 2026-10-12 | **H24 اضافه شد** (کشف‌شده در فاز ۰: رها کردن مسابقه آپشن رایگان است). دامنه ۱۰۸ → ۱۰۹ یافته. آیتم‌های 0.1/0.2/0.4 تیک خوردند. | ⬜ |
+| 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |

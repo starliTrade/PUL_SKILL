@@ -31,11 +31,11 @@ import hmac
 import json
 import os
 import secrets
-import time
 from dataclasses import dataclass
 from datetime import UTC
 from typing import Any
 
+import timebase
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
@@ -104,7 +104,7 @@ def issue_nonce(address: str, domain: str) -> str:
     The random component keeps successive issuances unique so single-use
     enforcement can never self-DoS a legitimate re-authentication.
     """
-    window = int(time.time() // NONCE_WINDOW_SECONDS)
+    window = int(timebase.now() // NONCE_WINDOW_SECONDS)
     body = f"{domain.lower()}|{address.lower()}|{window}|{secrets.token_hex(8)}"
     payload = _b64url_hex(body.encode("utf-8"))
     return f"{payload}.{_hmac_hex(payload)}"
@@ -142,7 +142,7 @@ def _fresh_window(window: int | None) -> bool:
     shrinks from up to 10 minutes to exactly the issuance window."""
     if window is None:
         return False
-    return window == int(time.time() // NONCE_WINDOW_SECONDS)
+    return window == int(timebase.now() // NONCE_WINDOW_SECONDS)
 
 
 def nonce_is_fresh(nonce: str) -> bool:
@@ -194,8 +194,8 @@ def _burn_nonce(nonce: str) -> bool:
             )
             doc.create(
                 {
-                    "burnedAt": int(time.time()),
-                    "expiresAt": int(time.time()) + 2 * NONCE_WINDOW_SECONDS,
+                    "burnedAt": int(timebase.now()),
+                    "expiresAt": int(timebase.now()) + 2 * NONCE_WINDOW_SECONDS,
                 }
             )
         except Exception:
@@ -232,7 +232,7 @@ def revoke_session(jti: str) -> None:
         try:
             db.collection("auth_revocations").document(
                 hashlib.sha256(jti.encode("utf-8")).hexdigest()
-            ).create({"revokedAt": int(time.time())})
+            ).create({"revokedAt": int(timebase.now())})
         except Exception:
             pass  # already revoked
         return
@@ -356,7 +356,7 @@ def verify_siwe(message: str, signature: str, expected_domain: str) -> str | Non
 
 def issue_session(address: str) -> str:
     # Audit #8 F-06: every session carries a unique jti so it can be revoked.
-    exp = int(time.time()) + SESSION_TTL_SECONDS
+    exp = int(timebase.now()) + SESSION_TTL_SECONDS
     payload = json.dumps(
         {"a": address.lower(), "e": exp, "j": secrets.token_hex(16)},
         separators=(",", ":"),
@@ -376,7 +376,7 @@ def verify_session(token: str) -> str | None:
         payload = json.loads(_from_b64url(body))
     except (ValueError, json.JSONDecodeError):
         return None
-    if int(payload.get("e", 0)) < time.time():
+    if int(payload.get("e", 0)) < timebase.now():
         return None
     # Audit #8 F-06: revoked (logged-out / compromised) sessions are dead.
     if _jti_is_revoked(str(payload.get("j", ""))):

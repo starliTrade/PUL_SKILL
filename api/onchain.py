@@ -21,9 +21,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import time
 import urllib.request
 from typing import Any
+
+import timebase
 
 # DuelMatch.status (contracts/PulsarEscrow.sol): None=0 Created=1 Active=2
 # Settled=3 Cancelled=4 Refunded=5. Both stakes are locked exactly when the
@@ -203,7 +204,7 @@ def _chain_ok() -> bool:
     global _chain_id_checked, _chain_id_mismatch, _chain_mismatch_until
     if not escrow_configured():
         return False
-    now = time.time()
+    now = timebase.now()
     if _chain_id_mismatch and now < _chain_mismatch_until:
         return False
     if _chain_id_mismatch and now >= _chain_mismatch_until:
@@ -240,7 +241,7 @@ def duel_info(match_id: str, *, use_cache: bool = True) -> dict[str, Any] | None
         return None
     if use_cache:
         cached = _cache.get(key)
-        if cached and time.time() < cached[1]:
+        if cached and timebase.now() < cached[1]:
             info = cached[2] if len(cached) > 2 else None
             return info
     try:
@@ -252,7 +253,7 @@ def duel_info(match_id: str, *, use_cache: bool = True) -> dict[str, Any] | None
         status = info.get("status") if info else None
         verified = status == STATUS_ACTIVE
         ttl = _POSITIVE_TTL if verified else _NEGATIVE_TTL
-        _cache[key] = (status, time.time() + ttl, info)
+        _cache[key] = (status, timebase.now() + ttl, info)
     return info
 
 

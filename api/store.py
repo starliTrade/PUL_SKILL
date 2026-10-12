@@ -23,9 +23,10 @@ import copy
 import os
 import secrets
 import threading
-import time
 from collections.abc import Callable
 from typing import Any
+
+import timebase
 
 import match_engine as _default_engine  # engine fns for transactional mutations
 from match_engine import (
@@ -172,12 +173,12 @@ class InMemoryStore:
                     bucket.remove(other)
                     continue
                 # Found an opponent: activate the match.
-                m.players[addr] = {"address": addr, "joinedAt": time.time()}
+                m.players[addr] = {"address": addr, "joinedAt": timebase.now()}
                 m.status = "active"
                 m.joiner = addr
                 # Audit #8 F-05: the PLAY clock starts when the joiner pairs,
                 # not when the creator queued.
-                m.activated_at = time.time()
+                m.activated_at = timebase.now()
                 bucket.remove(other)
                 self.player_match[addr] = m.match_id
                 return m
@@ -185,8 +186,8 @@ class InMemoryStore:
             m = Match(
                 match_id=match_id,
                 stake=stake,
-                created_at=time.time(),
-                players={addr: {"address": addr, "joinedAt": time.time()}},
+                created_at=timebase.now(),
+                players={addr: {"address": addr, "joinedAt": timebase.now()}},
                 creator=addr,
             )
             self.matches[match_id] = m
@@ -217,7 +218,7 @@ class InMemoryStore:
             return out
 
     def sweep_expired(self) -> None:
-        now = time.time()
+        now = timebase.now()
         for mid in list(self.matches):
             m = self.matches[mid]
             if m.status == "waiting" and now - m.created_at > QUEUE_EXPIRY_SECONDS:
@@ -285,12 +286,12 @@ class FirestoreStore:
                 if msnap.exists:
                     m = _match_from_doc(msnap.to_dict())
                     if m.status == "waiting" and addr not in m.players:
-                        m.players[addr] = {"address": addr, "joinedAt": time.time()}
+                        m.players[addr] = {"address": addr, "joinedAt": timebase.now()}
                         m.status = "active"
                         m.joiner = addr
                         # Audit #8 F-05: activation instant — the play/grace
                         # clock starts at pairing, not queue entry.
-                        m.activated_at = time.time()
+                        m.activated_at = timebase.now()
                         transaction.set(mref, _match_to_doc(m))
                         transaction.set(queue_ref, {"waitingMatchId": None})
                         return m
@@ -305,8 +306,8 @@ class FirestoreStore:
             m = Match(
                 match_id=match_id,
                 stake=stake,
-                created_at=time.time(),
-                players={addr: {"address": addr, "joinedAt": time.time()}},
+                created_at=timebase.now(),
+                players={addr: {"address": addr, "joinedAt": timebase.now()}},
                 creator=addr,
             )
             transaction.set(self._match_ref(match_id), _match_to_doc(m))
@@ -371,7 +372,7 @@ class FirestoreStore:
         disagreed. Now ACTIVE matches past MATCH_EXPIRY (counted from
         ACTIVATION, audit #8 F-05) are voided here as well, keeping both
         stores consistent. Settled matches are never touched."""
-        now = time.time()
+        now = timebase.now()
         queue_docs = self.db.collection(QUEUE_DOC).stream()
         seen_match_ids: set[str] = set()
         for qd in queue_docs:
@@ -440,7 +441,7 @@ class FirestoreStore:
         Ordered by settled_at ascending (oldest first) so the freshest
         settlements always make the cut. Best-effort: a missing composite
         index or a transient error returns what was scanned so far."""
-        now = time.time()
+        now = timebase.now()
         found: list[Match] = []
         try:
             docs = (

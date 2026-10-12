@@ -26,9 +26,9 @@ from __future__ import annotations
 import os
 import sys
 import threading
-import time
 from typing import Any
 
+import timebase
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -134,7 +134,7 @@ def _rl_check(bucket: str, address: str, limit: int) -> None:
     if fs is not None:  # audit #7 R3: decoupled from onchain.escrow_configured()
         try:
             doc = fs.db.collection("rate_limits").document(f"rl:{bucket}:{address.lower()}")
-            now_ms = int(time.time() * 1000)
+            now_ms = int(timebase.now_ms())
             window_ms = int(RL_WINDOW_SECONDS * 1000)
 
             def _incr(txn: Any) -> dict[str, int]:
@@ -163,7 +163,7 @@ def _rl_check(bucket: str, address: str, limit: int) -> None:
             pass  # Firestore hiccup → fall through to in-process limiting
     with _rl_lock:
         key = f"{bucket}:{address.lower()}"
-        now = time.time()
+        now = timebase.now()
         hits = [t for t in _rl_window.get(key, []) if now - t < RL_WINDOW_SECONDS]
         hits.append(now)
         _rl_window[key] = hits
@@ -226,7 +226,7 @@ def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
         # joiner paired), not from queue entry — a long-queued match must not
         # be voided the moment it finally pairs.
         clock_origin = m.play_started_at()
-        if time.time() - clock_origin > DEPOSIT_TIMEOUT_SECONDS:
+        if timebase.now() - clock_origin > DEPOSIT_TIMEOUT_SECONDS:
             m.status = "void"
             # H4 — honest money-UX: the contract only releases refunds at
             # createdAt + MATCH_TIMEOUT (30 min). Saying "refundable now" sends
@@ -682,7 +682,7 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
     if m.status == "settled" and m.signed_settlement:
         envelope = dict(m.signed_settlement)
         deadline = int(envelope.get("deadline", 0) or 0)
-        if deadline and time.time() < deadline:
+        if deadline and timebase.now() < deadline:
             return envelope  # still spendable — replay as-is
         # F-12 re-sign: result unchanged, fresh deadline + nonce.
         # Audit #10 (item 5): the re-sign is clamped to activation + contract
@@ -765,9 +765,9 @@ def _resign_stale_settlements() -> None:
             if m.status != "settled" or not m.signed_settlement:
                 continue
             deadline = int(m.signed_settlement.get("deadline", 0) or 0)
-            if not deadline or time.time() < deadline:
+            if not deadline or timebase.now() < deadline:
                 continue  # still spendable / never signed
-            if time.time() >= engine.settlement_deadline(m):
+            if timebase.now() >= engine.settlement_deadline(m):
                 continue  # past the on-chain horizon — only refund applies
             try:
                 store.update(mid, _settle_once)
@@ -775,7 +775,7 @@ def _resign_stale_settlements() -> None:
                 pass
         for m in store.sweep_stale_settlements():
             deadline = int((m.signed_settlement or {}).get("deadline", 0) or 0)
-            if deadline and time.time() >= engine.settlement_deadline(m):
+            if deadline and timebase.now() >= engine.settlement_deadline(m):
                 continue  # past the on-chain horizon — only refund applies
             try:
                 store.update(m.match_id, _settle_once)

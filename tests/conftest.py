@@ -99,29 +99,35 @@ def play_round():
 
 @pytest.fixture
 def clock(monkeypatch):
-    """Advance the engine's clock without touching match state.
+    """Move the whole server's clock forward without touching match state.
 
-    Plan item 0.5 replaces the engine's direct `time.time()` calls with a single
-    `match_engine.now()` seam. Until that lands, this fixture patches the module
-    attribute `time` inside match_engine so tests can move time forward honestly
-    instead of rewinding `revealed_at`.
+    Plan item 0.5: every wall-clock read in `api/` goes through `timebase.now`
+    (and `timebase.now_ms`), so patching those two functions moves time for the
+    engine, the store, the oracle, the deposit-gate cache and the rate limiter
+    at once. Tests therefore exercise the real timing gates instead of rewinding
+    `Round.revealed_at`, which used to mask wrong-origin bugs.
     """
+    import timebase
 
     class _Clock:
-        def __init__(self):
+        def __init__(self) -> None:
             self.offset = 0.0
 
         def advance(self, seconds: float) -> None:
+            """Move the clock forward by `seconds`."""
             self.offset += seconds
 
+        def rewind(self, seconds: float) -> None:
+            """Move the clock backward (rare; for boundary tests)."""
+            self.offset -= seconds
+
+        @property
+        def value(self) -> float:
+            return _real_now() + self.offset
+
     c = _Clock()
+    _real_now = timebase.now
 
-    real_time = engine.time
-
-    class _Shifted:
-        @staticmethod
-        def time():
-            return real_time.time() + c.offset
-
-    monkeypatch.setattr(engine, "time", _Shifted)
+    monkeypatch.setattr(timebase, "now", lambda: _real_now() + c.offset)
+    monkeypatch.setattr(timebase, "now_ms", lambda: int((_real_now() + c.offset) * 1000))
     return c

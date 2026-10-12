@@ -35,9 +35,10 @@ import hashlib
 import hmac
 import os
 import secrets
-import time
 from dataclasses import dataclass, field
 from typing import Any
+
+import timebase
 
 ROUNDS = 3
 MIN_HUMAN_MS = 105.0           # below this is not humanly plausible — MUST match
@@ -280,7 +281,7 @@ class MatchStore:
                 bucket.remove(other)
                 continue
             # Found an opponent: activate the match.
-            m.players[addr] = {"address": addr, "joinedAt": time.time()}
+            m.players[addr] = {"address": addr, "joinedAt": timebase.now()}
             m.status = "active"
             m.joiner = addr
             bucket.remove(other)
@@ -291,8 +292,8 @@ class MatchStore:
         m = Match(
             match_id=match_id,
             stake=stake,
-            created_at=time.time(),
-            players={addr: {"address": addr, "joinedAt": time.time()}},
+            created_at=timebase.now(),
+            players={addr: {"address": addr, "joinedAt": timebase.now()}},
             creator=addr,
         )
         self.matches[match_id] = m
@@ -307,7 +308,7 @@ class MatchStore:
         return m
 
     def sweep_expired(self) -> None:
-        now = time.time()
+        now = timebase.now()
         for mid in list(self.matches):
             m = self.matches[mid]
             if m.status in ("waiting", "active") and now - m.created_at > MATCH_EXPIRY_SECONDS:
@@ -333,7 +334,7 @@ def commit_intent(match: Match, address: str, round_index: int, intent_hash: str
         raise MatchError("Invalid round")
     rounds = match.rounds.setdefault(address.lower(), {})
     r = rounds.get(round_index) or Round(index=round_index)
-    now = time.time()
+    now = timebase.now()
     if r.commit_hash and now - r.commit_at < COMMIT_WINDOW_SECONDS:
         if r.commit_hash != intent_hash.lower():
             raise MatchError("Round already committed")
@@ -356,7 +357,7 @@ def reveal_target(match: Match, address: str, round_index: int) -> dict[str, Any
     r = rounds.get(round_index)
     if r is None or not r.commit_hash:
         raise MatchError("Commit before reveal required")
-    now = time.time()
+    now = timebase.now()
     if now - r.commit_at > COMMIT_WINDOW_SECONDS:
         raise MatchError("Commit expired, re-commit the round")
     if not r.revealed:
@@ -403,7 +404,7 @@ def submit_result(
     # Audit #4: a stale round is DEAD — the player lost their chance. Without
     # this, an unplayed round survives all the way to the grace-window settle
     # and converts an opponent who simply stepped away into a forfeit loser.
-    if r.revealed_at and time.time() - r.revealed_at > ROUND_EXPIRY_SECONDS:
+    if r.revealed_at and timebase.now() - r.revealed_at > ROUND_EXPIRY_SECONDS:
         raise MatchError(
             f"Round expired — results must be submitted within "
             f"{ROUND_EXPIRY_SECONDS}s of the target appearing"
@@ -412,7 +413,7 @@ def submit_result(
     # stored when it carries the proof bound to this player's commit+reveal.
     if not result_proof or not hmac.compare_digest(result_proof, r.result_proof):
         raise MatchError("Invalid result proof for this round")
-    now = time.time()
+    now = timebase.now()
     reason = _validate_plausibility(match, r, measured_ms, now)
     r.result_ms = measured_ms
     r.submitted_at = now
@@ -554,7 +555,7 @@ def match_completed(match: Match) -> bool:
             # moment the joiner paired), not from queue entry — a match that
             # waited 9 minutes in a slow queue must not be instantly voided
             # (or instantly forfeitable) at its first round.
-            if time.time() - match.play_started_at() <= MATCH_SETTLE_GRACE_SECONDS:
+            if timebase.now() - match.play_started_at() <= MATCH_SETTLE_GRACE_SECONDS:
                 return False
     return True
 
@@ -638,7 +639,7 @@ def settle(match: Match) -> dict[str, Any]:
     loser_ms = int(round(min(loser_times)))
     match.winner = winner
     match.status = "settled"
-    match.settled_at = time.time()
+    match.settled_at = timebase.now()
     return {
         "status": "settled",
         "matchId": match.match_id,

@@ -32,8 +32,9 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
-import time
 from typing import Any
+
+import timebase
 
 
 def _fs_db() -> Any:
@@ -70,7 +71,7 @@ def _log_ledger_error(where: str, exc: BaseException) -> None:
         _LEDGER_FAILURES[where] = _LEDGER_FAILURES.get(where, 0) + 1
         _LEDGER_FAILURES["total"] += 1
         _LEDGER_LAST_ERROR.clear()
-        _LEDGER_LAST_ERROR.update({"where": where, "error": repr(exc)[:200], "at": int(time.time())})
+        _LEDGER_LAST_ERROR.update({"where": where, "error": repr(exc)[:200], "at": int(timebase.now())})
     except Exception:
         pass
     print(f"[economy] ledger write failed in {where}: {exc!r}", file=sys.stderr)
@@ -124,7 +125,7 @@ def record_claim(match_id: str, claimer: str, tx_hash: str, signature: str) -> b
             {
                 "settlementTxHash": tx_hash,
                 "claimedBy": claimer.lower(),
-                "claimedAt": int(time.time()),
+                "claimedAt": int(timebase.now()),
                 "onChain": True,
             },
             merge=True,
@@ -161,7 +162,7 @@ def record_settlement(match: Any) -> None:
         winner = (getattr(match, "winner", "") or "").lower()
         players = [a.lower() for a in (getattr(match, "players", {}) or {})]
         stake = float(getattr(match, "stake", 0.0) or 0.0)
-        settled_at = int(getattr(match, "settled_at", 0) or time.time())
+        settled_at = int(getattr(match, "settled_at", 0) or timebase.now())
         signed = getattr(match, "signed_settlement", None) or {}
         match_id = getattr(match, "match_id", "")
         # Audit #11 C1: the Match dataclass has NO `forfeit` or
