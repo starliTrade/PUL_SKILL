@@ -5,7 +5,7 @@
 ║  نسخه:        1.9-CLOSED (فاز ۱ و ۲ بسته)                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     bdc0b75d3633b5b1…8fd5b9455ff157f7                                                   ║
+║  SHA-256:     45fc028d25aa21d6…2536d5a470125cb0                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -201,14 +201,14 @@
 - [x] **H20** `joinDuel` بدون cutoff و بدون activation — `PulsarEscrow.sol:240-255`
   تغییر: `activatedAt` در join؛ لنگر refund روی `max(createdAt, activatedAt)`؛ رد join بعد از horizon
   تست: `test_JoinAtT29m59s_RefundWindowStartsAtActivation` + `test_JoinAfterHorizon_Reverts`
-- [ ] **M22** `MIN_STAKE_UNITS` اعشار ۶ را hardcode می‌کند — `PulsarEscrow.sol:146`
+- [x] **M22** `MIN_STAKE_UNITS` اعشار ۶ را hardcode می‌کند — `PulsarEscrow.sol:146`
   تغییر: خواندن `decimals()` در constructor؛ `MIN_STAKE_UNITS = 10**decimals`
   تست: `test_MinStakeFollowsTokenDecimals` (با MockUSDT ۱۸-اعشاری)
-- [ ] **M23** رویداد `MatchCreated` مقدار جعلی emit می‌کند — `PulsarEscrow.sol:237`
+- [x] **M23** رویداد `MatchCreated` مقدار جعلی emit می‌کند — `PulsarEscrow.sol:237`
   تغییر: `totalPool: 0` (هم‌خوان با storage) · تست: `test_Event_MatchCreated_TotalPoolIsZero`
-- [ ] **M24** `setTreasuryWallet`/`setOracleSigner` یک‌مرحله‌ای و بدون timelock — `PulsarEscrow.sol:337-349`
+- [x] **M24** `setTreasuryWallet`/`setOracleSigner` یک‌مرحله‌ای و بدون timelock — `PulsarEscrow.sol:337-349`
   تغییر: دو-مرحله‌ای + timelock برای oracle · تست: `test_OracleRotationRequiresTimelock` + `test_TreasuryRotationIsTwoStep`
-- [ ] **M25** `usedSignatures` دفاع مرده — `PulsarEscrow.sol:185, 290-291` · **🛑 نیاز به D3**
+- [x] **M25** `usedSignatures` دفاع مرده — `PulsarEscrow.sol:185, 290-291` · **🛑 نیاز به D3**
   یا حذف، یا اصلاح کامنت/تست تا ادعای بیش‌ازواقع نباشد
 
 ### ۳.۲ — گپ‌های تست قرارداد (۱۲ مورد)
@@ -565,6 +565,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 3.2 | 2026-10-12 | **M22/M23/M24/M25 رفع شدند.** ۴۹ تست قرارداد. **فاز ۳: ۸/۸ آیتم رفع‌شد؛ فقط ۱۴ گپ تست (CT1–CT14) مانده.** | ⬜ |
 | 3.1 | 2026-10-12 | **H19 رفع شد (D2 = الف: پنجره‌ی تسویه‌ی انحصاری، `REFUND_GRACE = 10 min`).** ۴۰ تست قرارداد. coverage ۸۱٪. | ⬜ |
 | 3.0 | 2026-10-12 | **فاز ۳ شروع شد.** H17 (deferred payout)، H18 (سقف deadline)، H20 (activatedAt + cutoff join) رفع شدند. ۳۵ تست قرارداد. coverage ۷۹٪. | ⬜ |
 | 2.5-CLOSED | 2026-10-12 | **بازبینی بستن فاز ۲:** `record_claim` همان TOCTOU را داشت (H3 در یک تابع رفع شده بود و در تابع بالایی جا مانده بود) — رفع شد. کامنت کهنه‌ی پیکربندی جایگزین شد. coverage ۷۹٪. | ⬜ |
