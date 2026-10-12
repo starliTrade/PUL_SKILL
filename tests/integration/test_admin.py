@@ -78,7 +78,7 @@ def test_a_session_token_is_not_an_admin_credential(admin_client):
 
 # --- inspect ------------------------------------------------------------------
 def test_inspect_returns_the_match_state(admin_client):
-    r = admin_client.get("/api/admin/match/does-not-exist", headers=_auth())
+    r = admin_client.get("/api/admin/match/" + "0" * 32, headers=_auth())
     assert r.status_code == 404
 
 
@@ -123,7 +123,7 @@ def test_force_settle_requires_a_reason(admin_client):
 
 def test_force_void_on_a_missing_match_is_404(admin_client):
     r = admin_client.post(
-        "/api/admin/match/does-not-exist/void",
+        "/api/admin/match/" + "0" * 32 + "/void",
         headers=_auth(),
         json={"reason": "operator test"},
     )

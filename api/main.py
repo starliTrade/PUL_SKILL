@@ -23,7 +23,9 @@ Security model:
 
 from __future__ import annotations
 
+import hmac
 import os
+import re
 import sys
 import threading
 import time
@@ -621,6 +623,145 @@ async def _record_metrics(request: Request, call_next: Any) -> Any:
     if path != "/api/metrics":
         metrics.observe_request(request.method, path, (time.perf_counter() - started) * 1000.0)
     return response
+
+
+# --- admin tooling (phase 6.3 / G9) -------------------------------------------
+#
+# Gated by a SEPARATE secret, not a session token: a session token belongs to a
+# player, and a player must never be able to void their opponent's match.
+# If the secret is UNSET the routes are DISABLED, not open — an unconfigured
+# deployment must fail closed.
+_ADMIN_SECRET = os.environ.get("PULSAR_ADMIN_SECRET", "").strip()
+
+
+class AdminActionRequest(BaseModel):
+    # An unaudited money-moving action is worse than no action: the record must
+    # say WHY, not just who.
+    reason: str = Field(min_length=3, max_length=500)
+
+
+def _admin_get_match(match_id: str) -> Any:
+    """Fetch a match for an admin route, or None.
+
+    `store.get` RAISES `MatchError("Match not found")` rather than returning
+    None, so a missing match would surface as a 500 instead of a 404.
+    """
+    try:
+        return store.get(match_id)
+    except MatchError:
+        return None
+
+
+def _require_admin(request: Request) -> None:
+    """Refuse unless the admin secret matches. Fails CLOSED when unset."""
+    if not _ADMIN_SECRET:
+        raise HTTPException(status_code=404, detail="Not found")
+    supplied = request.headers.get("X-Admin-Secret", "")
+    if not supplied or not hmac.compare_digest(supplied, _ADMIN_SECRET):
+        raise HTTPException(status_code=403, detail="Admin credential required")
+
+
+@app.get("/api/admin/match/{match_id}")
+def admin_inspect_match(match_id: str, request: Request) -> dict[str, Any]:
+    """Full match state for an operator (phase 6.3)."""
+    _require_admin(request)
+    if not re.fullmatch(r"[0-9a-f]{32}", match_id):
+        raise HTTPException(status_code=422, detail="Invalid match id")
+    m = _admin_get_match(match_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="Match not found")
+    return {
+        "matchId": m.match_id,
+        "status": m.status,
+        "stake": m.stake,
+        "players": list(m.players),
+        "creator": m.creator,
+        "joiner": m.joiner,
+        "winner": m.winner,
+        "createdAt": m.created_at,
+        "activatedAt": m.activated_at,
+        "settledAt": m.settled_at,
+        "minRttMs": dict(m.min_rtt_ms),
+        "hasSignature": m.signed_settlement is not None,
+        "rounds": {
+            addr: {
+                str(idx): {
+                    "committed": bool(r.commit_hash),
+                    "revealed": r.revealed,
+                    "submitted": r.result_ms is not None,
+                    "valid": r.valid,
+                    "rejectReason": r.reject_reason,
+                }
+                for idx, r in sorted(rounds.items())
+            }
+            for addr, rounds in m.rounds.items()
+        },
+    }
+
+
+@app.get("/api/admin/players")
+def admin_player_search(request: Request, q: str = "") -> dict[str, Any]:
+    """Find a player's matches by address (phase 6.3).
+
+    The query must be a full address: free text would be an unbounded Firestore
+    scan, which is both slow and a cost amplifier.
+    """
+    _require_admin(request)
+    if not re.fullmatch(r"0x[0-9a-fA-F]{40}", q or ""):
+        raise HTTPException(status_code=422, detail="Query must be a full 0x address")
+    addr = q.lower()
+    # The durable store exposes the idempotency map through its memory
+    # backend; there is no top-level attribute (found by the admin tests).
+    live = getattr(store, "player_match", None) or store.memory.player_match.get(addr)
+    matches = []
+    if live:
+        m = _admin_get_match(live)
+        if m is not None:
+            matches.append({"matchId": m.match_id, "status": m.status, "stake": m.stake})
+    return {"address": addr, "matches": matches}
+
+
+@app.post("/api/admin/match/{match_id}/void")
+def admin_force_void(match_id: str, body: AdminActionRequest, request: Request) -> dict[str, Any]:
+    """Void a match that cannot complete, refunding both (phase 6.3)."""
+    _require_admin(request)
+    if not re.fullmatch(r"[0-9a-f]{32}", match_id):
+        raise HTTPException(status_code=422, detail="Invalid match id")
+    m = _admin_get_match(match_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if m.status in ("settled", "void"):
+        raise HTTPException(status_code=409, detail=f"Match is already {m.status}")
+    m.status = "void"
+    store.put(m)
+    print(
+        f"[admin] force-void {match_id} reason={body.reason!r}",
+        file=sys.stderr,
+    )
+    return {"matchId": match_id, "status": "void", "reason": body.reason}
+
+
+@app.post("/api/admin/match/{match_id}/settle")
+def admin_force_settle(match_id: str, body: AdminActionRequest, request: Request) -> dict[str, Any]:
+    """Settle a match the engine considers complete (phase 6.3)."""
+    _require_admin(request)
+    if not re.fullmatch(r"[0-9a-f]{32}", match_id):
+        raise HTTPException(status_code=422, detail="Invalid match id")
+    m = _admin_get_match(match_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="Match not found")
+    try:
+        result = engine.settle(m)
+    except MatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    engine.apply_settlement_ratings(store, result)
+    signed = _attach_signed_envelope(m, result) if result.get("status") == "settled" else None
+    store.put(m)
+    print(
+        f"[admin] force-settle {match_id} reason={body.reason!r}",
+        file=sys.stderr,
+    )
+    return {"matchId": match_id, "reason": body.reason, "settlement": signed or result}
 
 
 @app.get("/api/metrics")
