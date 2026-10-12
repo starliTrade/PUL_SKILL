@@ -5,7 +5,7 @@
 ║  نسخه:        1.9-CLOSED (فاز ۱ و ۲ بسته)                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     768a3e24d690e328…9294997637da7dd1                                                   ║
+║  SHA-256:     8cef2cde14cc1611…499a208232191d68                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -188,17 +188,17 @@
 **🚦 گیت خروج:** `forge test` ≥۳۳ تست سبز + تست‌های جدید روی anvil + ABI به‌روز
 
 ### ۳.۱ — رفع باگ‌ها
-- [ ] **H17** انتقال‌های all-or-nothing پول را برای همیشه گیر می‌کنند — `PulsarEscrow.sol:310-313, 327, 331-332`
+- [x] **H17** انتقال‌های all-or-nothing پول را برای همیشه گیر می‌کنند — `PulsarEscrow.sol:310-313, 327, 331-332`
   تغییر: pull-payment (`pendingWithdrawals[addr]` + `withdraw()`) یا جداسازی هر انتقال با credit قابل‌برداشت
   تست: `test_reverting_recipient_does_not_block_the_other` + `test_blacklisting_token_does_not_freeze_the_pool`
   پذیرش: با گیرنده‌ی revert‌کننده، طرف مقابل پولش را بگیرد
-- [ ] **H18** سقف on-chain برای `proof.deadline` — `PulsarEscrow.sol:267`
+- [x] **H18** سقف on-chain برای `proof.deadline` — `PulsarEscrow.sol:267`
   تغییر: `require(proof.deadline <= duel.createdAt + MATCH_TIMEOUT, "deadline exceeds horizon");`
   تست: `test_RevertWhen_DeadlineBeyondRefundHorizon`
 - [ ] **H19** refund بدون مجوز برنده را بی‌جایزه می‌کند — `PulsarEscrow.sol:318-335` · **🛑 نیاز به D2**
   گزینه‌ها: (الف) پنجره‌ی تسویه‌ی انحصاری (ب) refund نامتقارن با جریمه‌ی رهاکننده (ج) `settleOnTimeout(proof)`
   تست: `test_LosingPlayerCannotRefundAwayTheWinnerPrize`
-- [ ] **H20** `joinDuel` بدون cutoff و بدون activation — `PulsarEscrow.sol:240-255`
+- [x] **H20** `joinDuel` بدون cutoff و بدون activation — `PulsarEscrow.sol:240-255`
   تغییر: `activatedAt` در join؛ لنگر refund روی `max(createdAt, activatedAt)`؛ رد join بعد از horizon
   تست: `test_JoinAtT29m59s_RefundWindowStartsAtActivation` + `test_JoinAfterHorizon_Reverts`
 - [ ] **M22** `MIN_STAKE_UNITS` اعشار ۶ را hardcode می‌کند — `PulsarEscrow.sol:146`
@@ -565,6 +565,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 3.0 | 2026-10-12 | **فاز ۳ شروع شد.** H17 (deferred payout)، H18 (سقف deadline)، H20 (activatedAt + cutoff join) رفع شدند. ۳۵ تست قرارداد. coverage ۷۹٪. | ⬜ |
 | 2.5-CLOSED | 2026-10-12 | **بازبینی بستن فاز ۲:** `record_claim` همان TOCTOU را داشت (H3 در یک تابع رفع شده بود و در تابع بالایی جا مانده بود) — رفع شد. کامنت کهنه‌ی پیکربندی جایگزین شد. coverage ۷۹٪. | ⬜ |
 | 2.4-CLOSED | 2026-10-12 | **فاز ۲ کامل شد (۹/۹).** H10 (I/O زیر قفل)، H22 (logout)، H6+H7 (پیکربندی fail-closed). coverage ۷۸٪. | ⬜ |
 | 2.3 | 2026-10-12 | H9 رفع شد (throttle روی sweep + ایندکس composite + شکست‌ها دیگر بی‌صدا نیستند). coverage ۷۷٪ (کاهش ۷۸→۷۷ به‌دلیل ایزوله‌شدن درست تست H4، نه regression). **فاز ۲: ۵/۹** | ⬜ |
