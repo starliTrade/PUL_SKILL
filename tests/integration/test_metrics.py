@@ -25,6 +25,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "api"))
 
 import main as server  # noqa: E402
+import metrics as metrics_module  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 
@@ -89,7 +90,7 @@ def test_metrics_do_not_grow_without_bound(client):
         client.get(f"/api/does-not-exist-{i}")
 
     body = _metrics(client)
-    assert len(body["endpoints"]) <= server.METRICS_MAX_ROUTES, (
+    assert len(body["endpoints"]) <= metrics_module.METRICS_MAX_ROUTES, (
         "the endpoint map grew past its bound — a scanner would leak memory"
     )
 

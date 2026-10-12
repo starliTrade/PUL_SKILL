@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from typing import Any
 
 import timebase
@@ -46,6 +47,8 @@ try:  # optional dependency — absent until Firestore credentials exist
     from google.cloud import firestore as _gcf
 except Exception:  # pragma: no cover - local dev without the SDK
     _gcf = None  # type: ignore[assignment]
+
+import metrics
 
 import oracle
 from auth import EXPECTED_CHAIN_ID as _CHAIN_ID
@@ -136,6 +139,9 @@ def _rl_check_ip(bucket: str, request: Request, limit: int) -> None:
 # counted and surfaced on /api/health.
 _rl_fallback_count = 0
 _rl_fallback_last: dict[str, Any] = {}
+# Phase 6.1: the DENOMINATOR. A fallback count with no total says nothing about
+# how often the limiter is degraded relative to traffic.
+_rl_attempts = 0
 
 
 def _rl_note_fallback(exc: BaseException) -> None:
@@ -152,11 +158,16 @@ def _rl_note_fallback(exc: BaseException) -> None:
 def _rl_check(bucket: str, address: str, limit: int) -> None:
     """Count one hit for (bucket, address) and refuse when over `limit`.
 
+    Phase 6.1: every call increments `_rl_attempts`, so the fallback rate on
+    /api/metrics has a denominator.
+
     Firestore mode uses a transactional read-modify-write on a rate_limits
     document so EVERY replica enforces the SAME window; memory mode is
     per-process. A Firestore outage degrades to in-process limiting instead of
     taking the endpoint down (fail-open for availability, never for money —
     the deposit gate below is fail-closed)."""
+    global _rl_attempts
+    _rl_attempts += 1
     fs = getattr(store, "_fs_store", None)
     if fs is not None:  # audit #7 R3: decoupled from onchain.escrow_configured()
         try:
@@ -595,6 +606,45 @@ ROUNDS = engine.ROUNDS
 
 
 
+@app.middleware("http")
+async def _record_metrics(request: Request, call_next: Any) -> Any:
+    """Time every request for /api/metrics (phase 6.1).
+
+    Uses the ROUTE TEMPLATE FastAPI resolved, not the raw path, so per-match ids
+    do not each become their own entry. `/api/metrics` itself is skipped:
+    otherwise every scrape perturbs the numbers it reports.
+    """
+    started = time.perf_counter()
+    response = await call_next(request)
+    route = request.scope.get("route")
+    path = getattr(route, "path", None) or request.url.path
+    if path != "/api/metrics":
+        metrics.observe_request(request.method, path, (time.perf_counter() - started) * 1000.0)
+    return response
+
+
+@app.get("/api/metrics")
+def metrics_endpoint() -> dict[str, Any]:
+    """Operational metrics (phase 6.1).
+
+    Answers "how well", where /api/health answers "is it up". Per-process: with
+    N replicas each reports its own, and aggregating them is the monitoring
+    system's job rather than the server's.
+    """
+    body = metrics.snapshot()
+    # Fold in the counters that already live in main, so there is ONE place to
+    # scrape rather than two.
+    body["rateLimit"] = {
+        "fallbacks": _rl_fallback_count,
+        "fallbackRate": (
+            round(_rl_fallback_count / _rl_attempts, 4) if _rl_attempts else None
+        ),
+        "attempts": _rl_attempts,
+        "lastFallback": dict(_rl_fallback_last),
+    }
+    return body
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {
@@ -963,8 +1013,13 @@ def _attach_signed_envelope(m: Any, result: dict[str, Any]) -> dict[str, Any]:
         # clamped to activation + contract MATCH_TIMEOUT.
         envelope = sign_settlement(result, matchish=m)
     except Exception:
+        # Phase 6.1: a failing oracle means winners cannot claim, and from
+        # outside it looks identical to a quiet period. Count it.
+        metrics.note_signature(False)
         m.status, m.winner, m.settled_at, m.signed_settlement = saved
         raise
+    metrics.note_signature(True)
+    metrics.note_match_settled()
     envelope["roundWins"] = result.get("roundWins", {})
     m.signed_settlement = {"status": "settled", **envelope}
     return dict(m.signed_settlement)
