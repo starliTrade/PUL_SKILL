@@ -2,10 +2,10 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  نسخه:        1.4-LOCKED                                                 ║
+║  نسخه:        1.5-LOCKED                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     da2e8439cc030903…4a1b8748e7039c5f                                                   ║
+║  SHA-256:     5294c2494948d7ab…789794ac0cfd715d                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -102,12 +102,12 @@
 **هدف:** بستن ۴ باگی که محصول را می‌شکنند یا پول را از دست می‌دهند. **تخمین:** ۱ روز
 **🚦 گیت خروج:** ۴ تست رگرسیون قرمز→سبز + همه‌ی تست‌های قبلی سبز
 
-- [ ] **C1 · 🔴** محدودکننده‌ی نرخ توزیع‌شده کاملاً مرده است
+- [x] **C1 · 🔴** محدودکننده‌ی نرخ توزیع‌شده کاملاً مرده است
   `api/main.py:134-163` · **شاهد بازتولید:** روی emulator → `ValueError: Transaction not in progress`
   تغییر: (۱) `@transactional` + `txn.commit()` (۲) `except` باریک: فقط خطای گذرا → fallback (۳) شمارنده‌ی `rl_fallback_total` روی `/api/health`
   تست: `tests/integration/test_ratelimit_firestore.py::test_distributed_window_persists_across_instances` + `::test_limiter_does_not_silently_fall_back`
   پذیرش: سند `rate_limits` واقعاً افزایش یابد؛ با `_rl_window` پاک‌شده هم ۴۲۹ بدهد
-- [ ] **C2 · 🔴** `token_decimals()` خطای گذرا را برای همیشه `None` کش می‌کند
+- [x] **C2 · 🔴** `token_decimals()` خطای گذرا را برای همیشه `None` کش می‌کند
   `api/onchain.py:76-102` + `api/main.py:209-222`
   تغییر: (۱) TTL برای کش شکست مثل `_chain_ok` (۲) تفکیک «ناخوانا» از «ناهماهنگ» (۳) `verify_deposit` سه‌حالته `True/False/None`
   تست: `tests/unit/test_onchain_decimals.py::test_transient_failure_does_not_stick` + `::test_unreadable_decimals_refuses_round_without_voiding` + `::test_mismatched_stake_still_voids`
@@ -546,3 +546,4 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 1.5-LOCKED | 2026-10-12 | **C1 و C2 رفع شدند** (تست‌های قرمز → سبز). یافته‌ی جدید در حین رفع C2: `token_decimals()` هر مقدار ۳۲-بایتی را می‌پذیرفت → `Decimal(10) ** 3.7e9` → Overflow → 500 روی مسیر پول. با سقف uint8 (۲۵۵) و tri-state verdict رفع شد. | ⬜ |

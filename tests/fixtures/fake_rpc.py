@@ -146,7 +146,11 @@ class FakeRpc:
             data = (params[0] or {}).get("data", "")
             for broken in self.malformed_selectors:
                 if data.startswith(broken):
-                    return "0xdeadbeef"  # wrong shape on purpose
+                    # "0x" is what a reverting / non-existent call returns, and
+                    # onchain._eth_call maps it to None. A parseable-but-wrong
+                    # hex word (e.g. "0xdeadbeef") would be READ as a value —
+                    # which is how this fixture first hid a real Overflow bug.
+                    return "0x"
             if data.startswith(SEL_PAYMENT_TOKEN):
                 return "0x" + addr_word(self.token_address)
             if data.startswith(SEL_DECIMALS):
@@ -225,6 +229,7 @@ def configure_escrow(monkeypatch, rpc: FakeRpc, escrow_address: str = "0x" + "ab
 
     onchain._cache.clear()
     onchain._token_decimals = "unread"
+    onchain._token_decimals_retry_after = 0.0
     onchain._chain_id_checked = False
     onchain._chain_id_mismatch = False
     onchain._chain_mismatch_until = 0.0

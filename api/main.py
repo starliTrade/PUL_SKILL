@@ -41,6 +41,12 @@ import economy
 # must all agree — the audit regression was main.py hardcoding 137 while
 # auth.py verified against 80002, so signing the server's OWN message 401'd.
 import onchain
+
+try:  # optional dependency — absent until Firestore credentials exist
+    from google.cloud import firestore as _gcf
+except Exception:  # pragma: no cover - local dev without the SDK
+    _gcf = None  # type: ignore[assignment]
+
 from auth import EXPECTED_CHAIN_ID as _CHAIN_ID
 from auth import NONCE_WINDOW_SECONDS as _NONCE_WINDOW
 from auth import issue_nonce, issue_session, verify_session, verify_siwe
@@ -122,6 +128,26 @@ def _rl_check_ip(bucket: str, request: Request, limit: int) -> None:
     _rl_check(bucket, f"{ip}|{socket_ip}" if hops and ip != socket_ip else ip, limit)
 
 
+# Audit C1 — fallback observability. The limiter degrades to the in-process
+# window when Firestore is unreachable (availability beats a hard 500 on a hot
+# path), but a silent downgrade is how the original bug survived: the
+# "distributed" limiter never worked and nothing said so. Every fallback is
+# counted and surfaced on /api/health.
+_rl_fallback_count = 0
+_rl_fallback_last: dict[str, Any] = {}
+
+
+def _rl_note_fallback(exc: BaseException) -> None:
+    global _rl_fallback_count
+    _rl_fallback_count += 1
+    _rl_fallback_last.clear()
+    _rl_fallback_last.update({"error": repr(exc)[:200], "at": int(timebase.now())})
+    print(
+        f"[ratelimit] Firestore limiter unavailable — using the in-process window: {exc!r}",
+        file=sys.stderr,
+    )
+
+
 def _rl_check(bucket: str, address: str, limit: int) -> None:
     """Count one hit for (bucket, address) and refuse when over `limit`.
 
@@ -138,11 +164,6 @@ def _rl_check(bucket: str, address: str, limit: int) -> None:
             window_ms = int(RL_WINDOW_SECONDS * 1000)
 
             def _incr(txn: Any) -> dict[str, int]:
-                # Audit #10 (item 1): this used to `return int(d["count"])` while
-                # the caller read `d["reset_at"]` from the OUTER scope — a
-                # guaranteed NameError (d is local to _incr), swallowed by the
-                # broad except below, so the Firestore limiter NEVER 429'd and
-                # every deployment silently degraded to per-process limiting.
                 snap = doc.get(transaction=txn)
                 d = snap.to_dict() or {"count": 0, "reset_at": 0}
                 if now_ms >= int(d.get("reset_at", 0)):
@@ -152,15 +173,35 @@ def _rl_check(bucket: str, address: str, limit: int) -> None:
                 txn.set(doc, d)
                 return {"count": int(d["count"]), "reset_at": int(d["reset_at"])}
 
-            txn = fs.db.transaction()
-            win = _incr(txn)  # plain callable: Firestore retries conflicts itself
+            # Audit C1: this used to call `_incr(txn)` as a plain function. A
+            # `Transaction` from `db.transaction()` is NOT begun — only the
+            # `@transactional` decorator calls `_begin()` — so the first
+            # `doc.get(transaction=txn)` raised ValueError(INACTIVE_TXN), the
+            # broad `except Exception: pass` swallowed it, and every deployment
+            # silently fell back to per-process limiting. The decorator begins,
+            # runs, and COMMITS the transaction (nothing else calls commit()).
+            #
+            # NB: the decorator comes from the firestore MODULE. `store._firestore`
+            # is a DurableMatchStore *instance* attribute holding a Client, which
+            # has no `transactional` — reading it here raised AttributeError.
+            if _gcf is None:
+                raise RuntimeError("google-cloud-firestore is required for the distributed limiter")
+            win = _gcf.transactional(_incr)(fs.db.transaction())
+
             if win["count"] > limit:
                 raise _rate_limited((win["reset_at"] - now_ms) / 1000.0)
             return
         except HTTPException:
             raise
-        except Exception:
-            pass  # Firestore hiccup → fall through to in-process limiting
+        except Exception as exc:
+            # Narrow by intent, not by type-blindness: a transient backend
+            # problem degrades to the in-process window, but a programming
+            # error (the INACTIVE_TXN class above) must surface as a 500 rather
+            # than quietly disabling the distributed limiter again.
+            if not _is_transient_backend_error(exc):
+                raise
+            _rl_note_fallback(exc)
+            # fall through to the in-process window
     with _rl_lock:
         key = f"{bucket}:{address.lower()}"
         now = timebase.now()
@@ -169,6 +210,23 @@ def _rl_check(bucket: str, address: str, limit: int) -> None:
         _rl_window[key] = hits
         if len(hits) > limit:
             raise _rate_limited(RL_WINDOW_SECONDS - (now - hits[0]))
+
+
+def _is_transient_backend_error(exc: BaseException) -> bool:
+    """True for backend/transport failures the in-process window can cover.
+
+    Everything else (ValueError, TypeError, AttributeError, ...) is a bug in
+    this module and must not be converted into a silent downgrade — that is
+    precisely how audit C1 stayed invisible for the life of the project.
+    """
+    if isinstance(exc, OSError | TimeoutError | ConnectionError):
+        return True
+    try:
+        from google.api_core import exceptions as gexc  # noqa: PLC0415
+
+        return isinstance(exc, gexc.GoogleAPIError)
+    except Exception:  # pragma: no cover — google-api-core missing
+        return False
 
 
 # Joiner-deposit timeout (audit #5, item 3): if the joiner's stake never lands
@@ -208,8 +266,21 @@ def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
         )
     if info.get("status") == onchain.STATUS_ACTIVE:
         # F-03: stake amount + participants must match the server's match
-        # (single source of truth: onchain.verify_deposit — probe-testable).
-        if not onchain.verify_deposit(info, m.stake, m.players):
+        # (single source of truth: onchain.deposit_verdict — probe-testable).
+        #
+        # Audit C2: UNKNOWN (the chain could not be read) is NOT a mismatch. It
+        # must refuse the round, never void the match — voiding on a transient
+        # RPC failure destroys a live duel and costs the winner their prize.
+        verdict = onchain.deposit_verdict(info, m.stake, m.players)
+        if verdict is onchain.DepositVerdict.UNKNOWN:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "On-chain duel state cannot be verified right now — retry shortly. "
+                    "The match is untouched."
+                ),
+            )
+        if verdict is onchain.DepositVerdict.MISMATCH:
             m.status = "void"
             return {
                 "void": True,
@@ -428,6 +499,15 @@ def health() -> dict[str, Any]:
         "chainId": _CHAIN_ID,
         "escrowConfigured": onchain.escrow_configured(),
         "prodLike": _prod_like,
+        # Audit C1: the distributed limiter silently degraded to a per-process
+        # window for the life of the project. Expose which backend is actually
+        # enforcing and how often it fell back, so a dead distributed limiter is
+        # visible in monitoring instead of being discovered during an incident.
+        "rateLimit": {
+            "backend": "firestore" if getattr(store, "_fs_store", None) is not None else "memory",
+            "fallbacks": _rl_fallback_count,
+            "lastFallback": dict(_rl_fallback_last),
+        },
     }
 
 

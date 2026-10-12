@@ -18,6 +18,7 @@ Design notes:
 
 from __future__ import annotations
 
+import enum
 import json
 import os
 import re
@@ -75,32 +76,55 @@ _cache: dict[str, tuple[Any, ...]] = {}  # key -> (status|None, expiry, info)
 # stake comparison fails closed instead of guessing 6 decimals and silently
 # comparing 10^k-scaled numbers).
 _token_decimals: int | None | str = "unread"
+# Audit C2: a FAILED read used to be cached as None for the life of the
+# process. One 5-second RPC blip therefore made every later ACTIVE duel fail
+# `verify_deposit`, and the gate turned that into `status = "void"` — the
+# legitimate winner was never paid, unrecoverably, until a restart. A failure
+# is now cached only briefly (so an outage does not hammer the RPC on every
+# round action) while a SUCCESS is cached forever (decimals are immutable).
+_TOKEN_DECIMALS_RETRY_SECONDS = 10.0
+_token_decimals_retry_after = 0.0
+# ERC-20 `decimals()` is a uint8, so anything above 255 is a broken or hostile
+# token, not a scale factor. Without this bound `deposit_verdict` computed
+# `Decimal(10) ** <garbage>` and raised decimal.Overflow — an unhandled 500 on
+# the money path instead of a fail-closed refusal.
+_MAX_TOKEN_DECIMALS = 255
 
 
 def token_decimals() -> int | None:
-    """decimals() of the escrow's payment token, read once and cached.
+    """decimals() of the escrow's payment token, or None when unreadable.
 
     Audit #8 F-03/F-18: a wrong decimals assumption scales every stake
     comparison by 10^k — read the token from the escrow's paymentToken()
-    view, then read its decimals(). Fail-closed (None) when unreadable."""
-    global _token_decimals
+    view, then read its decimals(). Fail-closed (None) when unreadable.
+
+    None means "could not read", never "zero" and never "mismatch" — callers
+    that must act on the difference should use `deposit_verdict()`.
+    """
+    global _token_decimals, _token_decimals_retry_after
     if not escrow_configured():
         return None
     if _token_decimals != "unread":
-        return _token_decimals  # type: ignore[return-value]
+        if _token_decimals is not None:
+            return _token_decimals  # immutable once read — cache for the process
+        if timebase.now() < _token_decimals_retry_after:
+            return None  # a recent failure; do not hammer the RPC
+        # The failure cache has expired — fall through and retry.
     try:
         token = _escrow_token_address()
-        if token is None:
-            _token_decimals = None
-            return None
-        ret = _eth_call(token, _selector("decimals()"))
+        ret = _eth_call(token, _selector("decimals()")) if token else None
         if ret is None:
-            _token_decimals = None
-            return None
-        _token_decimals = int(ret[-64:], 16)
+            raise ValueError("decimals() unreadable")
+        value = int(ret[-64:], 16)
+        if not 0 <= value <= _MAX_TOKEN_DECIMALS:
+            raise ValueError(f"decimals() out of range: {value}")
     except Exception:
         _token_decimals = None
-    return _token_decimals  # type: ignore[return-value]
+        _token_decimals_retry_after = timebase.now() + _TOKEN_DECIMALS_RETRY_SECONDS
+        return None
+    _token_decimals = value
+    _token_decimals_retry_after = 0.0
+    return value
 
 
 def _escrow_token_address() -> str | None:
@@ -290,12 +314,26 @@ def deposits_verified(match_id: str) -> bool:
     return duel_status(match_id) == STATUS_ACTIVE
 
 
-def verify_deposit(
+class DepositVerdict(enum.Enum):
+    """Audit C2 — three outcomes, because two of them need different actions.
+
+    The gate used to collapse "cannot read the chain" and "the chain says this
+    is a different duel" into a single False, and the caller turned BOTH into
+    `match.status = "void"`. A transient RPC failure therefore destroyed a live
+    match and cost the winner their prize. They are not the same thing:
+    """
+
+    MATCH = "match"        # provably THIS match, both stakes locked → play on
+    MISMATCH = "mismatch"  # readable, but wrong stake/participants → void
+    UNKNOWN = "unknown"    # cannot read → refuse the round, do NOT void
+
+
+def deposit_verdict(
     info: dict[str, Any] | None,
     agreed_stake: float,
     server_players: list[str] | set[str],
     decimals: int | None = None,
-) -> bool:
+) -> DepositVerdict:
     """Audit #8 F-03 — validate a decoded duel against the server's match.
 
     The old gate only checked status == Active, which accepted a duel with a
@@ -304,37 +342,59 @@ def verify_deposit(
     as W1 → the contract's participant check makes the winner unpayable and
     both stakes burn 30 minutes).
 
-    Accepts only: status == Active AND stakeAmount == agreed stake in token
-    units AND {player1, player2} == the server's two participants.
+    MATCH requires ALL of: status == Active, stakeAmount == the agreed stake in
+    token units, and {player1, player2} == the server's two participants.
     """
     if not info:
-        return False
+        return DepositVerdict.UNKNOWN
     if info.get("status") != STATUS_ACTIVE:
-        return False
+        # A readable duel that is not Active is a real mismatch (Created,
+        # Settled, Refunded, Cancelled) — the caller may void on this.
+        return DepositVerdict.MISMATCH
     if decimals is None:
         decimals = token_decimals()
     if decimals is None:
-        return False  # cannot verify the amount — fail-closed
+        # Cannot scale the stake, so the amount is unverifiable. NOT a mismatch.
+        return DepositVerdict.UNKNOWN
     # P0-fix: Decimal (not float) so large/fractional stakes never lose a unit
     # to binary rounding and brick an honest Active duel.
+    import decimal
     from decimal import Decimal, InvalidOperation
 
     try:
         expected_units = int(
             (Decimal(str(agreed_stake)) * (Decimal(10) ** int(decimals))).to_integral_value()
         )
-    except (InvalidOperation, ValueError):
-        return False
+    except (InvalidOperation, ValueError, OverflowError, decimal.Overflow):
+        return DepositVerdict.UNKNOWN
     if int(info.get("stakeAmount", 0)) != expected_units:
-        return False
+        return DepositVerdict.MISMATCH
     onchain_players = {
         str(info.get("player1", "")).lower(),
         str(info.get("player2", "")).lower(),
     }
     server_set = {p.lower() for p in server_players}
     if len(server_set) != 2 or onchain_players != server_set:
-        return False
-    return True
+        return DepositVerdict.MISMATCH
+    return DepositVerdict.MATCH
+
+
+def verify_deposit(
+    info: dict[str, Any] | None,
+    agreed_stake: float,
+    server_players: list[str] | set[str],
+    decimals: int | None = None,
+) -> bool:
+    """Boolean view of `deposit_verdict`: True only for a provable MATCH.
+
+    Kept for callers that genuinely only need "may this duel proceed?" — the
+    audit probes and the settlement path. UNKNOWN is NOT a match (fail-closed),
+    but callers that must distinguish it from a mismatch should call
+    `deposit_verdict` directly.
+    """
+    return (
+        deposit_verdict(info, agreed_stake, server_players, decimals) is DepositVerdict.MATCH
+    )
 
 
 # --- Settlement-claim verification (audit #8 F-04) ---------------------------

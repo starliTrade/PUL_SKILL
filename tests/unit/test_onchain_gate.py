@@ -109,29 +109,41 @@ def test_decimals_are_read_from_the_token(rpc):
     assert onchain.token_decimals() == 6
 
 
-# --- 2. C2 red baseline -------------------------------------------------------
-# Remove the xfail markers in the same commit as the phase-1 fix.
-c2 = pytest.mark.xfail(strict=True, reason="audit C2 not fixed yet (phase 1)")
-
-
-@c2
-def test_transient_failure_does_not_stick(rpc):
+# --- 2. C2 regression suite (fixed in phase 1) --------------------------------
+def test_transient_failure_does_not_stick(rpc, clock):
     """One 5-second RPC blip must not poison the decimals cache forever.
 
-    Audit C2: `_token_decimals` is set to None on ANY failure and the guard
-    `if _token_decimals != "unread": return _token_decimals` then returns that
-    None for the life of the process. Every subsequent ACTIVE duel fails
-    `verify_deposit`, and `main._verify_deposits_or_void` turns that failure
-    into `m.status = "void"` — so the legitimate winner is never paid.
+    Audit C2: `_token_decimals` was set to None on ANY failure and the guard
+    `if _token_decimals != "unread": return _token_decimals` then returned that
+    None for the life of the process. Every subsequent ACTIVE duel failed
+    `verify_deposit`, and `main._verify_deposits_or_void` turned that failure
+    into `m.status = "void"` — so the legitimate winner was never paid.
+
+    A failure is now cached only for `_TOKEN_DECIMALS_RETRY_SECONDS` (so an
+    outage does not hammer the RPC on every round action), then retried.
     """
     rpc.fail_next(1)
     assert onchain.token_decimals() is None  # the blip
 
-    # The RPC is healthy again; the cache must retry (negative TTL, like _chain_ok).
+    # Still inside the failure cache: no retry, no RPC hammering.
+    assert onchain.token_decimals() is None
+    assert rpc.calls_to("eth_call") <= 1
+
+    clock.advance(onchain._TOKEN_DECIMALS_RETRY_SECONDS + 1)
+
+    # The RPC is healthy again; the cache must retry and recover.
     assert onchain.token_decimals() == 6
 
 
-@c2
+def test_successful_read_is_cached_for_the_process(rpc):
+    """decimals are immutable — a success must never be re-read."""
+    assert onchain.token_decimals() == 6
+    before = rpc.calls_to("eth_call")
+    for _ in range(5):
+        assert onchain.token_decimals() == 6
+    assert rpc.calls_to("eth_call") == before, "a successful read was repeated"
+
+
 def test_unreadable_decimals_refuses_the_round_without_voiding(rpc):
     """"Cannot read" is not "does not match" — it must not void the match.
 
@@ -139,13 +151,12 @@ def test_unreadable_decimals_refuses_the_round_without_voiding(rpc):
     `return_malformed("eth_call")`): breaking every eth_call also breaks the
     duel read, so the gate would short-circuit at "duel unreadable" and this
     test would pass without ever reaching the decimals path — a false green.
-    The two asserts below prove the duel really is readable first.
+    The asserts below prove the duel really is readable first.
     """
     import main as server
     from fastapi import HTTPException
 
-    rpc.break_call(SEL_DECIMALS)
-    onchain._token_decimals = "unread"
+    _unreadable_decimals(rpc)
     onchain._cache.clear()
 
     m = _match()
@@ -155,8 +166,75 @@ def test_unreadable_decimals_refuses_the_round_without_voiding(rpc):
     assert info is not None and info["status"] == STATUS_ACTIVE, "the duel read must stay healthy"
     assert onchain.token_decimals() is None, "decimals must be the only unreadable call"
 
-    onchain._token_decimals = "unread"
+    _unreadable_decimals(rpc)
     with pytest.raises(HTTPException) as exc:
         server._verify_deposits_or_void(m)
     assert exc.value.status_code == 409
     assert m.status == "active", "an unreadable token must not void the match (audit C2)"
+
+
+def _unreadable_decimals(rpc) -> None:
+    """Make ONLY decimals() unreadable, with a clean failure cache."""
+    rpc.break_call(SEL_DECIMALS)
+    onchain._token_decimals = "unread"
+    onchain._token_decimals_retry_after = 0.0
+
+
+def test_verdict_distinguishes_unknown_from_mismatch(rpc):
+    """The three-way verdict is the mechanism that keeps C2 fixed."""
+    duel = {"status": STATUS_ACTIVE, "player1": P1, "player2": P2, "stakeAmount": 1_000_000}
+
+    assert onchain.deposit_verdict(duel, 1.0, [P1, P2], decimals=6) is onchain.DepositVerdict.MATCH
+    assert (
+        onchain.deposit_verdict(duel, 2.0, [P1, P2], decimals=6)
+        is onchain.DepositVerdict.MISMATCH
+    )
+    assert (
+        onchain.deposit_verdict(None, 1.0, [P1, P2], decimals=6) is onchain.DepositVerdict.UNKNOWN
+    )
+    # A readable but non-Active duel is a genuine mismatch, not "unknown".
+    assert (
+        onchain.deposit_verdict({**duel, "status": STATUS_CREATED}, 1.0, [P1, P2], decimals=6)
+        is onchain.DepositVerdict.MISMATCH
+    )
+    # An unreadable token is UNKNOWN — the whole point of the three-way split.
+    _unreadable_decimals(rpc)
+    assert onchain.deposit_verdict(duel, 1.0, [P1, P2]) is onchain.DepositVerdict.UNKNOWN
+
+
+def test_boolean_view_stays_fail_closed(rpc):
+    """The legacy bool API must not start returning True for UNKNOWN."""
+    duel = {"status": STATUS_ACTIVE, "player1": P1, "player2": P2, "stakeAmount": 1_000_000}
+    assert onchain.verify_deposit(duel, 1.0, [P1, P2], decimals=6) is True
+    assert onchain.verify_deposit(None, 1.0, [P1, P2], decimals=6) is False
+    _unreadable_decimals(rpc)
+    assert onchain.verify_deposit(duel, 1.0, [P1, P2]) is False
+
+
+def test_absurd_decimals_are_rejected_not_crashed(rpc):
+    """A token whose decimals() is garbage must fail CLOSED, not 500.
+
+    Found while writing the C2 tests: `token_decimals()` accepted any 32-byte
+    word, so a broken/hostile token returning 0xdeadbeef (3735928559) made
+    `deposit_verdict` evaluate `Decimal(10) ** 3735928559` and raise
+    decimal.Overflow — an unhandled 500 on the money path. ERC-20 decimals is
+    a uint8, so anything above 255 is treated as an unreadable token.
+    """
+    import main as server
+    from fastapi import HTTPException
+
+    rpc.token_decimals = 3735928559  # 0xdeadbeef, a parseable but absurd word
+    onchain._token_decimals = "unread"
+    onchain._token_decimals_retry_after = 0.0
+    onchain._cache.clear()
+
+    assert onchain.token_decimals() is None, "an out-of-range decimals must read as unreadable"
+
+    duel = {"status": STATUS_ACTIVE, "player1": P1, "player2": P2, "stakeAmount": 1_000_000}
+    assert onchain.deposit_verdict(duel, 1.0, [P1, P2]) is onchain.DepositVerdict.UNKNOWN
+
+    m = _match()
+    with pytest.raises(HTTPException) as exc:
+        server._verify_deposits_or_void(m)
+    assert exc.value.status_code == 409, "must refuse the round, never crash or void"
+    assert m.status == "active"

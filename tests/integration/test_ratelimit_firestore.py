@@ -20,10 +20,10 @@ from __future__ import annotations
 
 import pytest
 
-# C1 is NOT fixed yet (MASTER-PLAN phase 1). These tests are the red baseline:
+# C1 regression suite (MASTER-PLAN phase 1). These were the red baseline:
 # `strict=True` means an unexpected PASS fails the suite, so the marker cannot
 # be forgotten once the fix lands — remove it in the same commit as the fix.
-pytestmark = [pytest.mark.emulator, pytest.mark.xfail(strict=True, reason="audit C1 not fixed yet (phase 1)")]
+pytestmark = pytest.mark.emulator
 
 firestore = pytest.importorskip("google.cloud.firestore")
 

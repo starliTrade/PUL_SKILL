@@ -4,8 +4,9 @@
 # actually reached when the gate was introduced, so the gate is honest from day
 # one instead of being a permanently-red number nobody reads.
 #
-#   phase 0 (now)   48%   <- current
-#   phase 1         55%   (C1-C4 regression tests)
+#   phase 0         48%
+#   phase 1 (now)   49%   <- current (C1+C2 landed; C3+C4 pending vitest/playwright)
+#   phase 1 target  55%   (C1-C4 regression tests)
 #   phase 2         65%   (server money path)
 #   phase 3         70%   (contract + chain)
 #   phase 7         80%   (MEDIUM sweep)
@@ -22,7 +23,7 @@ omit =
     api/requirements*.txt
 
 [report]
-fail_under = 48
+fail_under = 49
 show_missing = True
 skip_covered = False
 exclude_lines =
