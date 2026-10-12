@@ -2,10 +2,10 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  نسخه:        1.5-LOCKED                                                 ║
+║  نسخه:        1.6-LOCKED                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     5294c2494948d7ab…789794ac0cfd715d                                                   ║
+║  SHA-256:     b7b848dc5f4c4ce2…fa8c211d09409562                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -87,7 +87,8 @@
   پذیرش: تست Firestore در CI **اجرا** شود (نه skip) و C1 را بازتولید کند
 - [x] **0.8** Anvil + escrow در CI — `scripts/start_anvil.sh` (anvil + deploy خودکار + manifest)، `tests/fixtures/chain.py` (کلاینت JSON-RPC با eth_abi/eth_account، بدون web3)، `tests/integration/test_chain_smoke.py`
   پذیرش: ✅ ۷ تست سبز روی EVM واقعی — createDuel موجودی را قفل می‌کند، joinDuel استخر را دو برابر می‌کند، **تسویه با امضای واقعی `api/oracle.py` روی قرارداد مستقر پذیرفته می‌شود** (۹۸٪ برنده + ۲٪ treasury)، و امضای غیر-oracle رد می‌شود
-- [ ] **0.9** Vitest + React Testing Library — `vitest.config.ts`؛ پذیرش: یک تست نمونه روی `xpSystem.ts` سبز
+- [x] **0.9** Vitest + jsdom — `vitest.config.ts`، `bun run test:unit`، در CI و verify
+  پذیرش: ✅ `src/lib/realWeb3.provider.test.ts` (۴ تست) — زیرساخت کار می‌کند و **C3 را قرمز نشان داد** قبل از fix
 - [ ] **0.10** Playwright + کیف پول mock — `e2e/`, `e2e/fixtures/mockWallet.ts`
   پذیرش: تست نمونه اپ را load کند و connect را بزند
 - [ ] **0.11** axe-core — `e2e/a11y.spec.ts`؛ پذیرش: axe روی صفحه‌ی اصلی اجرا شود
@@ -112,7 +113,7 @@
   تغییر: (۱) TTL برای کش شکست مثل `_chain_ok` (۲) تفکیک «ناخوانا» از «ناهماهنگ» (۳) `verify_deposit` سه‌حالته `True/False/None`
   تست: `tests/unit/test_onchain_decimals.py::test_transient_failure_does_not_stick` + `::test_unreadable_decimals_refuses_round_without_voiding` + `::test_mismatched_stake_still_voids`
   پذیرش: بعد از شکست و سپس موفقیت RPC، gate کار کند؛ ماتچ void نشود
-- [ ] **C3 · 🔴** تراکنش‌های پول با provider اشتباه امضا می‌شوند
+- [x] **C3 · 🔴** تراکنش‌های پول با provider اشتباه امضا می‌شوند
   `src/lib/realWeb3.ts:1020-1044`, `:1155-1170`
   تغییر: ذخیره‌ی provider فعال (یا `rdns`) در `setConnectedAddress`؛ `getActiveEip1193Provider` دقیقاً همان را برگرداند؛ resolve مجدد با rdns
   تست: `src/lib/realWeb3.provider.test.ts::test_active_provider_is_the_connected_one` + `::test_wc_zombie_does_not_shadow_injected`
@@ -546,4 +547,5 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 1.6-LOCKED | 2026-10-12 | آیتم 0.9 (Vitest) و **C3** تیک خوردند. `bindActiveProvider()` در هر ۴ مسیر اتصال + disconnect صدا زده می‌شود. | ⬜ |
 | 1.5-LOCKED | 2026-10-12 | **C1 و C2 رفع شدند** (تست‌های قرمز → سبز). یافته‌ی جدید در حین رفع C2: `token_decimals()` هر مقدار ۳۲-بایتی را می‌پذیرفت → `Decimal(10) ** 3.7e9` → Overflow → 500 روی مسیر پول. با سقف uint8 (۲۵۵) و tri-state verdict رفع شد. | ⬜ |

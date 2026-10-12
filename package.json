@@ -14,7 +14,10 @@
     "test:server": "sh -c '.venv/bin/python scripts/test_game_server.py || python3 scripts/test_game_server.py'",
     "test:contract": "node contracts/test/compile_check.js",
     "test:http": "sh -c '.venv/bin/python scripts/test_http_e2e.py || python3 scripts/test_http_e2e.py'",
-    "test:firestore": "sh -c '.venv/bin/python scripts/test_firestore_integration.py || python3 scripts/test_firestore_integration.py'"
+    "test:firestore": "sh -c '.venv/bin/python scripts/test_firestore_integration.py || python3 scripts/test_firestore_integration.py'",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
+    "test:unit:cov": "vitest run --coverage"
   },
   "dependencies": {
     "@sentry/react": "^10.73.0",
@@ -38,8 +41,11 @@
   "devDependencies": {
     "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^22.14.0",
+    "@vitest/coverage-v8": "^5.0.4",
     "autoprefixer": "^10.4.21",
+    "jsdom": "^30.1.2",
     "solc": "0.8.20",
-    "tailwindcss": "^4.1.14"
+    "tailwindcss": "^4.1.14",
+    "vitest": "^5.0.4"
   }
 }

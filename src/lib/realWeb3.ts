@@ -241,6 +241,18 @@ class RealWeb3Manager {
 
 
   private wcProvider: any = null;
+  /**
+   * Audit C3 — the EIP-1193 provider the user ACTUALLY connected with.
+   *
+   * `getActiveEip1193Provider()` used to fall back to `window.ethereum`, which
+   * is whatever wallet happens to own that slot — not necessarily the one the
+   * user picked. With two wallets installed (e.g. MetaMask on window.ethereum
+   * and Coinbase connected through EIP-6963) every money transaction
+   * (approveUsdt / createDuel / settleDuel) and the SIWE signature were routed
+   * to the wrong account. Recording the chosen provider at connect time is the
+   * only reliable way to know which one to sign with.
+   */
+  private activeProvider: any = null;
   private wcInitPromise: Promise<any> | null = null;
   private wcConnectPromise: Promise<ConnectedAccountState> | null = null;
   private wcEventsBound = false;
@@ -321,6 +333,7 @@ class RealWeb3Manager {
         }
       }
       if (accounts && accounts.length > 0) {
+        this.bindActiveProvider(this.wcProvider);
         void this.setConnectedAddress(accounts[0], this.pendingWalletName || 'WalletConnect', provider.chainId || CHAIN.chainId);
       }
     });
@@ -333,6 +346,7 @@ class RealWeb3Manager {
       if (!accounts || accounts.length === 0) {
         this.disconnect();
       } else {
+        this.bindActiveProvider(this.wcProvider);
         this.setConnectedAddress(accounts[0], this.pendingWalletName || 'WalletConnect', CHAIN.chainId);
       }
     });
@@ -869,6 +883,8 @@ class RealWeb3Manager {
           }
         }
 
+        // Audit C3: remember WHICH provider this session belongs to.
+        this.bindActiveProvider(provider);
         return await this.setConnectedAddress(accounts[0], providerDetail.info.name, chainId);
       } else {
         throw new Error('No accounts selected in your wallet.');
@@ -978,6 +994,8 @@ class RealWeb3Manager {
             }
           }
 
+          // Audit C3: `injected` is the EIP-1193 object we actually talked to.
+          this.bindActiveProvider(injected);
           return await this.setConnectedAddress(accounts[0], provider, chainId);
         }
         throw new Error('No wallet account was selected.');
@@ -1016,6 +1034,17 @@ class RealWeb3Manager {
     );
   }
 
+  /**
+   * Record which EIP-1193 provider the user connected with (audit C3).
+   *
+   * Called from every connect path so `getActiveEip1193Provider()` can return
+   * the wallet the user actually chose instead of guessing from
+   * `window.ethereum`. Pass `null` on disconnect.
+   */
+  public bindActiveProvider(provider: any | null): void {
+    this.activeProvider = provider ?? null;
+  }
+
   /** EIP-1193 provider of the currently connected wallet (injected or WalletConnect). */
   public getActiveEip1193Provider(): any | null {
     const wc: any = this.wcProvider;
@@ -1039,11 +1068,16 @@ class RealWeb3Manager {
       this.wcProvider = null;
       this.wcConnectPromise = null;
     }
+    // Audit C3: prefer the provider the user actually connected with. Only fall
+    // back to window.ethereum when nothing was recorded (e.g. a session
+    // restored from a previous page load before the connect path ran).
+    if (this.activeProvider) return this.activeProvider;
     const injected = typeof window !== 'undefined' ? (window as any).ethereum : null;
     return injected || null;
   }
 
   public disconnect(): void {
+    this.bindActiveProvider(null);
     try {
       if (this.wcProvider?.connected) {
         this.wcProvider.disconnect().catch(() => {});
