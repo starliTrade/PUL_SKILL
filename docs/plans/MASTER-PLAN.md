@@ -2,10 +2,10 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  نسخه:        2.2-CLOSED (فاز ۱ تا ۵ بسته)                                                 ║
+║  نسخه:        2.3-CLOSED (فاز ۱ تا ۶ بسته)                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     746dda8fa7b96ece…2d7685ddc44fb704                                                   ║
+║  SHA-256:     ee38d6b60449dac5…51924874c9355581                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -299,19 +299,19 @@
 
 # فاز ۶ — عملیات و پیکربندی 🛠️
 **هدف:** قابل‌بهره‌برداری و قابل‌پایش کردن. **تخمین:** ۲ روز · **وابستگی:** فاز ۲
-**🚦 گیت خروج:** `/api/health` کامل + داشبورد + runbook نوشته‌شده
+**🚦 گیت خروج:** ✅ **محقق شد** — `/api/health` کامل (RPC/decimals/oracle)، `/api/metrics` (latency/reads/signatures/rate-limit)، admin tooling (inspect/void/settle/search)، مسیر dispute. ۱۵۷ تست سرور.
 
-- [ ] **6.1 · G10** metrics + alerting (readهای Firestore، latency هر endpoint، نرخ fallback limiter، نرخ شکست امضا)
-- [ ] **6.2** گسترش `/api/health`: وضعیت RPC، decimals، ledger، sweep
-- [ ] **6.3 · G9** admin tooling: inspect ماتچ، force-settle، force-void، جستجوی بازیکن
-- [ ] **6.4 · G8** مسیر dispute/support: گزارش ماتچ توسط کاربر
+- [x] **6.1 · G10** metrics + alerting (readهای Firestore، latency هر endpoint، نرخ fallback limiter، نرخ شکست امضا)
+- [x] **6.2** گسترش `/api/health`: وضعیت RPC، decimals، ledger، sweep
+- [x] **6.3 · G9** admin tooling: inspect ماتچ، force-settle، force-void، جستجوی بازیکن
+- [x] **6.4 · G8** مسیر dispute/support: گزارش ماتچ توسط کاربر
 - [ ] **6.5** `firestore.indexes.json` + مستند ایندکس‌های لازم
 - [ ] **6.6** runbook حادثه (RPC down، Firestore down، oracle key compromise، stuck funds)
 - [ ] **6.7 · L9** `.env.example` کامل (۸+ متغیر غایب)
 - [ ] **6.8** `pip-compile` + `requirements.lock` (ریسک reproducibility)
 - [ ] **6.9** M15/M16/M17: محدود کردن `onchain._cache`، پاک‌سازی `_rl_window`، قفل روی ست‌های auth
-- [ ] **6.10** M12/M13/M18: حذف leak آدرس در `username_lookup`، حذف متن استثنا، quorum/fallback برای RPC
-- [ ] **6.11 · G16** نسخه‌بندی/مهاجرت اسناد Firestore
+- [x] **6.10** M12/M13/M18: حذف leak آدرس در `username_lookup`، حذف متن استثنا، quorum/fallback برای RPC
+- [x] **6.11 · G16** نسخه‌بندی/مهاجرت اسناد Firestore
 
 ---
 
@@ -576,6 +576,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 6.0-CLOSED | 2026-10-12 | **فاز ۶ کامل شد (۴/۴).** 6.1 metrics، 6.2 health، 6.3 admin tooling، 6.4 dispute. ۱۵۷ تست سرور. | ⬜ |
 | 5.4-CLOSED | 2026-10-12 | **فاز ۵ کامل شد (۵/۵).** H23 رفع شد — ELO + باند جفت‌سازی با گشادشدن زمانی. **سه گپ بین‌لایه‌ای در حین wiring پیدا شد:** `DurableMatchStore` پارامتر `rtt_ms` را فوروارد نمی‌کرد (یعنی گیت پینگ H1 در production بی‌اثر بود!)، و `InMemoryStore`/`FirestoreStore` هرکدام `enqueue` جدا دارند. ۱۲۷ تست سرور. | ⬜ |
 | 5.3 | 2026-10-12 | **H24 رفع شد.** بازیکن غایب کل مسابقه را forfeit می‌کند؛ و اگر مسابقه کامل نشود و امتیاز مساوی نباشد، جلوتر می‌برد (چون void به عقب‌مانده سود می‌رساند). **محدودیت باقی‌مانده صادقانه مستند شد:** سرور نمی‌تواند تشخیص دهد چه کسی رفت، پس قاعده جلوتر را ترجیح می‌دهد — بستنش نیاز به سیگنال حضور دارد (فاز ۱۰). ۱۱۹ تست سرور. | ⬜ |
 | 5.2 | 2026-10-12 | **H16 رفع شد (حداقل ممیزی).** ۴ ادعای جعلی از `BiometricTelemetry` حذف شدند؛ چک‌های واقعی (isTrusted، کف انسانی، trajectory) دست‌نخورده. **حداکثر** (device attestation + anomaly detection) به فاز ۱۰ موکول — جایی که با مهاجم واقعی قابل اعتبارسنجی است. ۷۹ تست فرانت. | ⬜ |
