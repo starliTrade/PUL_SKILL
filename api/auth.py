@@ -365,6 +365,28 @@ def issue_session(address: str) -> str:
     return f"{body}.{_hmac_hex(body)}"
 
 
+def session_jti(token: str) -> str | None:
+    """The jti of a VALID session token, or None (audit H22).
+
+    `verify_session` returns only the address, so the caller had no way to name
+    the session it wanted to revoke — which is why `revoke_session` was dead
+    code. This verifies the same HMAC and expiry before handing the jti out.
+    """
+    try:
+        body, sig = token.split(".", 1)
+    except ValueError:
+        return None
+    if not hmac.compare_digest(_hmac_hex(body), sig):
+        return None
+    try:
+        payload = json.loads(_from_b64url(body))
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if int(payload.get("e", 0)) < timebase.now():
+        return None
+    return str(payload.get("j", "")) or None
+
+
 def verify_session(token: str) -> str | None:
     try:
         body, sig = token.split(".", 1)

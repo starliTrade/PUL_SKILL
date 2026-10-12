@@ -20,12 +20,12 @@ os.environ.setdefault("ORACLE_SIGNING_SECRET", "test-secret-not-for-prod")
 os.environ.setdefault("ORACLE_PRIVATE_KEY", "0x" + "11" * 32)
 os.environ.setdefault("ESCROW_ADDRESS", "0x" + "ab" * 20)
 
+import main as server  # noqa: E402
 from eth_account import Account  # noqa: E402
 from eth_account.messages import encode_defunct  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import auth  # noqa: E402
-import main as server  # noqa: E402
 
 
 @pytest.fixture

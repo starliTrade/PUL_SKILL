@@ -698,6 +698,27 @@ def auth_verify(body: VerifyRequest, request: Request) -> dict[str, str]:
     return {"token": issue_session(recovered), "address": recovered}
 
 
+@app.post("/api/auth/logout")
+def auth_logout(request: Request) -> dict[str, bool]:
+    """Revoke the caller's session (audit H22).
+
+    `auth.revoke_session()` existed but was reachable from nowhere, so a leaked
+    token stayed valid for its full 2h TTL. This is the endpoint that makes the
+    F-06 mitigation real. Revocation is per-jti, so logging out one device does
+    not sign the user out everywhere.
+    """
+    header = request.headers.get("authorization", "")
+    if not header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = header.removeprefix("Bearer ").strip()
+    if not verify_session(token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    jti = _auth_module.session_jti(token)
+    if jti:
+        _auth_module.revoke_session(jti)
+    return {"ok": True}
+
+
 @app.post("/api/queue")
 def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     address = _auth(request)
