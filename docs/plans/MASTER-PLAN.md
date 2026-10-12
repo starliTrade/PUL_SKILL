@@ -2,10 +2,10 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  نسخه:        1.9-CLOSED (فاز ۱ و ۲ بسته)                                                 ║
+║  نسخه:        2.0-CLOSED (فاز ۱، ۲ و ۳ بسته)                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     45fc028d25aa21d6…2536d5a470125cb0                                                   ║
+║  SHA-256:     2ce565878d3a23e5…4ea7d172a989c880                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -185,7 +185,7 @@
 # فاز ۳ — HIGH قرارداد 🟠
 **هدف:** بستن مسیرهای از دست رفتن/گیر کردن پول. **تخمین:** ۱.۵ روز · **وابستگی:** فاز ۰ (Anvil)
 **⚠️ R6:** هر تغییر → تست Foundry + ABI کلاینت + پین parity
-**🚦 گیت خروج:** `forge test` ≥۳۳ تست سبز + تست‌های جدید روی anvil + ABI به‌روز
+**🚦 گیت خروج:** ✅ **محقق شد** — ۷۹ تست قرارداد (از ۲۱)، coverage قرارداد ۹۸.۳۵٪ خط / ۱۰۰٪ توابع، ۴ invariant، `forge coverage` به‌عنوان گیت، ABI کلاینت به‌روز
 
 ### ۳.۱ — رفع باگ‌ها
 - [x] **H17** انتقال‌های all-or-nothing پول را برای همیشه گیر می‌کنند — `PulsarEscrow.sol:310-313, 327, 331-332`
@@ -212,20 +212,20 @@
   یا حذف، یا اصلاح کامنت/تست تا ادعای بیش‌ازواقع نباشد
 
 ### ۳.۲ — گپ‌های تست قرارداد (۱۲ مورد)
-- [ ] **CT1** Mock USDT بدون bool-return + Mock با `false` + fee-on-transfer + reentrant + blacklisting
-- [ ] **CT2** تست reentrancy با توکن خصمانه
-- [ ] **CT3** تست واقعی replay (`usedSignatures`) — تست فعلی tautological است
-- [ ] **CT4** تست griefing refund بی‌مجوز (H19)
-- [ ] **CT5** تست cross-chain / cross-contract (دو escrow، fork chainid)
-- [ ] **CT6** تست tampered proof (تغییر winner/time/nonce بعد از امضا)
-- [ ] **CT7** تست‌های مرزی: `deadline == now`، `length != 65`، `v ∉ {27,28}`
-- [ ] **CT8** تست `setTreasuryWallet` + گاردهای zero-address
-- [ ] **CT9** assert رویدادها با `vm.expectEmit`
-- [ ] **CT10** تست stuck-funds / گیرنده‌ی revert‌کننده / توکن pause‌شده
-- [ ] **CT11** تست اعشار (M22)
-- [ ] **CT12** تست‌های cross-state: refund بعد از settle، settle بعد از refund، refund روی None، join بعد از Active
-- [ ] **CT13** `forge coverage` + invariant tests (`invariant_*`)
-- [ ] **CT14** fuzz runs 256 → ۱۰k در nightly
+- [x] **CT1** Mock USDT بدون bool-return + Mock با `false` + fee-on-transfer + reentrant + blacklisting
+- [x] **CT2** تست reentrancy با توکن خصمانه
+- [x] **CT3** تست واقعی replay (`usedSignatures`) — تست فعلی tautological است
+- [x] **CT4** تست griefing refund بی‌مجوز (H19)
+- [x] **CT5** تست cross-chain / cross-contract (دو escrow، fork chainid)
+- [x] **CT6** تست tampered proof (تغییر winner/time/nonce بعد از امضا)
+- [x] **CT7** تست‌های مرزی: `deadline == now`، `length != 65`، `v ∉ {27,28}`
+- [x] **CT8** تست `setTreasuryWallet` + گاردهای zero-address
+- [x] **CT9** assert رویدادها با `vm.expectEmit`
+- [x] **CT10** تست stuck-funds / گیرنده‌ی revert‌کننده / توکن pause‌شده
+- [x] **CT11** تست اعشار (M22)
+- [x] **CT12** تست‌های cross-state: refund بعد از settle، settle بعد از refund، refund روی None، join بعد از Active
+- [x] **CT13** `forge coverage` + invariant tests (`invariant_*`)
+- [x] **CT14** fuzz runs 256 → ۱۰k در nightly
 
 ---
 
@@ -565,6 +565,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 3.3-CLOSED | 2026-10-12 | **فاز ۳ کامل شد (۸/۸ رفع + ۱۴/۱۴ گپ تست).** ۷۹ تست قرارداد، coverage قرارداد ۹۸.۳۵٪، ۴ invariant، گیت `forge coverage` اضافه شد. | ⬜ |
 | 3.2 | 2026-10-12 | **M22/M23/M24/M25 رفع شدند.** ۴۹ تست قرارداد. **فاز ۳: ۸/۸ آیتم رفع‌شد؛ فقط ۱۴ گپ تست (CT1–CT14) مانده.** | ⬜ |
 | 3.1 | 2026-10-12 | **H19 رفع شد (D2 = الف: پنجره‌ی تسویه‌ی انحصاری، `REFUND_GRACE = 10 min`).** ۴۰ تست قرارداد. coverage ۸۱٪. | ⬜ |
 | 3.0 | 2026-10-12 | **فاز ۳ شروع شد.** H17 (deferred payout)، H18 (سقف deadline)، H20 (activatedAt + cutoff join) رفع شدند. ۳۵ تست قرارداد. coverage ۷۹٪. | ⬜ |
