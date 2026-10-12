@@ -27,12 +27,12 @@ os.environ.setdefault("ORACLE_SIGNING_SECRET", "test-secret-not-for-prod")
 os.environ.setdefault("ORACLE_PRIVATE_KEY", "0x" + "11" * 32)
 os.environ.setdefault("ESCROW_ADDRESS", "0x" + "ab" * 20)
 
+import main as server  # noqa: E402
 from eth_account import Account  # noqa: E402
 from eth_account.messages import encode_defunct  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import economy  # noqa: E402
-import main as server  # noqa: E402
 
 
 @pytest.fixture
@@ -69,11 +69,17 @@ def _play(client: TestClient, headers: dict[str, str], match_id: str, addr: str,
 
     # Model the wall-clock wait on the server object, exactly as the legacy
     # suite does: the claim is measured from target appearance.
-    for m in server.store.memory.matches.values():
-        if m.match_id == match_id:
-            rr = m.rounds.get(addr, {}).get(idx)
-            if rr and rr.revealed_at:
-                rr.revealed_at -= (rr.target_ms + ms) / 1000.0
+    #
+    # Goes through the store abstraction rather than `store.memory.matches`:
+    # with FIRESTORE_EMULATOR_HOST set the server boots in Firestore mode, and
+    # a rewind applied only to the in-process cache would be invisible to the
+    # next request — the round would then be rejected as "submitted before the
+    # target was displayed" and the match would never settle.
+    match = server.store.get(match_id)
+    rr = match.rounds.get(addr, {}).get(idx)
+    if rr and rr.revealed_at:
+        rr.revealed_at -= (rr.target_ms + ms) / 1000.0
+        server.store.put(match)
 
     r = client.post(
         "/api/round/result",

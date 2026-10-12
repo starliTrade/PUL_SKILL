@@ -716,16 +716,38 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
                     # here (the client requests /settle only to FETCH the
                     # stored envelope, which replays without ledgering) — so
                     # the economy ledger must be written in THIS path too.
-                    # record_settlement is best-effort and idempotent
-                    # (settlementId), so the later replay path can never
-                    # double-count.
-                    economy.record_settlement(m)
+                    #
+                    # Audit H4: SIGNAL it, do not do it. `record_settlement`
+                    # performs its own Firestore writes, so calling it from
+                    # inside this mutate committed a ledger row independently of
+                    # the match transaction — a rolled-back settlement left a
+                    # ledger row behind. It runs after store.update returns.
+                    res["_ledger_pending"] = True
             return res
 
         res = store.update(body.matchId, _mutate)
+        if res.pop("_ledger_pending", False):
+            _ledger_settlement(body.matchId)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return res
+
+
+def _ledger_settlement(match_id: str) -> None:
+    """Write the economy ledger AFTER the match transaction has committed.
+
+    Audit H4: this used to run inside the store transaction, so a settlement
+    that was rolled back still produced a ledger row. Reading the committed
+    match here also means the ledger records what was actually persisted rather
+    than the in-transaction object. `record_settlement` is idempotent
+    (settlementId gate), so calling it on a replay is a no-op.
+    """
+    try:
+        match = store.get(match_id)
+    except MatchError:
+        return
+    if match.status == "settled":
+        economy.record_settlement(match)
 
 
 def _attach_signed_envelope(m: Any, result: dict[str, Any]) -> dict[str, Any]:
@@ -801,10 +823,10 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(e))
     if result.get("status") == "settled":
         envelope = _attach_signed_envelope(m, result)
-        # C5 — economy ledger: the settlement is a FACT; the ledger (Admin
-        # SDK, bypassing the client-blocking security rules) is the writer the
-        # firestore.rules comment anticipated. Best-effort — never blocks.
-        economy.record_settlement(m)
+        # Audit H4: the ledger write moved OUT of this mutate. It used to run
+        # here, inside the store transaction, so a rolled-back settlement still
+        # produced a ledger row. The callers now ledger after store.update
+        # returns (see _ledger_settlement).
         return envelope
     return {"status": "void", "reason": result.get("reason", "stakes refund")}
 
@@ -818,6 +840,7 @@ def _finalize_if_due(match: Any) -> None:
         return
     try:
         store.update(match.match_id, _settle_once)
+        _ledger_settlement(match.match_id)
     except (MatchError, HTTPException):
         pass
 
@@ -851,6 +874,7 @@ def _resign_stale_settlements() -> None:
                 continue  # past the on-chain horizon — only refund applies
             try:
                 store.update(mid, _settle_once)
+                _ledger_settlement(mid)
             except (MatchError, HTTPException):
                 pass
         for m in store.sweep_stale_settlements():
@@ -859,6 +883,7 @@ def _resign_stale_settlements() -> None:
                 continue  # past the on-chain horizon — only refund applies
             try:
                 store.update(m.match_id, _settle_once)
+                _ledger_settlement(m.match_id)
             except (MatchError, HTTPException):
                 pass
     except Exception:
@@ -887,6 +912,7 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
     # different signatures; the transaction serializes them and the loser of
     # the race replays the ONE stored proof.
     envelope = store.update(match_id, _settle_once)
+    _ledger_settlement(match_id)
     return envelope
 
 
