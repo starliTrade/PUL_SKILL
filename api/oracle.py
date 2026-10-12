@@ -159,8 +159,15 @@ _address_bytes32 = _address_bytes20
 
 
 def _match_id_bytes32(match_id: str) -> bytes:
+    """The 32-byte id the contract uses, from a server match id.
+
+    Convention (audit M19): a 64-character HEX id is decoded as bytes; anything
+    else is hashed. The old code checked only the LENGTH, so a 64-character
+    non-hex id hit `bytes.fromhex` and raised — taking the signing path down.
+    The hash branch has to actually be reachable.
+    """
     clean = match_id.lower().removeprefix("0x")
-    if len(clean) == 64:
+    if len(clean) == 64 and all(c in "0123456789abcdef" for c in clean):
         return bytes.fromhex(clean)
     # Server-generated match ids are free-form; hash them into the 32-byte id
     # the client must also use when calling createDuel/joinDuel.

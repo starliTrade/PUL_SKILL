@@ -30,7 +30,6 @@ When Firestore is not configured the module degrades to a no-op.
 from __future__ import annotations
 
 import hashlib
-import os
 import sys
 from typing import Any
 
@@ -100,12 +99,33 @@ def ledger_health() -> dict[str, Any]:
     }
 
 
+# Audit M20: the contract's PLATFORM_FEE_BPS is the ON-CHAIN AUTHORITY — it is
+# what actually splits the money. This used to read the env, so an override made
+# the server's ledger disagree with the chain and a player's recorded prize
+# differed from what they received. The value is pinned to the Solidity source
+# by `tests/unit/test_economy_and_oracle_ids.py`.
+CONTRACT_PLATFORM_FEE_BPS = 200
+
+
 def _winner_share() -> float:
-    """Single source of truth for the winner share (F-17): 98% unless the
-    platform fee bps env is overridden. The contract's PLATFORM_FEE_BPS = 200
-    is the on-chain authority; this mirrors it for display/ledger math."""
-    fee_bps = float(os.environ.get("PLATFORM_FEE_BPS", "200"))
-    return (10_000.0 - fee_bps) / 10_000.0
+    """The winner share the CONTRACT pays (audit M20). Not env-overridable."""
+    return (10_000.0 - CONTRACT_PLATFORM_FEE_BPS) / 10_000.0
+
+
+def prize_in_units(stake_units: int, decimals: int = 6) -> int:
+    """The winner's prize in BASE UNITS (audit M21).
+
+    Integer arithmetic throughout: the pool is `2 * stake`, the fee is taken in
+    base units, and the remainder is the prize — exactly what the contract does
+    with its own integer math. Float arithmetic (`round(stake * 2 * share, 2)`)
+    can differ by a base unit, so the ledger would record a number the chain
+    never paid.
+    """
+    if stake_units <= 0:
+        return 0
+    pool = 2 * stake_units
+    fee = (pool * CONTRACT_PLATFORM_FEE_BPS) // 10_000
+    return pool - fee
 
 
 def record_claim(match_id: str, claimer: str, tx_hash: str, signature: str) -> bool:
@@ -207,7 +227,9 @@ def record_settlement(match: Any) -> None:
             for a in players
         }
         forfeit = any(bool(v) for v in (packet.get("forfeits", {}) or {}).values())
-        prize = round(stake * 2 * _winner_share(), 2) if winner else 0.0
+        # Audit M21: computed in base units, exactly like the contract.
+        prize_units = prize_in_units(int(round(stake * 10**6)), 6) if winner else 0
+        prize = prize_units / 10**6
 
         # F-07 idempotency key: derived from the settled FACTS themselves, so
         # the same settlement reached twice produces the same id.
