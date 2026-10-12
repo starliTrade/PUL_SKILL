@@ -171,6 +171,24 @@ else
   skip_gate "chain tests (anvil + escrow)" "anvil or contract deps missing (plan item 0.8)"
 fi
 
+# --- 6c. Contract coverage — plan item CT13 -----------------------------------
+# `forge coverage` has no fail-under, so the floor is enforced here. Only the
+# escrow is gated: the test helpers are scaffolding, and Deploy.s.sol is a
+# script that no test executes.
+if command -v forge >/dev/null 2>&1 && [[ -f "$ROOT/contracts/lib/forge-std/src/Test.sol" ]]; then
+  run_gate "contract coverage (PulsarEscrow.sol >= 95% lines)" bash -c '
+    set -euo pipefail
+    cd contracts
+    out="$(forge coverage --report summary 2>/dev/null)"
+    line="$(printf "%s" "$out" | grep -E "^\| PulsarEscrow\.sol" | head -1)"
+    pct="$(printf "%s" "$line" | awk -F"|" "{print \$3}" | grep -oE "[0-9]+\.[0-9]+" | head -1)"
+    echo "PulsarEscrow.sol line coverage: ${pct}%"
+    awk -v p="$pct" "BEGIN { exit !(p+0 >= 95) }"
+  '
+else
+  skip_gate "contract coverage (PulsarEscrow.sol >= 95% lines)" "forge or contract deps missing"
+fi
+
 # --- 7. Contract compile gate (solc, no Foundry needed) -----------------------
 if [[ -f "$ROOT/contracts/test/compile_check.js" ]]; then
   run_gate "contract compile gate (solc 0.8.20)" bun run test:contract
