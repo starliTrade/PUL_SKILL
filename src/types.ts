@@ -44,14 +44,24 @@ export interface MouseTrajectoryPoint {
   t: number;
 }
 
+/**
+ * Audit H16 — only what is actually MEASURED.
+ *
+ * This used to carry `humanEntropyScore`, `fittsKinematicScore`,
+ * `neuromuscularJitterHz` and `subMillisecondClockIntegrity`. None of them was a
+ * measurement: the first two were lookup tables on the reaction time, the third
+ * was `3.8 + sin(reactionTimeMs * 0.05) * 1.8` (a sine wave of the clock), and
+ * the fourth was always `true`. Under D1 (real money) a player shown "Human
+ * Entropy 96.5%" believes the game verified something — and a false claim of
+ * verification is a claim the operator cannot defend.
+ *
+ * What remains is real: the trajectory curvature computed from the sampled
+ * points, how many samples were seen, and whether the event passed the checks
+ * that exist (`isTrusted`, the human floor, the trajectory analysis).
+ */
 export interface BiometricTelemetry {
-  humanEntropyScore: number; // 0 - 100%
-  trajectoryCurvature: number; // curvature variance
-  fittsKinematicScore: number; // Neuromuscular acceleration bell curve (0 - 100%)
-  neuromuscularJitterHz: number; // Natural 2-8 Hz hand tremor frequency
-  subMillisecondClockIntegrity: boolean;
+  trajectoryCurvature: number; // curvature variance, from the sampled points
   sampleCount: number;
-  accelerationSmoothness: number;
   passedValidation: boolean;
   flagReason?: string;
 }

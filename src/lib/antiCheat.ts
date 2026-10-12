@@ -88,13 +88,8 @@ class AntiCheatEngine {
     // 1. Synthetic event integrity check
     if (eventCheck && !eventCheck.isTrusted) {
       return {
-        humanEntropyScore: 0.0,
         trajectoryCurvature: 0,
-        fittsKinematicScore: 0.0,
-        neuromuscularJitterHz: 0,
-        subMillisecondClockIntegrity: false,
         sampleCount: trajectory.length,
-        accelerationSmoothness: 0,
         passedValidation: false,
         flagReason: 'Synthetic event detected: browser isTrusted flag is false (programmatic DOM dispatch).',
       };
@@ -103,13 +98,8 @@ class AntiCheatEngine {
     // 2. Biological speed floor check (< 105ms is physically impossible for retina -> brain -> spinal cord -> finger)
     if (reactionTimeMs < this.MIN_HUMAN_REACTION_MS) {
       return {
-        humanEntropyScore: 8.5,
         trajectoryCurvature: 0,
-        fittsKinematicScore: 10.0,
-        neuromuscularJitterHz: 0,
-        subMillisecondClockIntegrity: false,
         sampleCount: trajectory.length,
-        accelerationSmoothness: 0,
         passedValidation: false,
         flagReason: `Reaction time (${reactionTimeMs}ms) breached physiological human floor (min ${this.MIN_HUMAN_REACTION_MS}ms). Optical sensor/script trigger flagged.`,
       };
@@ -117,18 +107,10 @@ class AntiCheatEngine {
 
     // 3. Direct Tap / Mobile Touch (Trajectory points < 2)
     if (trajectory.length < 2) {
-      const entropy = reactionTimeMs >= 160 ? 96.5 : (reactionTimeMs >= 130 ? 88.0 : 78.5);
-      const fitts = reactionTimeMs >= 160 ? 95.0 : 82.0;
-      const jitter = parseFloat((3.8 + (Math.sin(reactionTimeMs * 0.05) * 1.8)).toFixed(1));
 
       return {
-        humanEntropyScore: entropy,
         trajectoryCurvature: 0.22,
-        fittsKinematicScore: fitts,
-        neuromuscularJitterHz: Math.max(2.0, Math.min(7.5, jitter)),
-        subMillisecondClockIntegrity: true,
         sampleCount: Math.max(1, trajectory.length),
-        accelerationSmoothness: 0.92,
         passedValidation: true,
       };
     }
@@ -174,13 +156,8 @@ class AntiCheatEngine {
     // Strict bot detection: purely linear path + zero time jitter + high sample count
     if (trajectory.length > 6 && isPurelyLinear && dtVariance < 0.04) {
       return {
-        humanEntropyScore: 15.2,
         trajectoryCurvature: 0.01,
-        fittsKinematicScore: 10.0,
-        neuromuscularJitterHz: 0,
-        subMillisecondClockIntegrity: false,
         sampleCount: trajectory.length,
-        accelerationSmoothness: 1.0,
         passedValidation: false,
         flagReason: 'Robotic trajectory detected: zero-jitter linear mouse interpolation detected.',
       };
@@ -217,22 +194,10 @@ class AntiCheatEngine {
 
     // (d) Deterministic per-session pseudo-identifier (hash of real signals,
     // NOT a “human-entropy” score — it measures nothing about the user).
-    const signals = `${hasBellCurveProfile}|${centrality.toFixed(3)}|${jitterHz.toFixed(2)}|${smoothness.toFixed(3)}`;
-    let h = 2166136261;
-    for (let i = 0; i < signals.length; i++) {
-      h ^= signals.charCodeAt(i);
-      h = Math.imul(h, 16777619);
-    }
-    const entropyScore = 60 + (h >>> 0) % 400 / 10; // 60.0–99.9, stable per signal set
 
     return {
-      humanEntropyScore: parseFloat(entropyScore.toFixed(1)),
       trajectoryCurvature: parseFloat((totalCurvature / Math.max(1, trajectory.length)).toFixed(2)),
-      fittsKinematicScore: parseFloat((centrality * 100).toFixed(1)),
-      neuromuscularJitterHz: parseFloat(jitterHz.toFixed(1)),
-      subMillisecondClockIntegrity: true,
       sampleCount: trajectory.length,
-      accelerationSmoothness: parseFloat(smoothness.toFixed(2)),
       passedValidation: true,
     };
   }
