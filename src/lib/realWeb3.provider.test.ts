@@ -18,12 +18,20 @@ vi.mock('./firebase', () => ({
 }));
 
 import { realWeb3Manager } from './realWeb3';
+import { eip6963Manager } from './eip6963';
 
 type FakeProvider = {
   name: string;
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
   calls: string[];
 };
+
+function addressFor(name: string): string {
+  // Deterministic, hex-valid address per wallet name.
+  let hex = '';
+  for (const ch of name) hex += ch.charCodeAt(0).toString(16).padStart(2, '0');
+  return '0x' + hex.padEnd(40, '0').slice(0, 40);
+}
 
 function makeProvider(name: string, chainIdHex = '0x89'): FakeProvider {
   const calls: string[] = [];
@@ -35,7 +43,7 @@ function makeProvider(name: string, chainIdHex = '0x89'): FakeProvider {
       switch (method) {
         case 'eth_requestAccounts':
         case 'eth_accounts':
-          return [`0x${name.toLowerCase().padEnd(40, '0').slice(0, 40)}`];
+          return [addressFor(name)];
         case 'eth_chainId':
           return chainIdHex;
         default:
@@ -56,6 +64,10 @@ describe('active EIP-1193 provider (audit C3)', () => {
   beforeEach(() => {
     localStorage.clear();
     delete (window as unknown as { ethereum?: unknown }).ethereum;
+    // realWeb3Manager is a singleton: without this, a provider bound by one
+    // test leaks into the next and the assertion passes for the wrong reason.
+    realWeb3Manager.disconnect();
+    realWeb3Manager.bindActiveProvider(null);
     // Balances are a network concern; the provider identity is not.
     vi.spyOn(realWeb3Manager, 'fetchLiveOnChainBalances').mockResolvedValue({
       usdt: 0,
@@ -93,6 +105,29 @@ describe('active EIP-1193 provider (audit C3)', () => {
     realWeb3Manager.bindActiveProvider(metaMask);
 
     expect(realWeb3Manager.getActiveEip1193Provider()).toBe(metaMask);
+  });
+
+  it('a reload restores the session onto the SAME provider, not window.ethereum', async () => {
+    // The first pass at C3 only covered the two interactive connect paths; a
+    // page reload restored the session through a third path that never recorded
+    // the provider, so money transactions fell back to window.ethereum again.
+    const metaMask = makeProvider('MetaMask');
+    const rabby = makeProvider('Rabby');
+    (window as unknown as { ethereum: FakeProvider }).ethereum = metaMask;
+
+    localStorage.setItem('pulsar_active_address', addressFor('Rabby'));
+    localStorage.setItem('pulsar_active_provider', 'Rabby');
+    localStorage.setItem('pulsar_connection_mode', 'injected');
+
+    vi.spyOn(eip6963Manager, 'getProviderByName').mockReturnValue({
+      info: { name: 'Rabby', uuid: 'uuid-rabby', rdns: 'io.rabby', icon: '' },
+      provider: rabby,
+    } as never);
+
+    await realWeb3Manager.restoreSession();
+
+    expect(realWeb3Manager.getActiveEip1193Provider()).toBe(rabby);
+    expect(realWeb3Manager.getActiveEip1193Provider()).not.toBe(metaMask);
   });
 
   it('a WalletConnect zombie does not shadow the connected injected provider', async () => {

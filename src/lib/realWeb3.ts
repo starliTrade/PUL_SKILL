@@ -190,7 +190,12 @@ class RealWeb3Manager {
           if (!accounts || accounts.length === 0) {
             this.disconnect();
           } else {
-            this.setConnectedAddress(accounts[0], this.currentAccount.providerName || 'MetaMask', CHAIN.chainId);
+            this.setConnectedAddress(
+              accounts[0],
+              this.currentAccount.providerName || 'MetaMask',
+              CHAIN.chainId,
+              ethereum
+            );
           }
         });
 
@@ -400,7 +405,8 @@ class RealWeb3Manager {
             await this.setConnectedAddress(
               accounts[0],
               this.pendingWalletName || 'Trust Wallet',
-              this.wcProvider.chainId || CHAIN.chainId
+              this.wcProvider.chainId || CHAIN.chainId,
+              this.wcProvider
             );
             return;
           }
@@ -582,9 +588,14 @@ class RealWeb3Manager {
 
         if (accounts && accounts.length > 0) {
           this.pendingWalletName = savedProvider;
-          return await this.setConnectedAddress(accounts[0], savedProvider, provider.chainId || CHAIN.chainId);
+          return await this.setConnectedAddress(
+            accounts[0],
+            savedProvider,
+            provider.chainId || CHAIN.chainId,
+            provider
+          );
         } else if (savedAddr) {
-          return await this.setConnectedAddress(savedAddr, savedProvider, CHAIN.chainId);
+          return await this.setConnectedAddress(savedAddr, savedProvider, CHAIN.chainId, provider);
         }
       } catch (err) {
         console.warn('[Pulsar Web3] WalletConnect session recovery fallback:', err);
@@ -605,7 +616,7 @@ class RealWeb3Manager {
             const chainHex = await injected.request({ method: 'eth_chainId' });
             if (chainHex) chainId = parseInt(chainHex, 16);
           } catch {}
-          return await this.setConnectedAddress(accounts[0], savedProvider, chainId);
+          return await this.setConnectedAddress(accounts[0], savedProvider, chainId, injected);
         }
       } catch {}
     }
@@ -679,7 +690,8 @@ class RealWeb3Manager {
         return await this.setConnectedAddress(
           existingAccts[0],
           providerName,
-          existing.chainId || CHAIN.chainId
+          existing.chainId || CHAIN.chainId,
+          existing
         );
       }
     } catch {}
@@ -699,7 +711,8 @@ class RealWeb3Manager {
           return this.setConnectedAddress(
             sessAccts[0],
             providerName,
-            p.chainId || CHAIN.chainId
+            p.chainId || CHAIN.chainId,
+            p
           );
         }
       } catch {}
@@ -721,7 +734,8 @@ class RealWeb3Manager {
           return await this.setConnectedAddress(
             provider.accounts[0],
             providerName,
-            provider.chainId || CHAIN.chainId
+            provider.chainId || CHAIN.chainId,
+            provider
           );
         }
 
@@ -758,7 +772,7 @@ class RealWeb3Manager {
 
         if (accounts && accounts.length > 0) {
           const chainId = provider.chainId || CHAIN.chainId;
-          return await this.setConnectedAddress(accounts[0], providerName, chainId);
+          return await this.setConnectedAddress(accounts[0], providerName, chainId, provider);
         }
         throw new Error('No accounts selected in your wallet.');
       } catch (err: any) {
@@ -1175,8 +1189,18 @@ class RealWeb3Manager {
   private async setConnectedAddress(
     address: string,
     providerName: string,
-    chainId: number = 137
+    chainId: number = 137,
+    /**
+     * Audit C3: the EIP-1193 provider this session belongs to. Every path that
+     * establishes a session has one in scope, and recording it HERE (rather
+     * than at each call site) is what makes the fix complete — the first pass
+     * only covered the two interactive connect paths and left the reload /
+     * session-restore / accountsChanged paths falling back to window.ethereum.
+     * `undefined` means "caller has no provider to report"; `null` clears it.
+     */
+    provider?: any | null
   ): Promise<ConnectedAccountState> {
+    if (provider !== undefined) this.bindActiveProvider(provider);
     const formatted = address.toLowerCase();
     const short = `${formatted.slice(0, 6)}...${formatted.slice(-4)}`;
 

@@ -127,28 +127,46 @@ class LocalChain:
             return False
 
     # -- transactions ----------------------------------------------------------
+    def _next_nonce(self, sender: str) -> int:
+        """The pending nonce for `sender`, read fresh from the node.
+
+        A cached counter is faster but drifts the moment anything else sends
+        from the same account (a re-deploy, another fixture, a parallel test),
+        and the failure mode is an opaque "nonce too low" deep inside a test.
+        anvil is local, so a fresh read per transaction is cheap and correct.
+        """
+        return int(self.rpc("eth_getTransactionCount", [sender, "pending"]), 16)
+
     def send(self, private_key: str, to: str, data: str, value: int = 0) -> str:
         account = Account.from_key(private_key)
         sender = account.address
-        if sender not in self._nonces:
-            self._nonces[sender] = int(self.rpc("eth_getTransactionCount", [sender, "pending"]), 16)
-        tx = {
-            "nonce": self._nonces[sender],
-            "to": to,
-            "value": value,
-            "gas": GAS_LIMIT,
-            "gasPrice": GAS_PRICE,
-            "chainId": self.chain_id,
-            "data": data,
-        }
-        signed = account.sign_transaction(tx)
-        raw = signed.raw_transaction.hex()
-        tx_hash = self.rpc("eth_sendRawTransaction", [raw if raw.startswith("0x") else "0x" + raw])
-        self._nonces[sender] += 1
-        receipt = self.wait(tx_hash)
-        if int(receipt.get("status", "0x0"), 16) != 1:
-            raise RuntimeError(f"tx reverted: {tx_hash}")
-        return tx_hash
+
+        last_error: Exception | None = None
+        for attempt in range(2):
+            tx = {
+                "nonce": self._next_nonce(sender),
+                "to": to,
+                "value": value,
+                "gas": GAS_LIMIT,
+                "gasPrice": GAS_PRICE,
+                "chainId": self.chain_id,
+                "data": data,
+            }
+            signed = account.sign_transaction(tx)
+            raw = signed.raw_transaction.hex()
+            raw = raw if raw.startswith("0x") else "0x" + raw
+            try:
+                tx_hash = self.rpc("eth_sendRawTransaction", [raw])
+            except RuntimeError as exc:
+                last_error = exc
+                if "nonce" in str(exc).lower() and attempt == 0:
+                    continue  # re-read the nonce and retry once
+                raise
+            receipt = self.wait(tx_hash)
+            if int(receipt.get("status", "0x0"), 16) != 1:
+                raise RuntimeError(f"tx reverted: {tx_hash}")
+            return tx_hash
+        raise RuntimeError(f"could not send transaction: {last_error}")
 
     def wait(self, tx_hash: str, tries: int = 60) -> dict[str, Any]:
         import time
