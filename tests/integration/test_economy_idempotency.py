@@ -178,3 +178,55 @@ def test_settlement_id_is_stable_for_the_same_facts(ledger, fs_db):
     # suppress a genuinely different settlement.
     other = economy.settlement_id_for("m1", "0x" + "aa" * 20, 1.0, 1_700_000_000, {"x": [1.0]})
     assert other != first
+
+
+def test_concurrent_claims_cannot_both_win(ledger, fs_db):
+    """H3 (closure review) — `record_claim` has the same read-then-write race.
+
+    The claim-conflict guard reads the match document, compares
+    `settlementTxHash`, and then writes — outside any transaction. Two
+    concurrent claims with DIFFERENT tx hashes both pass the check, both return
+    True, and the last write silently wins, so the documented invariant ("the
+    first VERIFIED claim wins; nobody can rewrite a settled match's proof") is
+    not enforced.
+
+    This is the same class of bug as H3 in `record_settlement`, found by
+    reviewing the phase-2 diff against the audit rather than by the audit
+    itself.
+    """
+    match_id, winner, loser = _fresh_ids("claim")
+    fs_db.collection("matches").document(match_id).set(
+        {"id": match_id, "status": "settled", "winner": winner}
+    )
+
+    results: list[bool] = []
+    barrier = threading.Barrier(2)
+
+    def claim(tx_hash: str) -> None:
+        try:
+            barrier.wait(timeout=10)
+            results.append(ledger.record_claim(match_id, winner, tx_hash, "0xsig"))
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            results.append(False)
+            print("claim raised:", exc)
+
+    threads = [
+        threading.Thread(target=claim, args=("0x" + "aa" * 32,)),
+        threading.Thread(target=claim, args=("0x" + "bb" * 32,)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert results.count(True) == 1, (
+        f"both concurrent claims were accepted ({results}) — the first-claim-wins "
+        "guard is a read-then-write TOCTOU"
+    )
+
+    recorded = (fs_db.collection("matches").document(match_id).get().to_dict() or {}).get(
+        "settlementTxHash"
+    )
+    assert recorded in ("0x" + "aa" * 32, "0x" + "bb" * 32), (
+        f"the recorded proof is not one of the submitted hashes: {recorded!r}"
+    )
