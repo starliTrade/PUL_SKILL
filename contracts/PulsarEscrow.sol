@@ -7,6 +7,10 @@ pragma solidity ^0.8.20;
  * @notice Optimized to prevent Stack Too Deep on all standard Solidity EVM compilers.
  */
 
+interface IERC20Metadata {
+    function decimals() external view returns (uint8);
+}
+
 interface IERC20 {
     function totalSupply() external view returns (uint256);
     function balanceOf(address account) external view returns (uint256);
@@ -180,14 +184,33 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
      * this much later. The winner gets a full, uncontested window.
      */
     uint256 public constant REFUND_GRACE = 10 minutes;
-    // P0-fix: anti-dust/anti-spam floor. Server ALLOWED_STAKES are 1/2/5/10 USDT
-    // (6 decimals => 1 USDT = 1e6 units). Permissionless createDuel with
-    // `stake > 0` let anyone squat matchIds and spam Created duels for ~1 wei.
-    uint256 public constant MIN_STAKE_UNITS = 1_000_000;
+    // Anti-dust/anti-spam floor: one whole payment token. Permissionless
+    // createDuel with `stake > 0` let anyone squat matchIds and spam Created
+    // duels for ~1 wei.
+    //
+    // Audit M22: this used to be the literal 1_000_000, i.e. "1 USDT at 6
+    // decimals". Deployed against any other token the floor silently became
+    // dust while the server read the real `decimals()` — the two disagreed
+    // about what "1 USDT" means. Derived from the token in the constructor.
+    uint256 public immutable MIN_STAKE_UNITS;
+
+    /**
+     * @dev Audit M24 — admin changes are timelocked.
+     *
+     * `setTreasuryWallet` / `setOracleSigner` used to take effect immediately.
+     * A typo'd treasury routes every future fee to an unrecoverable address,
+     * and an oracle rotation instantly invalidates every outstanding signed
+     * settlement — a winner mid-claim loses their proof with no warning.
+     */
+    uint256 public constant ADMIN_TIMELOCK = 2 days;
 
     IERC20 public immutable paymentToken;
     address public treasuryWallet;
     address public oracleSigner;
+    address public pendingTreasuryWallet;
+    uint256 public treasuryEffectiveAt;
+    address public pendingOracleSigner;
+    uint256 public oracleEffectiveAt;
 
     enum MatchStatus {
         None,
@@ -222,6 +245,17 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
     }
 
     mapping(bytes32 => DuelMatch) public matches;
+    /**
+     * @dev Audit M25 — this is DEFENCE IN DEPTH, not the replay defence.
+     *
+     * It is unreachable in practice: a replay of the same proof hits the
+     * `status == Active` check first and reverts there, so the mapping is only
+     * ever consulted if that check is ever relaxed. The comment and the test
+     * used to claim it was what stopped replays, which overstated it.
+     *
+     * Kept because it is cheap insurance for a future change to the status
+     * gate; the test that exercises it now says what it actually proves.
+     */
     mapping(bytes32 => bool) public usedSignatures;
 
     /**
@@ -258,6 +292,9 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
     event MatchRefunded(bytes32 indexed matchId, uint256 refundPerPlayer);
     event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
     event PayoutDeferred(address indexed to, uint256 amount);
+    event TreasuryChangeScheduled(address indexed newTreasury, uint256 effectiveAt);
+    event OracleChangeScheduled(address indexed newOracle, uint256 effectiveAt);
+    event PendingAdminChangesCancelled();
     event Withdrawn(address indexed to, uint256 amount);
     event OracleSignerUpdated(address indexed oldOracle, address indexed newOracle);
 
@@ -273,6 +310,11 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         paymentToken = IERC20(_paymentToken);
         treasuryWallet = _treasuryWallet;
         oracleSigner = _oracleSigner;
+
+        // Audit M22: read the token's own decimals rather than assuming 6.
+        uint8 decimals = IERC20Metadata(_paymentToken).decimals();
+        require(decimals <= 36, "Invalid token decimals");
+        MIN_STAKE_UNITS = 10 ** uint256(decimals);
     }
 
     function createDuel(bytes32 matchId, uint256 stakeAmount) external nonReentrant {
@@ -299,7 +341,9 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
             loserReactionMs: 0
         });
 
-        emit MatchCreated(matchId, msg.sender, received, received * 2);
+        // Audit M23: the pool is 0 until the joiner pays; emitting `received*2`
+        // showed indexers a 2x pool for a duel holding one stake.
+        emit MatchCreated(matchId, msg.sender, received, 0);
     }
 
     function joinDuel(bytes32 matchId) external nonReentrant {
@@ -456,18 +500,51 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         emit Withdrawn(msg.sender, amount);
     }
 
+    /// @dev Audit M24: schedule a treasury change; it applies after ADMIN_TIMELOCK.
     function setTreasuryWallet(address _newTreasury) external onlyOwner {
         require(_newTreasury != address(0), "Zero address");
-        address oldTreasury = treasuryWallet;
-        treasuryWallet = _newTreasury;
-        emit TreasuryUpdated(oldTreasury, _newTreasury);
+        pendingTreasuryWallet = _newTreasury;
+        treasuryEffectiveAt = block.timestamp + ADMIN_TIMELOCK;
+        emit TreasuryChangeScheduled(_newTreasury, treasuryEffectiveAt);
     }
 
+    /// @dev Apply a scheduled treasury change once the timelock has elapsed.
+    function applyTreasuryWallet() external {
+        require(pendingTreasuryWallet != address(0), "No pending treasury");
+        require(block.timestamp >= treasuryEffectiveAt, "Timelock not elapsed");
+        address oldTreasury = treasuryWallet;
+        treasuryWallet = pendingTreasuryWallet;
+        pendingTreasuryWallet = address(0);
+        treasuryEffectiveAt = 0;
+        emit TreasuryUpdated(oldTreasury, treasuryWallet);
+    }
+
+    /// @dev Audit M24: schedule an oracle change; it applies after ADMIN_TIMELOCK.
     function setOracleSigner(address _newOracle) external onlyOwner {
         require(_newOracle != address(0), "Zero address");
+        pendingOracleSigner = _newOracle;
+        oracleEffectiveAt = block.timestamp + ADMIN_TIMELOCK;
+        emit OracleChangeScheduled(_newOracle, oracleEffectiveAt);
+    }
+
+    /// @dev Apply a scheduled oracle change once the timelock has elapsed.
+    function applyOracleSigner() external {
+        require(pendingOracleSigner != address(0), "No pending oracle");
+        require(block.timestamp >= oracleEffectiveAt, "Timelock not elapsed");
         address oldOracle = oracleSigner;
-        oracleSigner = _newOracle;
-        emit OracleSignerUpdated(oldOracle, _newOracle);
+        oracleSigner = pendingOracleSigner;
+        pendingOracleSigner = address(0);
+        oracleEffectiveAt = 0;
+        emit OracleSignerUpdated(oldOracle, oracleSigner);
+    }
+
+    /// @dev Cancel both pending admin changes.
+    function cancelPendingAdminChanges() external onlyOwner {
+        pendingTreasuryWallet = address(0);
+        treasuryEffectiveAt = 0;
+        pendingOracleSigner = address(0);
+        oracleEffectiveAt = 0;
+        emit PendingAdminChangesCancelled();
     }
 
     function recoverSigner(bytes32 ethSignedHash, bytes memory signature) internal pure returns (address) {

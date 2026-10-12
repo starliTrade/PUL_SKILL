@@ -104,6 +104,15 @@ export const PULSAR_ESCROW_ABI = [
   // Audit H19: the exclusive settlement window — the refund opens only after
   // MATCH_TIMEOUT + REFUND_GRACE, so a stalling loser cannot deny the winner.
   'function REFUND_GRACE() view returns (uint256)',
+  // Audit M22: derived from the payment token's decimals, not hard-coded.
+  'function MIN_STAKE_UNITS() view returns (uint256)',
+  // Audit M24: admin changes are scheduled, then applied after a timelock.
+  'function ADMIN_TIMELOCK() view returns (uint256)',
+  'function pendingTreasuryWallet() view returns (address)',
+  'function pendingOracleSigner() view returns (address)',
+  'function applyTreasuryWallet() external',
+  'function applyOracleSigner() external',
+  'function cancelPendingAdminChanges() external',
   'function matches(bytes32) view returns (bytes32 matchId, address player1, address player2, uint256 stakeAmount, uint256 totalPool, uint256 createdAt, uint8 status, address winner, uint256 winnerReactionMs, uint256 loserReactionMs)',
   'function paymentToken() view returns (address)',
   'function treasuryWallet() view returns (address)',

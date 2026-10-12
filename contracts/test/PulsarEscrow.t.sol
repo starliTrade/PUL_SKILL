@@ -317,8 +317,16 @@ contract PulsarEscrowTest is Test {
         vm.expectRevert(); // Ownable: caller is not owner
         escrow.setOracleSigner(makeAddr("evil"));
 
+        // Audit M24: the rotation is scheduled, then applied after the
+        // timelock — it is no longer instant, so an outstanding settlement
+        // signature is not invalidated without warning.
         vm.prank(deployer);
         escrow.setOracleSigner(makeAddr("newOracle"));
+        assertEq(escrow.oracleSigner(), oracle, "the oracle must not rotate instantly");
+        assertEq(escrow.pendingOracleSigner(), makeAddr("newOracle"));
+
+        vm.warp(block.timestamp + escrow.ADMIN_TIMELOCK() + 1);
+        escrow.applyOracleSigner();
         assertEq(escrow.oracleSigner(), makeAddr("newOracle"));
     }
 

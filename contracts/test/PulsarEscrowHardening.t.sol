@@ -128,17 +128,47 @@ contract PulsarEscrowHardeningTest is Test {
             treasury,
             "a one-step rotation is live immediately - a typo is unrecoverable (audit M24)"
         );
-        // The pending slot is asserted in the fix commit, once the timelock
-        // API exists.
+        assertEq(escrow.pendingTreasuryWallet(), newTreasury);
     }
 
 
 
 
-    // The timelock API (`ADMIN_TIMELOCK`, `pendingTreasuryWallet`,
-    // `applyTreasuryWallet`, `applyOracleSigner`, `cancelPendingAdminChanges`)
-    // is exercised by the tests added with the fix — a red baseline that does
-    // not compile would take the whole contract suite down with it.
+    function test_treasury_rotation_applies_after_the_timelock() public {
+        address newTreasury = address(0x7EA6);
+        escrow.setTreasuryWallet(newTreasury);
+
+        vm.expectRevert("Timelock not elapsed");
+        escrow.applyTreasuryWallet();
+
+        vm.warp(block.timestamp + escrow.ADMIN_TIMELOCK() + 1);
+        escrow.applyTreasuryWallet();
+        assertEq(escrow.treasuryWallet(), newTreasury);
+    }
+
+    function test_oracle_rotation_is_timelocked() public {
+        address newOracle = address(0x0AC2E);
+
+        escrow.setOracleSigner(newOracle);
+        assertEq(escrow.oracleSigner(), oracle, "the oracle rotated instantly (audit M24)");
+
+        vm.expectRevert("Timelock not elapsed");
+        escrow.applyOracleSigner();
+
+        vm.warp(block.timestamp + escrow.ADMIN_TIMELOCK() + 1);
+        escrow.applyOracleSigner();
+        assertEq(escrow.oracleSigner(), newOracle);
+    }
+
+    function test_a_pending_change_can_be_cancelled() public {
+        escrow.setTreasuryWallet(address(0x7EA6));
+        escrow.cancelPendingAdminChanges();
+
+        assertEq(escrow.pendingTreasuryWallet(), address(0));
+        vm.warp(block.timestamp + escrow.ADMIN_TIMELOCK() + 1);
+        vm.expectRevert("No pending treasury");
+        escrow.applyTreasuryWallet();
+    }
 
     function test_admin_rotation_is_owner_only() public {
         vm.prank(alice);
