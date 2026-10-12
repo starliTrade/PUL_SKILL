@@ -1,3 +1,5 @@
+import { sha256Hex } from './sha256';
+
 /**
  * P2.1 — Typed bridge to the authoritative PULSAR game server (api/).
  *
@@ -313,10 +315,21 @@ export const claimUsername = (session: ServerSession, username: string): Promise
  */
 export const matchIdToBytes32 = async (matchId: string): Promise<string> => {
   const data = new TextEncoder().encode(matchId);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return (
-    "0x" + Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("")
-  );
+  // Audit M38: `crypto.subtle` exists ONLY in a secure context — HTTPS or
+  // localhost. On a plain-HTTP deployment it is undefined, so this threw and
+  // took the WHOLE on-chain deposit flow with it: no duel could be created or
+  // joined, and the player saw an opaque "cannot read property of undefined".
+  //
+  // The hash is a pure function of the match id and must not depend on the
+  // page's transport security. See `./sha256` for why this is a local
+  // implementation rather than `ethers.sha256`.
+  if (typeof crypto !== "undefined" && crypto.subtle) {
+    const digest = await crypto.subtle.digest("SHA-256", data);
+    return (
+      "0x" + Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("")
+    );
+  }
+  return sha256Hex(data);
 };
 
 // --- Health -------------------------------------------------------------------
