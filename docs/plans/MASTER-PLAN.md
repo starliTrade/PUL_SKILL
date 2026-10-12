@@ -5,7 +5,7 @@
 ║  نسخه:        2.0-CLOSED (فاز ۱، ۲ و ۳ بسته)                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     5e2b9d3e594818a2…2091497829bc487a                                                   ║
+║  SHA-256:     28542115f54d51a1…f140b1563596f920                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -243,7 +243,7 @@
 - [x] **H12** موجودی واقعی با `vaultBalance` صفر بازنویسی می‌شود — `realWeb3.ts:1296-1303`
   تغییر: `balanceUSDT` هرگز از `vaultBalance` نوشته نشود؛ `balanceUnknown` دست‌نخورده
   تست: `src/lib/realWeb3.balance.test.ts::test_profile_save_does_not_zero_the_chain_balance`
-- [ ] **H13** اعشار توکن در نوشتن hardcode است — `chain.ts:51`, `escrowFlow.ts:133,145`, `ReactionGamePage.tsx:314`
+- [x] **H13** اعشار توکن در نوشتن hardcode است — `chain.ts:51`, `escrowFlow.ts:133,145`, `ReactionGamePage.tsx:314`
   تغییر: خواندن `decimals()` یک‌بار + cache per-token؛ همه‌ی `parseUnits` و مقایسه‌ها از آن
   تست: `src/lib/escrowFlow.decimals.test.ts::test_stake_uses_onchain_decimals`
 - [ ] **H14** race تعویض حساب داده‌ی کاربر دیگر را نشان می‌دهد — `usePulsarStore.ts:56-71`
@@ -569,6 +569,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 4.3 | 2026-10-12 | **H13 رفع شد** (`getTokenDecimals()` + cache؛ همه‌ی parseUnits/formatUnits). ۲۷ تست فرانت. | ⬜ |
 | 4.2 | 2026-10-12 | **H12 رفع شد** (نوشتن موجودی از `vaultBalance` حذف شد؛ زنجیره تنها منبع حقیقت است). ۲۳ تست فرانت. | ⬜ |
 | 4.1 | 2026-10-12 | **H11 رفع شد** (refs + ست‌کردن همزمان با state؛ نسخه‌ی effect-based کافی نبود). ۲۰ تست فرانت. | ⬜ |
 | 4.0 | 2026-10-12 | **فاز ۴ شروع شد.** H17b رفع شد (کلاینت حالا `withdrawPending` + کارت «پرداخت معلق» دارد). ۱۹ تست فرانت. | ⬜ |
