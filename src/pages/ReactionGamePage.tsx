@@ -83,6 +83,37 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   // Practice mode (stake 0) never touches the server.
   const [serverMatch, setServerMatch] = useState<MatchView | null>(null);
   const [serverSession, setServerSession] = useState<ServerSession | null>(null);
+  /**
+   * Audit H11 — the CURRENT match/session, readable from any closure.
+   *
+   * `restoreBo3FromServer` is a `useCallback(..., [])`, so it captures the FIRST
+   * render's `finishServerMatch` — whose captured `serverSession`/`serverMatch`
+   * are both null, making the whole refresh-recovery path a silent no-op. The
+   * winner's client then never submits `settleDuel` after a reload and the prize
+   * waits out the refund horizon.
+   *
+   * Refs are the fix: they are read at CALL time, so the closure identity stops
+   * mattering.
+   */
+  const serverMatchRef = useRef<MatchView | null>(null);
+  const serverSessionRef = useRef<ServerSession | null>(null);
+  /**
+   * Set the state AND the ref together.
+   *
+   * An effect-based sync is not enough: `restoreBo3FromServer` runs
+   * synchronously inside `recoverServerMatch`, immediately after
+   * `applyServerMatch(view)` — before React has committed the render and before
+   * any effect has run. The ref would still be null and the recovery would
+   * no-op again, just for a different reason.
+   */
+  const applyServerMatch = useCallback((view: MatchView | null) => {
+    serverMatchRef.current = view;
+    setServerMatch(view);
+  }, []);
+  const applyServerSession = useCallback((session: ServerSession | null) => {
+    serverSessionRef.current = session;
+    setServerSession(session);
+  }, []);
   const [serverError, setServerError] = useState<string>('');
   const [settlementTxHash, setSettlementTxHash] = useState<string>('');
   // P0-fix: keep the last server-signed proof + action feedback so a failed
@@ -276,7 +307,7 @@ function isWalletCancel(msg: string): boolean {
           throw e;
         }
       });
-      setServerSession(session);
+      applyServerSession(session);
       let view = await queueForMatch(session, currentStake);
       // Poll while waiting in the queue (queueForMatch is idempotent: it
       // returns the caller's waiting match or their active match).
@@ -293,7 +324,7 @@ function isWalletCancel(msg: string): boolean {
         view = await queueForMatch(session, currentStake);
       }
       if (view.status === 'waiting') throw new Error('No opponent joined within 90 seconds. Try again.');
-      setServerMatch(view);
+      applyServerMatch(view);
       if (view.opponent) setOpponent(view.opponent);
 
       // P0-fix — THE ONLY place stake money moves: both players lock the
@@ -406,9 +437,9 @@ function isWalletCancel(msg: string): boolean {
           throw e;
         }
       });
-      setServerSession(session);
+      applyServerSession(session);
       const view = await getMatch(session, saved.matchId);
-      setServerMatch(view);
+      applyServerMatch(view);
       if (view.opponent) setOpponent(view.opponent);
       if (view.stake) setCurrentStake(view.stake);
 
@@ -421,7 +452,7 @@ function isWalletCancel(msg: string): boolean {
         // re-queuing (idempotent) rather than dead-waiting.
         const queued = await queueForMatch(session, view.stake || currentStake);
         if (queued.status === 'waiting') throw new Error('No opponent joined yet — retry in a moment.');
-        setServerMatch(queued);
+        applyServerMatch(queued);
       }
       const scores = restoreBo3FromServer(view);
       if (!(view.status === 'active' && (scores.userScore >= 2 || scores.opponentScore >= 2))) {
@@ -710,10 +741,14 @@ function isWalletCancel(msg: string): boolean {
     yourTime: number,
     oppTime: number
   ): Promise<void> => {
-    if (!serverSession || !serverMatch) return;
+    // Audit H11: read the CURRENT values, not the ones captured when this
+    // closure was created — see the refs above.
+    const session = serverSessionRef.current;
+    const match = serverMatchRef.current;
+    if (!session || !match) return;
     try {
-      const view = await getMatch(serverSession, serverMatch.matchId);
-      setServerMatch(view);
+      const view = await getMatch(session, match.matchId);
+      applyServerMatch(view);
       if (view.status === 'void') {
         setMatchResult({
           outcome: 'void',
@@ -733,7 +768,7 @@ function isWalletCancel(msg: string): boolean {
       }
       // settleMatch is idempotent server-side: when the opponent settled
       // first, the SAME oracle-signed settlement is replayed to us.
-      const result = await settleMatch(serverSession, serverMatch.matchId);
+      const result = await settleMatch(session, match.matchId);
       if (result.status !== 'settled') {
         setMatchResult({
           outcome: 'void',
@@ -777,7 +812,7 @@ function isWalletCancel(msg: string): boolean {
           txHash = await settleDuelOnChain(proof);
           setSettlementTxHash(txHash);
           try {
-            const claim = await claimMatch(serverSession, result.matchId, txHash);
+            const claim = await claimMatch(session, result.matchId, txHash);
             if (!claim.onChainProof) {
               setOnchainAction('Payout confirmed; server ledger verification is pending.');
             }
@@ -914,7 +949,7 @@ function isWalletCancel(msg: string): boolean {
         // Refresh the authoritative view (includes mutually-disclosed
         // opponent time for this round, if both have submitted).
         const view = await getMatch(serverSession, serverMatch.matchId);
-        setServerMatch(view);
+        applyServerMatch(view);
         const oppTimeRaw = view.opponentTimes[String(roundIndex)];
         const oppTime = oppTimeRaw != null ? Math.round(oppTimeRaw) : null;
 
@@ -973,7 +1008,7 @@ function isWalletCancel(msg: string): boolean {
               void (async () => {
                 try {
                   const v2 = await getMatch(serverSession, serverMatch.matchId);
-                  setServerMatch(v2);
+                  applyServerMatch(v2);
                   const o2 = v2.opponentTimes[String(roundIndex)];
                   const oppMs = o2 != null ? Math.round(o2) : null;
                   if (oppMs != null) {
