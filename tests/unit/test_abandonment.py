@@ -20,10 +20,7 @@ absence. An absent player forfeits the MATCH, not just the rounds they missed.
 """
 from __future__ import annotations
 
-import pytest
-
 import match_engine as engine
-from match_engine import MatchError
 
 
 def _intent(tag: str) -> str:
@@ -117,3 +114,29 @@ def test_the_forfeit_is_declared_not_fabricated(active_match, addr, opp_addr, pl
     assert result["loserTimeMs"] == engine.FORFEIT_SENTINEL_MS, (
         "an absent player must be declared as a forfeit, not given a fake time"
     )
+
+
+# --- the residual limitation, documented rather than hidden -------------------
+def test_a_leading_player_who_abandons_still_wins(active_match, addr, opp_addr, play_round, clock):
+    """KNOWN LIMIT: the server cannot tell who left.
+
+    With equal submissions the only signal is who submitted last, which is
+    noise. The rule therefore favours the LEADER, and a leading player who
+    abandons still wins.
+
+    This is recorded as a test so the behaviour is a decision rather than an
+    accident. It is strictly better than the alternative: a void lets the
+    TRAILING player abandon and recover a stake they were losing, which is a far
+    stronger incentive than "the leader could have won anyway".
+
+    Closing it properly needs a presence signal the server can trust (a
+    heartbeat, or an on-chain forfeit), which is phase 10 work.
+    """
+    _submit(active_match, addr, 0, 220.0, play_round)  # A wins round 0
+    _submit(active_match, opp_addr, 0, 400.0, play_round)  # B loses round 0
+    _finish(active_match, clock)
+
+    result = engine.settle(active_match)
+
+    assert result["status"] == "settled"
+    assert result["winner"] == addr

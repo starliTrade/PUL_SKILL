@@ -177,22 +177,26 @@ def test_grace_window_settles_when_the_honest_player_played_two_rounds(
     assert result["forfeits"][opp_addr] is True
 
 
-def test_grace_window_voids_when_neither_side_reaches_a_majority(
+def test_grace_window_awards_the_match_to_the_player_who_showed_up(
     active_match, addr, opp_addr, clock, play_round
 ):
-    """DOCUMENTS CURRENT BEHAVIOUR — see finding H24 in the audit.
+    """Audit H24 — FIXED. This test used to pin the bug.
 
-    A round in which NEITHER player submitted awards nobody, so a player who
-    played a single round and then waited for a ghosting opponent ends 1-0 with
-    no majority: the match voids and both stakes refund. Abandonment costs the
-    abandoner nothing and earns the honest player nothing. This test pins the
-    behaviour so the H24 fix has a red baseline.
+    It documented that a round in which NEITHER player submitted awards nobody,
+    so a player who played a single round and then waited for a ghosting
+    opponent ended 1-0 with no majority: the match voided and both stakes
+    refunded. Abandonment cost the abandoner nothing and earned the honest
+    player nothing — a free option for whoever was losing.
+
+    The behaviour is now: an absent player forfeits the MATCH, not just the
+    rounds they missed. The player who showed up and won is paid.
     """
     play_round(active_match, addr, 0, reaction_ms=220.0)
     clock.advance(engine.MATCH_SETTLE_GRACE_SECONDS + 5)
     result = engine.settle(active_match)
-    assert result["status"] == "void"
-    assert result["reason"] == "no round-win majority — stakes refund"
+    assert result["status"] == "settled"
+    assert result["winner"] == addr
+    assert result["forfeits"][opp_addr] is True
 
 
 def test_winner_is_always_a_participant(active_match, addr, opp_addr, play_round):

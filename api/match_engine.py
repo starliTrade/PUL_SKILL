@@ -713,9 +713,61 @@ def settle(match: Match) -> dict[str, Any]:
         # exact tie: round awards nobody
 
     wins_needed = ROUNDS // 2 + 1  # 2 of 3
+
+    # Audit H24: an absent player forfeits the MATCH, not just the rounds they
+    # missed.
+    #
+    # The loop above awards a round to the present player only when the OTHER
+    # player submitted. A round where NEITHER submitted awards nobody — which
+    # conflates two very different situations:
+    #
+    #   1. both players were present and neither submitted (a mutual stall)
+    #   2. one player was present, played, and the other never showed
+    #
+    # In case 2 the present player cannot play the remaining rounds against
+    # nobody, so they finish 1-0, reach no majority, and the match VOIDS with
+    # both stakes refunded. The player who showed up and won got nothing; the
+    # one who never appeared got their stake back. Under D1 (real money) that
+    # makes abandoning a FREE OPTION — strictly better than losing.
+    #
+    # The principle: the player who showed up must not be punished for the
+    # opponent's absence.
+    submitted_a = sum(
+        1 for idx in range(ROUNDS)
+        if rounds_a.get(idx) is not None and rounds_a[idx].result_ms is not None
+    )
+    submitted_b = sum(
+        1 for idx in range(ROUNDS)
+        if rounds_b.get(idx) is not None and rounds_b[idx].result_ms is not None
+    )
+    if submitted_a > 0 and submitted_b == 0:
+        wins_a, wins_b = wins_needed, 0
+        forfeit_b = True
+    elif submitted_b > 0 and submitted_a == 0:
+        wins_a, wins_b = 0, wins_needed
+        forfeit_a = True
+
     if wins_a < wins_needed and wins_b < wins_needed:
-        match.status = "void"
-        return {"status": "void", "reason": "no round-win majority — stakes refund"}
+        # Audit H24, second half: the match cannot complete. Who benefits from a
+        # void? The player who is BEHIND — they recover a stake they were losing.
+        # So a void is a free option for the trailing player, and "just void it"
+        # is not a neutral default.
+        #
+        # The server cannot tell "A is waiting for B" from "both left": with
+        # equal submissions the only signal is who submitted last, which is
+        # noise. So the rule favours the LEADER, and the residual risk is that a
+        # leading player can abandon and still win — a weaker incentive than the
+        # current one, where a trailing player can always abandon and get their
+        # stake back.
+        if wins_a > wins_b:
+            wins_a = wins_needed
+        elif wins_b > wins_a:
+            wins_b = wins_needed
+        else:
+            # A genuine tie (0-0, or 1-1 with the decider unplayed): nobody is
+            # ahead, so nobody is punished. Both are refunded.
+            match.status = "void"
+            return {"status": "void", "reason": "no round-win majority — stakes refund"}
 
     winner = a if wins_a >= wins_needed else b
     loser = b if winner == a else a
