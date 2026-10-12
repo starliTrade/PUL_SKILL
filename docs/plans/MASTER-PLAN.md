@@ -5,7 +5,7 @@
 ║  نسخه:        2.0-CLOSED (فاز ۱، ۲ و ۳ بسته)                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     255daf2c405e44db…8ddc7eb8054c5c3c                                                   ║
+║  SHA-256:     9f91ec5b7efae7b5…95f353a7746a64f9                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -259,7 +259,7 @@
 - [x] **M29** `setInterval`/`setTimeout` بدون cleanup — `ReactionGamePage.tsx:874-876, 576-579`
   تغییر: نگه‌داری در ref + پاک‌سازی در unmount و قبل از فاز جدید
   تست: `src/pages/ReactionGamePage.timers.test.ts::test_no_state_update_after_unmount`
-- [ ] **M30** `useSyncExternalStore` با subscribe اینلاین — `usePulsarStore.ts:318-322`
+- [x] **M30** `useSyncExternalStore` با subscribe اینلاین — `usePulsarStore.ts:318-322`
   تغییر: `subscribe` به module scope · تست: `::test_subscribe_identity_is_stable`
 - [ ] **M38** `matchIdToBytes32` به `crypto.subtle` نیاز دارد — `gameServerClient.ts:314-320`
   تغییر: feature-check + خطای صادقانه یا fallback SHA-256
@@ -569,6 +569,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 4.8 | 2026-10-12 | **M30 رفع شد** (`subscribeToStore`/`getSnapshot` به module scope؛ ۶ subscribe → ۱). ۴۲ تست فرانت. | ⬜ |
 | 4.7 | 2026-10-12 | **M29 رفع شد** (هر دو timer در ref + پاک‌سازی روی unmount؛ تست سه بار بازنویسی شد چون دو نسخه‌ی اول سبز می‌شدند بدون اینکه باگ را بگیرند). ۳۹ تست فرانت. | ⬜ |
 | 4.6 | 2026-10-12 | **M5 رفع شد** (۶ فیلد تسویه روی rematch پاک می‌شوند؛ تست دو بار بازنویسی شد تا واقعاً discriminator باشد). ۳۷ تست فرانت. | ⬜ |
 | 4.5 | 2026-10-12 | **H15 رفع شد** (قفل هویت/شبکه در حین ماتچ + `identityLockedReason` برای UI). ۳۵ تست فرانت. | ⬜ |
