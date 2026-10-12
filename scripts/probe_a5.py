@@ -30,6 +30,11 @@ def check(name, cond):
 # fastapi import first (TestClient + HTTPException)
 import time as _time  # noqa: E402
 
+# Audit H6 inverted the production default: every environment is
+# production-like unless it opts out explicitly. These are local dev
+# tools, so they opt out BEFORE importing the app.
+os.environ.setdefault("PULSAR_ENV", "dev")
+
 import main as server  # noqa: E402
 
 import match_engine as me  # noqa: E402

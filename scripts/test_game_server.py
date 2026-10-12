@@ -10,6 +10,10 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
 
 os.environ["ORACLE_SIGNING_SECRET"] = "test-secret-not-for-prod"
+# Audit H6 inverted the production default: every environment is
+# production-like unless it opts out explicitly. These are local dev
+# tools, so they opt out.
+os.environ.setdefault("PULSAR_ENV", "dev")
 os.environ["ORACLE_PRIVATE_KEY"] = "0x" + "11" * 32
 os.environ["ESCROW_ADDRESS"] = "0x" + "ab" * 20
 

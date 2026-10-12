@@ -455,24 +455,41 @@ app = FastAPI(title="PULSAR Game Server", version="1.1.1")
 #   - a real ESCROW_ADDRESS configured (money mode — the gate must not be
 #     silently absent).
 # Plain local dev (no env at all) still boots without configuration.
-_prodlike_values = {"prod", "production", "main", "release", "staging"}
-_pulsar_env = os.environ.get("PULSAR_ENV", "").strip().lower()
-_deploy_markers = ("K_SERVICE", "K_REVISION", "RENDER", "FLY_MACHINE_ID", "DYNO")
-_is_deployed = any(os.environ.get(marker) for marker in _deploy_markers)
-_prod_like = _pulsar_env in _prodlike_values or _is_deployed
+# Audit H6 — INVERTED DEFAULT. This used to fire only when PULSAR_ENV was one
+# of a fixed set of strings OR one of five platform markers was present, so a
+# self-hosted Docker/VM deployment with no marker and no PULSAR_ENV ran with no
+# required-env enforcement, wildcard CORS, no TrustedHost middleware and a
+# Host-derived SIWE domain. Fail-open security configuration.
+#
+# Now: EVERY environment is production-like unless it explicitly opts out with
+# PULSAR_ENV=dev. Forgetting to set a variable must not disable the safeguards.
+_LOCAL_ENV_VALUES = {"dev", "development", "test", "local"}
+_DEPLOY_MARKERS = ("K_SERVICE", "K_REVISION", "RENDER", "FLY_MACHINE_ID", "DYNO")
+REQUIRED_PRODUCTION_ENV = (
+    "ALLOWED_DOMAIN",
+    "CORS_ALLOW_ORIGINS",
+    "ESCROW_ADDRESS",
+    "ESCROW_RPC_URL",
+    "ORACLE_SIGNING_SECRET",
+    "ORACLE_PRIVATE_KEY",
+)
+
+
+def _is_prod_like(environ: Any) -> bool:
+    """True when this process must not run with insecure defaults (audit H6)."""
+    if str(environ.get("PULSAR_ENV", "")).strip().lower() in _LOCAL_ENV_VALUES:
+        return False
+    return True
+
+
+def _missing_production_env(environ: Any) -> list[str]:
+    """The required variables this deployment has not set (audit H6)."""
+    return [name for name in REQUIRED_PRODUCTION_ENV if not environ.get(name)]
+
+
+_prod_like = _is_prod_like(os.environ)
 if _prod_like:
-    _missing = [
-        name
-        for name in (
-            "ALLOWED_DOMAIN",
-            "CORS_ALLOW_ORIGINS",
-            "ESCROW_ADDRESS",
-            "ESCROW_RPC_URL",
-            "ORACLE_SIGNING_SECRET",
-            "ORACLE_PRIVATE_KEY",
-        )
-        if not os.environ.get(name)
-    ]
+    _missing = _missing_production_env(os.environ)
     if _missing:
         raise RuntimeError(
             "Production-like deployment requires these env vars to be set: "
@@ -607,9 +624,36 @@ def health() -> dict[str, Any]:
 
 
 def _request_domain(request: Request) -> str:
-    override = os.environ.get("ALLOWED_DOMAIN", "")
+    """The SIWE domain this server issues statements for (audit H7).
+
+    The nonce MAC and the canonical message are both bound to this value, so
+    taking it from the request's `Host` header let an attacker choose the domain
+    the server issued and accepted statements for — the phishing resistance the
+    design claims, removed by a header.
+
+    Resolution order:
+      1. ALLOWED_DOMAIN (the configured public host) — always wins;
+      2. PUBLIC_HOST — the explicit fallback for a deployment that has not set
+         ALLOWED_DOMAIN yet;
+      3. the Host header, ONLY when the escrow is unconfigured (local dev, where
+         there is no money and no real domain to protect).
+    """
+    override = os.environ.get("ALLOWED_DOMAIN", "").strip()
     if override:
         return override
+    public_host = os.environ.get("PUBLIC_HOST", "").strip()
+    if public_host:
+        return public_host
+    if onchain.escrow_configured():
+        # Money mode with no configured domain: refuse to invent one from a
+        # client-controlled header.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Server misconfigured: ALLOWED_DOMAIN (or PUBLIC_HOST) must be set "
+                "when the escrow is configured."
+            ),
+        )
     return request.headers.get("host", "localhost")
 
 

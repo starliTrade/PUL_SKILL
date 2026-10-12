@@ -27,10 +27,9 @@ os.environ.setdefault("ORACLE_SIGNING_SECRET", "test-secret-not-for-prod")
 os.environ.setdefault("ORACLE_PRIVATE_KEY", "0x" + "11" * 32)
 os.environ.setdefault("ESCROW_ADDRESS", "0x" + "ab" * 20)
 
+import main as server  # noqa: E402
 from eth_account import Account  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-
-import main as server  # noqa: E402
 
 
 @pytest.fixture
@@ -100,13 +99,18 @@ def test_a_foreign_host_header_cannot_pick_the_siwe_domain(client, monkeypatch):
     r = client.post(
         "/api/auth/nonce", json={"address": addr}, headers={"host": "attacker.example"}
     )
-    assert r.status_code == 200, r.text
-    message = r.json()["message"]
 
-    assert "attacker.example" not in message, (
-        "the server issued a SIWE statement for the caller's Host header — the "
-        "domain binding is client-controlled (audit H7)"
-    )
+    # Two acceptable outcomes, one invariant: the attacker's host must never
+    # become the domain the server issues statements for.
+    if r.status_code == 200:
+        assert "attacker.example" not in r.json()["message"], (
+            "the server issued a SIWE statement for the caller's Host header — "
+            "the domain binding is client-controlled (audit H7)"
+        )
+    else:
+        assert r.status_code == 503, (
+            f"a money-mode server with no configured domain must refuse, got {r.status_code}"
+        )
 
 
 def test_the_configured_domain_wins(client, monkeypatch):

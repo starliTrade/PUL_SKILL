@@ -24,6 +24,11 @@ os.environ["ORACLE_SIGNING_SECRET"] = "e2e-test-secret"
 os.environ["ORACLE_PRIVATE_KEY"] = "0x" + "11" * 32
 os.environ["ESCROW_ADDRESS"] = "0x" + "ab" * 20
 
+# Audit H6 inverted the production default: every environment is
+# production-like unless it opts out explicitly. These are local dev
+# tools, so they opt out BEFORE importing the app.
+os.environ.setdefault("PULSAR_ENV", "dev")
+
 import main as server  # noqa: E402
 from eth_account import Account  # noqa: E402
 from eth_account.messages import encode_defunct  # noqa: E402

@@ -16,6 +16,11 @@ smoke suite can only simulate:
 Run: .venv/bin/python scripts/test_firestore_integration.py
 """
 import os
+
+# Audit H6 inverted the production default: every environment is
+# production-like unless it opts out explicitly. These are local dev
+# tools, so they opt out.
+os.environ.setdefault("PULSAR_ENV", "dev")
 import sys
 import time
 

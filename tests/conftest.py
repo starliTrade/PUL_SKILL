@@ -18,6 +18,10 @@ os.environ.setdefault("ORACLE_SIGNING_SECRET", "test-secret-not-for-prod")
 os.environ.setdefault("ORACLE_PRIVATE_KEY", "0x" + "11" * 32)
 os.environ.setdefault("ESCROW_ADDRESS", "0x" + "ab" * 20)
 os.environ.setdefault("ORACLE_CHAIN_ID", "80002")
+# Audit H6 inverted the production default: every environment is production-like
+# unless it opts out explicitly. The test process must opt out, or importing
+# `api/main.py` correctly refuses to start without the full production env.
+os.environ.setdefault("PULSAR_ENV", "dev")
 
 API_DIR = Path(__file__).resolve().parent.parent / "api"
 if str(API_DIR) not in sys.path:
