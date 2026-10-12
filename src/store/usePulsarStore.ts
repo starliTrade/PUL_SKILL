@@ -35,6 +35,8 @@ interface PulsarSnapshot {
   userData: UserWalletData;
   leaderboard: LeaderboardPlayer[];
   lastMatchXPSummary: XPSummary | null;
+  /** Audit H15b: why a wallet/network switch was refused, if it was. */
+  identityLockedReason: string;
 }
 
 let account: ConnectedAccountState = { ...realWeb3Manager.getAccount() };
@@ -46,7 +48,16 @@ let lastLoadedAddress = '';
 let bootstrapped = false;
 
 function buildSnapshot(): PulsarSnapshot {
-  return { account, userData, leaderboard, lastMatchXPSummary };
+  return {
+    account,
+    userData,
+    leaderboard,
+    lastMatchXPSummary,
+    // Read straight off the manager: it is the only owner of this state, and
+    // copying it into a second variable would be one more thing to keep in
+    // sync.
+    identityLockedReason: realWeb3Manager.identityLockedReason,
+  };
 }
 
 function commit() {
@@ -392,6 +403,8 @@ export function usePulsarStore() {
     bestReactionMs: state.userData.bestReactionMs,
     avgReactionMs: state.userData.avgReactionMs,
     lastMatchXPSummary: state.lastMatchXPSummary,
+    // Audit H15b: surfaced by IdentityLockBanner.
+    identityLockedReason: state.identityLockedReason,
     connectWallet,
     connectEIP6963,
     connectWalletConnect,

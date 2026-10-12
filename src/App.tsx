@@ -1,3 +1,4 @@
+import { IdentityLockBanner } from './components/IdentityLockBanner';
 import React, { Suspense, lazy, useState, useEffect } from 'react';
 import type { LegalTab } from './pages/LegalPage';
 import { EligibilityGate } from './components/EligibilityGate';
@@ -78,6 +79,9 @@ export default function App() {
   return (
     <ErrorBoundary>
     <div className="min-h-screen bg-[#07080a] text-slate-100 flex flex-col font-sans selection:bg-sky-500/30 selection:text-white">
+      {/* Audit H15b: the identity lock refuses a wallet/network switch mid-match;
+          this is where the player finds out why. */}
+      <IdentityLockBanner />
       {/* Route Views (lazy-loaded chunks per route) */}
       <Suspense fallback={<RouteFallback />}>
         {currentPath === '/' && <HomePage onNavigate={navigate} />}

@@ -37,7 +37,21 @@ const { manager, account, listeners } = vi.hoisted(() => {
         listeners.add(fn);
         return () => listeners.delete(fn);
       },
-      loadUserDataAsync: async () => null,
+      loadUserDataAsync: async () => ({
+        address: '0x' + '11'.repeat(20),
+        playerId: 'Tester',
+        vaultBalance: 0,
+        wins: 0,
+        losses: 0,
+        voids: 0,
+        totalMatches: 0,
+        bestReactionMs: 0,
+        avgReactionMs: 0,
+        xp: 0,
+        level: 1,
+        savedFriends: [],
+        history: [],
+      }),
       restoreSession: async () => null,
       fetchGlobalLeaderboard: async () => [],
       identityLockedReason: '',
@@ -62,8 +76,14 @@ function notify() {
 }
 
 describe('identity lock visibility (audit H15b)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     manager.identityLockedReason = '';
+    // The store's snapshot is a CACHE rebuilt on notify, so clearing the reason
+    // on the manager is not enough — without this the previous test's snapshot
+    // leaks into the next one.
+    await act(async () => {
+      notify();
+    });
   });
 
   afterEach(() => {
