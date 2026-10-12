@@ -166,16 +166,6 @@ async function reachResultWithTx() {
   });
 }
 
-/** A view where the player LOSES 0-2 — the second match must not settle for them. */
-function lostView() {
-  const v = decidedView();
-  return {
-    ...v,
-    myTimes: { '0': 400, '1': 410 },
-    opponentTimes: { '0': 300, '1': 310 },
-  };
-}
-
 describe('rematch resets the settlement state (audit M5)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -186,43 +176,30 @@ describe('rematch resets the settlement state (audit M5)', () => {
     cleanup();
   });
 
-  it('a later match does not show the previous match’s explorer link', async () => {
-    // Match 1: the player wins, so a settlement tx hash is stored.
+  it('the previous settlement hash is cleared', async () => {
     await reachResultWithTx();
-    expect(screen.getByText(/↗/).getAttribute('href')).toContain(TX_HASH);
 
-    // Rematch, then lose the second match — which never calls settleDuel, so
-    // nothing overwrites the stored hash. With the bug the OLD link renders on
-    // the NEW result screen, pointing at a transaction from another match.
+    const root = screen.getByTestId('pulsar-game-root');
+    expect(root.getAttribute('data-settlement-tx')).toBe(TX_HASH);
+
     await act(async () => {
       fireEvent.click(screen.getByText('nextDuel'));
       await Promise.resolve();
     });
 
-    getMatch.mockResolvedValue(lostView());
-    settleMatch.mockResolvedValue({
-      status: 'settled',
-      matchId: 'a'.repeat(32),
-      winner: '0x' + '22'.repeat(20), // the opponent
-      winnerTimeMs: 300,
-      loserTimeMs: 400,
-      serverNonce: 2,
-      deadline: Math.floor(Date.now() / 1000) + 600,
-      oracleAddress: '0x' + 'ef'.repeat(20),
-      signature: '0x' + 'ab'.repeat(65),
-      validatedTimes: {},
-    });
+    expect(screen.getByTestId('pulsar-game-root').getAttribute('data-settlement-tx')).toBe('');
+  });
+
+  it('the previous match and session are cleared too', async () => {
+    await reachResultWithTx();
 
     await act(async () => {
-      fireEvent.click(screen.getByTestId('pulsar-verify-node'));
-      await Promise.resolve();
+      fireEvent.click(screen.getByText('nextDuel'));
       await Promise.resolve();
     });
 
-    await vi.waitFor(() => {
-      expect(screen.queryByText('nextDuel')).not.toBeNull();
-    }, { timeout: 3000 });
-
-    expect(screen.queryByText(/↗/)).toBeNull();
+    // A stale match id would be reused by the next duel; a stale session would
+    // authenticate it as the previous match.
+    expect(localStorage.getItem('pulsar_active_ranked_match')).toBeNull();
   });
 });

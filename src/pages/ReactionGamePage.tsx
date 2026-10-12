@@ -1186,6 +1186,16 @@ function isWalletCancel(msg: string): boolean {
       targetWins: 2,
       isMatchOver: false,
     });
+    // Audit M5: clear the SETTLEMENT state too. It used to survive, so a later
+    // match that does not settle (a loss, a void) rendered the previous match's
+    // explorer link, its "prize claimed on-chain" line and its retry/refund
+    // buttons — all pointing at a transaction from another duel.
+    setSettlementTxHash('');
+    setLastProof(null);
+    setOnchainAction('');
+    setServerMatch(null);
+    setServerSession(null);
+    setServerError('');
     setPhase('human-verify');
     randomizeCalibrationTarget();
   };
@@ -1213,6 +1223,11 @@ function isWalletCancel(msg: string): boolean {
   return (
     <div
       onPointerMove={handlePointerMove}
+      data-testid="pulsar-game-root"
+      // Audit M5: the settlement hash is otherwise only observable while the
+      // result screen is mounted, which makes "was it cleared on rematch?"
+      // untestable without replaying a whole second duel.
+      data-settlement-tx={settlementTxHash}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
       className="min-h-screen bg-black relative overflow-x-hidden flex flex-col select-none text-zinc-100 selection:bg-white/20"
