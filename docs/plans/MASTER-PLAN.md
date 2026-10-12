@@ -5,7 +5,7 @@
 ║  نسخه:        1.9-CLOSED (فاز ۱ و ۲ بسته)                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     8cef2cde14cc1611…499a208232191d68                                                   ║
+║  SHA-256:     bdc0b75d3633b5b1…8fd5b9455ff157f7                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -195,7 +195,7 @@
 - [x] **H18** سقف on-chain برای `proof.deadline` — `PulsarEscrow.sol:267`
   تغییر: `require(proof.deadline <= duel.createdAt + MATCH_TIMEOUT, "deadline exceeds horizon");`
   تست: `test_RevertWhen_DeadlineBeyondRefundHorizon`
-- [ ] **H19** refund بدون مجوز برنده را بی‌جایزه می‌کند — `PulsarEscrow.sol:318-335` · **🛑 نیاز به D2**
+- [x] **H19** refund بدون مجوز برنده را بی‌جایزه می‌کند — `PulsarEscrow.sol:318-335` · **🛑 نیاز به D2**
   گزینه‌ها: (الف) پنجره‌ی تسویه‌ی انحصاری (ب) refund نامتقارن با جریمه‌ی رهاکننده (ج) `settleOnTimeout(proof)`
   تست: `test_LosingPlayerCannotRefundAwayTheWinnerPrize`
 - [x] **H20** `joinDuel` بدون cutoff و بدون activation — `PulsarEscrow.sol:240-255`
@@ -565,6 +565,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 3.1 | 2026-10-12 | **H19 رفع شد (D2 = الف: پنجره‌ی تسویه‌ی انحصاری، `REFUND_GRACE = 10 min`).** ۴۰ تست قرارداد. coverage ۸۱٪. | ⬜ |
 | 3.0 | 2026-10-12 | **فاز ۳ شروع شد.** H17 (deferred payout)، H18 (سقف deadline)، H20 (activatedAt + cutoff join) رفع شدند. ۳۵ تست قرارداد. coverage ۷۹٪. | ⬜ |
 | 2.5-CLOSED | 2026-10-12 | **بازبینی بستن فاز ۲:** `record_claim` همان TOCTOU را داشت (H3 در یک تابع رفع شده بود و در تابع بالایی جا مانده بود) — رفع شد. کامنت کهنه‌ی پیکربندی جایگزین شد. coverage ۷۹٪. | ⬜ |
 | 2.4-CLOSED | 2026-10-12 | **فاز ۲ کامل شد (۹/۹).** H10 (I/O زیر قفل)، H22 (logout)، H6+H7 (پیکربندی fail-closed). coverage ۷۸٪. | ⬜ |
