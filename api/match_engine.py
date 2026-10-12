@@ -143,6 +143,10 @@ class Round:
     index: int
     commit_hash: str = ""
     commit_at: float = 0.0
+    # Audit H2: a SERVER-chosen salt, minted at commit time and folded into
+    # `result_proof`. Without it the binding rested entirely on a client-chosen
+    # hash, so the server could not prove the commitment predates the target.
+    commit_salt: str = ""
     target_hash: str = ""
     target_salt: str = ""
     target_ms: float = 0.0
@@ -330,10 +334,22 @@ class MatchStore:
             ]
 
 
-def _result_proof(match_id: str, address: str, round_index: int, commit_hash: str, target_ms: int) -> str:
-    """Unforgeable per-player round proof: unguessable before the commit +
-    reveal, and unusable by any other player or round."""
-    payload = f"{match_id}|{address}|{round_index}|{commit_hash}|{target_ms}".encode()
+def _result_proof(
+    match_id: str,
+    address: str,
+    round_index: int,
+    commit_hash: str,
+    target_ms: int,
+    commit_salt: str,
+) -> str:
+    """Unforgeable per-player round proof.
+
+    Audit H2: `commit_salt` is REQUIRED. It is minted by the server at commit
+    time, so the proof is bound to a value the client could not predict when it
+    committed — and a commitment cannot be swapped for a different one after the
+    target is revealed, because the salt changes with it.
+    """
+    payload = f"{match_id}|{address}|{round_index}|{commit_hash}|{target_ms}|{commit_salt}".encode()
     return hmac.new(_PROOF_SECRET, payload, hashlib.sha256).hexdigest()
 
 
@@ -345,8 +361,14 @@ def commit_intent(match: Match, address: str, round_index: int, intent_hash: str
     rounds = match.rounds.setdefault(address.lower(), {})
     r = rounds.get(round_index) or Round(index=round_index)
     now = timebase.now()
-    if r.commit_hash and now - r.commit_at < COMMIT_WINDOW_SECONDS:
+    if r.commit_hash:
         if r.commit_hash != intent_hash.lower():
+            # Audit H2: a commitment is FINAL — the window is not an escape
+            # hatch. It used to allow a replacement once COMMIT_WINDOW_SECONDS
+            # had elapsed, so a player could commit, reveal the target, wait,
+            # and commit again with a hash chosen AFTER seeing it. The stored
+            # commitment then carried no information, and `result_proof` was
+            # bound to it.
             raise MatchError("Round already committed")
         # Idempotent retry of the SAME intent (e.g. a dropped HTTP response on
         # the first commit). Returns without error so a rejected submission can
@@ -354,6 +376,8 @@ def commit_intent(match: Match, address: str, round_index: int, intent_hash: str
         return
     r.commit_hash = intent_hash.lower()
     r.commit_at = now
+    # Audit H2: the server's own salt, minted here and never re-minted.
+    r.commit_salt = secrets.token_hex(16)
     rounds[round_index] = r
 
 
@@ -369,7 +393,10 @@ def reveal_target(match: Match, address: str, round_index: int) -> dict[str, Any
         raise MatchError("Commit before reveal required")
     now = timebase.now()
     if now - r.commit_at > COMMIT_WINDOW_SECONDS:
-        raise MatchError("Commit expired, re-commit the round")
+        # Audit H2: a commit is final, so this round is DEAD for this player —
+        # the same policy as a stale result. The old message promised a
+        # re-commit that is no longer possible.
+        raise MatchError("Commit expired — this round is lost")
     if not r.revealed:
         r.target_salt = secrets.token_hex(16)
         r.target_ms = float(secrets.randbelow(1500) + 1200)  # 1200-2700ms delay
@@ -382,7 +409,12 @@ def reveal_target(match: Match, address: str, round_index: int) -> dict[str, Any
         # round's commit + revealed target. Issued here so the client cannot
         # pre-generate it and no other player can reuse it.
         r.result_proof = _result_proof(
-            match.match_id, address.lower(), round_index, r.commit_hash, int(r.target_ms)
+            match.match_id,
+            address.lower(),
+            round_index,
+            r.commit_hash,
+            int(r.target_ms),
+            r.commit_salt,
         )
     return {
         "targetMs": r.target_ms,

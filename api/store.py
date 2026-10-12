@@ -54,6 +54,10 @@ def _round_to_doc(r: Round) -> dict[str, Any]:
         "index": r.index,
         "commit_hash": r.commit_hash,
         "commit_at": r.commit_at,
+        # Audit H2: the server's commit salt must survive persistence, or a
+        # recycled instance cannot reproduce `result_proof` and every submission
+        # after a restart is rejected as invalid.
+        "commit_salt": r.commit_salt,
         "target_hash": r.target_hash,
         "target_salt": r.target_salt,
         "target_ms": r.target_ms,
@@ -78,6 +82,7 @@ def _round_from_doc(d: dict[str, Any]) -> Round:
     r = Round(index=int(d.get("index", 0)))
     r.commit_hash = d.get("commit_hash", "")
     r.commit_at = float(d.get("commit_at", 0.0))
+    r.commit_salt = d.get("commit_salt", "")
     r.target_hash = d.get("target_hash", "")
     r.target_salt = d.get("target_salt", "")
     r.target_ms = float(d.get("target_ms", 0.0))
