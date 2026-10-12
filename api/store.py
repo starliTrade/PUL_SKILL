@@ -217,22 +217,33 @@ class InMemoryStore:
                 raise
             return out
 
-    def sweep_expired(self) -> None:
+    def sweep_expired(self) -> list[Match]:
+        """Void unpaired matches; RETURN the active ones that are due to settle.
+
+        Audit H8: this used to void every ACTIVE match past MATCH_EXPIRY. By
+        then the settle grace window has also passed, so `match_completed()` is
+        TRUE — the missing rounds are forfeits and the match is exactly what the
+        settlement path exists for. Voiding it destroyed the winner's prize:
+        `settle()` refuses, no oracle signature is minted, and both players get
+        only a refund even though the escrow would still honour a settlement.
+
+        The store has no engine logic, so it does not settle anything itself —
+        it hands the due matches back to the caller.
+        """
         now = timebase.now()
+        due: list[Match] = []
         for mid in list(self.matches):
             m = self.matches[mid]
             if m.status == "waiting" and now - m.created_at > QUEUE_EXPIRY_SECONDS:
                 m.status = "void"
-            elif (
-                m.status == "active"
-                and now - m.play_started_at() > MATCH_EXPIRY_SECONDS
-            ):
-                m.status = "void"
+            elif m.status == "active" and now - m.play_started_at() > MATCH_EXPIRY_SECONDS:
+                due.append(m)
         for stake, bucket in list(self.queue.items()):
             self.queue[stake] = [
                 mid for mid in bucket
                 if mid in self.matches and self.matches[mid].status == "waiting"
             ]
+        return due
 
     def put(self, match: Match) -> None:
         with self._lock:
@@ -364,8 +375,11 @@ class FirestoreStore:
         self._match_ref(match_id).set(_match_to_doc(m))
         return out
 
-    def sweep_expired(self) -> None:
-        """Void expired matches and clear stale queue slots (best effort).
+    def sweep_expired(self) -> list[Match]:
+        """Void unpaired matches; RETURN the active ones that are due to settle.
+
+        Audit H8: see InMemoryStore.sweep_expired — an ACTIVE match past its
+        play expiry is a forfeit settlement, not an abandonment.
 
         Audit #10 (item 10): this previously voided only WAITING matches —
         the memory backend voids expired ACTIVE ones too, so the two backends
@@ -373,6 +387,7 @@ class FirestoreStore:
         ACTIVATION, audit #8 F-05) are voided here as well, keeping both
         stores consistent. Settled matches are never touched."""
         now = timebase.now()
+        due: list[Match] = []
         queue_docs = self.db.collection(QUEUE_DOC).stream()
         seen_match_ids: set[str] = set()
         for qd in queue_docs:
@@ -390,13 +405,8 @@ class FirestoreStore:
                 m.status = "void"
                 self._match_ref(m.match_id).set(_match_to_doc(m))
                 qd.reference.set({"waitingMatchId": None})
-            elif (
-                m.status == "active"
-                and now - m.play_started_at() > MATCH_EXPIRY_SECONDS
-            ):
-                m.status = "void"
-                self._match_ref(m.match_id).set(_match_to_doc(m))
-                qd.reference.set({"waitingMatchId": None})
+            elif m.status == "active" and now - m.play_started_at() > MATCH_EXPIRY_SECONDS:
+                due.append(m)  # settle it, do not void it (audit H8)
 
         # Active matches are not always reachable through a queue slot (the
         # slot is cleared on pairing). Scan active-looking docs directly so
@@ -416,11 +426,11 @@ class FirestoreStore:
                     continue
                 m = _match_from_doc(doc.to_dict() or {})
                 if m.status == "active" and now - m.play_started_at() > MATCH_EXPIRY_SECONDS:
-                    m.status = "void"
-                    self._match_ref(m.match_id).set(_match_to_doc(m))
+                    due.append(m)  # settle it, do not void it (audit H8)
         except Exception:
             # Sweep is best-effort; a missing composite index must not crash it.
             pass
+        return due
 
     def put(self, match: Match) -> None:
         self._match_ref(match.match_id).set(_match_to_doc(match))
@@ -540,10 +550,20 @@ class DurableMatchStore:
         for addr in match.players:
             self.memory.player_match[addr] = match.match_id
 
-    def sweep_expired(self) -> None:
+    def sweep_expired(self) -> list[Match]:
+        """Void unpaired matches; return the active ones due to settle (H8)."""
+        due: list[Match] = []
         if self._fs_store is not None:
-            self._fs_store.sweep_expired()
-        self.memory.sweep_expired()
+            due.extend(self._fs_store.sweep_expired())
+        due.extend(self.memory.sweep_expired())
+        # The two backends can see the same match; hand each id over once.
+        seen: set[str] = set()
+        unique: list[Match] = []
+        for m in due:
+            if m.match_id not in seen:
+                seen.add(m.match_id)
+                unique.append(m)
+        return unique
 
     def sweep_stale_settlements(self) -> list[Match]:
         """Audit #11 C2: settled matches with an expired envelope, read from

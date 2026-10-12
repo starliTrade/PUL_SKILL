@@ -609,7 +609,11 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     _rl_check("queue", address, RL_QUEUE_MAX)
     if body.stake not in ALLOWED_STAKES:
         raise HTTPException(status_code=400, detail="Invalid stake")
-    store.sweep_expired()
+    # Audit H8: the sweep no longer voids ACTIVE matches past their play expiry
+    # — by then the grace window has passed, so they are forfeit settlements,
+    # not abandonments. It hands them back and we finalize them here.
+    for due in store.sweep_expired():
+        _finalize_if_due(due)
     # Audit #10 (item 5): also refresh settled matches whose signed envelope
     # expired while both clients were offline (sweep-driven F-12 re-sign).
     _resign_stale_settlements()
