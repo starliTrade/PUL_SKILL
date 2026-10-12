@@ -2,10 +2,10 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  نسخه:        1.8-CLOSED (فاز ۱ بسته)                                                 ║
+║  نسخه:        1.9-CLOSED (فاز ۱ و ۲ بسته)                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     12ced0f964a69110…88699373f6d794a1                                                   ║
+║  SHA-256:     012a2a2c0136be8b…87daecbeecc8543c                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -146,7 +146,7 @@
 
 # فاز ۲ — HIGH سرور (مسیر پول) 🟠
 **هدف:** یکپارچگی داده و پایداری مسیر پول. **تخمین:** ۱.۵ روز
-**🚦 گیت خروج:** ۹ تست رگرسیون سبز روی Firestore Emulator + `verify` سبز
+**🚦 گیت خروج:** ✅ **محقق شد** — ۹ آیتم، هرکدام با تست قرمز→سبز در دو کامیت جدا. `verify` با ۱۳ گیت سبز. coverage ۶۹ → ۷۸٪.
 
 - [x] **H3** ledger اقتصاد TOCTOU است، نه اتمیک — `api/economy.py:200-216, 243-273`
   تغییر: خواندن + `increment` داخل یک تراکنش keyed روی `settlementId`؛ یا سند `settlements/{id}` با `create()` به‌عنوان گیت اتمیک
@@ -166,17 +166,17 @@
   تغییر: sweep به job زمان‌بندی‌شده؛ `firestore.indexes.json`؛ خطای ایندکس لاگ + health-counter
   تست: `tests/integration/test_sweep_cost.py::test_queue_poll_does_not_scan_collections`
   پذیرش: هر poll صف صفر collection scan
-- [ ] **H10** I/O شبکه زیر قفل/تراکنش store — `api/main.py:581-645`, `api/store.py:210-218, 348-355`
+- [x] **H10** I/O شبکه زیر قفل/تراکنش store — `api/main.py:581-645`, `api/store.py:210-218, 348-355`
   تغییر: `_verify_deposits_or_void` **قبل** از `store.update` (snapshot → `duel_info` → mutate)
   تست: `tests/integration/test_lock_no_io.py::test_slow_rpc_does_not_block_other_matches`
   پذیرش: ماتچ دوم در <۵۰۰ms پاسخ دهد
-- [ ] **H22** endpoint logout وجود ندارد — `api/main.py` (جدید), `api/auth.py:224-254`
+- [x] **H22** endpoint logout وجود ندارد — `api/main.py` (جدید), `api/auth.py:224-254`
   تغییر: `POST /api/auth/logout` که `revoke_session(jti)` را صدا بزند
   تست: `tests/integration/test_auth_logout.py::test_revoked_token_is_rejected`
-- [ ] **H6** پیکربندی production fail-open — `api/main.py:295-299`
+- [x] **H6** پیکربندی production fail-open — `api/main.py:295-299`
   تغییر: پیش‌فرض برعکس — هر محیط production است مگر `PULSAR_ENV=dev` صریح
   تست: `tests/unit/test_config_gate.py::test_unknown_env_is_treated_as_production`
-- [ ] **H7** bind دامنه‌ی SIWE از هدر Host — `api/main.py:434-438`
+- [x] **H7** bind دامنه‌ی SIWE از هدر Host — `api/main.py:434-438`
   تغییر: با escrow فعال `ALLOWED_DOMAIN` اجباری؛ در غیر این صورت `PUBLIC_HOST` ثابت
   تست: `tests/integration/test_siwe_domain.py::test_foreign_host_header_cannot_pick_the_domain`
 
@@ -565,6 +565,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 2.4-CLOSED | 2026-10-12 | **فاز ۲ کامل شد (۹/۹).** H10 (I/O زیر قفل)، H22 (logout)، H6+H7 (پیکربندی fail-closed). coverage ۷۸٪. | ⬜ |
 | 2.3 | 2026-10-12 | H9 رفع شد (throttle روی sweep + ایندکس composite + شکست‌ها دیگر بی‌صدا نیستند). coverage ۷۷٪ (کاهش ۷۸→۷۷ به‌دلیل ایزوله‌شدن درست تست H4، نه regression). **فاز ۲: ۵/۹** | ⬜ |
 | 2.2 | 2026-10-12 | H5 و H8 رفع شدند. coverage ۷۷ → ۷۸٪. | ⬜ |
 | 2.1 | 2026-10-12 | H4 رفع شد (ledger بعد از commit تراکنش؛ همان باگ در `_settle_once` هم بود). coverage ۷۲ → ۷۷٪. fixture زنجیره در برابر فرستنده‌های همزمان مقاوم شد. | ⬜ |
