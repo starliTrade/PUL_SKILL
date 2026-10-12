@@ -48,6 +48,11 @@ export const SUPPORTED_LANGUAGES: Record<SupportedLanguage, LanguageInfo> = {
 
 export const translations = {
   en: {
+    pendingPayoutTitle: 'Pending payout',
+    pendingPayoutDesc: 'A payout the token could not deliver is held for you on-chain.',
+    pendingPayoutClaim: 'Claim',
+    pendingPayoutRefresh: 'Refresh',
+    pendingPayoutClaimed: 'Claim ✓',
     // Navigation & General
     navHome: 'Home',
     navArena: 'Arena',
@@ -436,6 +441,11 @@ export const translations = {
   },
 
   fa: {
+    pendingPayoutTitle: 'پرداخت معلق',
+    pendingPayoutDesc: 'پرداختی که توکن نتوانست تحویل دهد، روی زنجیره برای شما نگه داشته شده است.',
+    pendingPayoutClaim: 'دریافت',
+    pendingPayoutRefresh: 'بازخوانی',
+    pendingPayoutClaimed: 'دریافت ✓',
     // Navigation & General
     navHome: 'خانه',
     navArena: 'آرنا',
@@ -781,6 +791,11 @@ export const translations = {
   },
 
   ar: {
+    pendingPayoutTitle: 'دفعة معلقة',
+    pendingPayoutDesc: 'الدفعة التي تعذر على الرمز تسليمها محفوظة لك على السلسلة.',
+    pendingPayoutClaim: 'استلام',
+    pendingPayoutRefresh: 'تحديث',
+    pendingPayoutClaimed: 'استلام ✓',
     // Navigation & General
     navHome: 'الرئيسية',
     navArena: 'الساحة',
@@ -1126,6 +1141,11 @@ export const translations = {
   },
 
   tr: {
+    pendingPayoutTitle: 'Bekleyen ödeme',
+    pendingPayoutDesc: "Token'ın teslim edemediği ödeme zincirde sizin için tutuluyor.",
+    pendingPayoutClaim: 'Talep et',
+    pendingPayoutRefresh: 'Yenile',
+    pendingPayoutClaimed: 'Talep et ✓',
     // Navigation & General
     navHome: 'Ana Sayfa',
     navArena: 'Arena',
@@ -1471,6 +1491,11 @@ export const translations = {
   },
 
   zh: {
+    pendingPayoutTitle: '待领取付款',
+    pendingPayoutDesc: '代币无法交付的付款已在链上为您保留。',
+    pendingPayoutClaim: '领取',
+    pendingPayoutRefresh: '刷新',
+    pendingPayoutClaimed: '领取 ✓',
     // Navigation & General
     navHome: '首页',
     navArena: '竞技场',

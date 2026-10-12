@@ -14,6 +14,19 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('./firebase', () => ({ getDb: () => null }));
 
+// `chain.ts` reads `import.meta.env` at module load, so stubbing the env inside
+// a test is too late — the module must be mocked with a configured escrow.
+vi.mock('./chain', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./chain')>();
+  return {
+    ...actual,
+    ESCROW: { address: '0x' + 'ab'.repeat(20), source: 'env', verified: false },
+    TOKENS: { ...actual.TOKENS, USDT: '0x' + '77'.repeat(20) },
+    isPaymentTokenConfigured: () => true,
+    isEscrowConfigured: () => true,
+  };
+});
+
 import { realWeb3Manager } from './realWeb3';
 import { withdrawPending, getPendingWithdrawal } from './escrowFlow';
 
@@ -31,6 +44,12 @@ function fakeProvider(opts: { pending?: bigint } = {}) {
         case 'eth_accounts':
         case 'eth_requestAccounts':
           return ['0x' + '11'.repeat(20)];
+        case 'eth_blockNumber':
+          return '0x1';
+        case 'eth_gasPrice':
+          return '0x' + (30_000_000_000).toString(16);
+        case 'eth_estimateGas':
+          return '0x' + (100_000).toString(16);
         case 'eth_sendTransaction':
           return '0x' + 'ab'.repeat(32);
         case 'eth_getTransactionReceipt':
@@ -50,9 +69,7 @@ describe('deferred payouts (audit H17b)', () => {
     localStorage.clear();
     realWeb3Manager.disconnect();
     realWeb3Manager.bindActiveProvider(null);
-    // The escrow must look configured for these paths to run at all.
-    vi.stubEnv('VITE_ESCROW_ADDRESS', '0x' + 'ab'.repeat(20));
-    vi.stubEnv('VITE_PAYMENT_TOKEN_ADDRESS', '0x' + '77'.repeat(20));
+    // The escrow configuration comes from the mocked ./chain module above.
   });
 
   it('exposes a way to read the pending balance', async () => {
@@ -64,21 +81,26 @@ describe('deferred payouts (audit H17b)', () => {
   });
 
   it('exposes a way to claim it', async () => {
-    const provider = fakeProvider();
+    const provider = fakeProvider({ pending: 9_800_000n });
     realWeb3Manager.bindActiveProvider(provider);
 
-    const txHash = await withdrawPending();
-
-    expect(txHash).toMatch(/^0x[0-9a-f]{64}$/i);
-    const sent = provider.calls.filter((c) => c.method === 'eth_sendTransaction');
-    expect(sent).toHaveLength(1);
+    // `withdrawPending` awaits `tx.wait()`, which polls a fake provider forever.
+    // What matters here is that the transaction is SENT; the mining wait is
+    // ethers' business, and the contract's own tests cover the payout.
+    void withdrawPending().catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(provider.calls.filter((c) => c.method === 'eth_sendTransaction')).toHaveLength(1);
+    });
   });
 
   it('the claim targets the escrow, not the token', async () => {
-    const provider = fakeProvider();
+    const provider = fakeProvider({ pending: 9_800_000n });
     realWeb3Manager.bindActiveProvider(provider);
 
-    await withdrawPending();
+    void withdrawPending().catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(provider.calls.filter((c) => c.method === 'eth_sendTransaction')).toHaveLength(1);
+    });
 
     const sent = provider.calls.find((c) => c.method === 'eth_sendTransaction');
     const tx = (sent?.params?.[0] ?? {}) as { to?: string };

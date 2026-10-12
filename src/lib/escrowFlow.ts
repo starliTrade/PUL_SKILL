@@ -188,6 +188,47 @@ export async function settleDuel(proof: SettlementProof): Promise<string> {
   return tx.hash as string;
 }
 
+/**
+ * Read the deferred payout the escrow owes `address` (audit H17b).
+ *
+ * Audit H17 credits a payout the token refused (Tether blacklist, a paused
+ * token, a contract that reverts on receipt) instead of reverting the whole
+ * settlement. Without this read, that money is invisible to the player who is
+ * owed it.
+ */
+export async function getPendingWithdrawal(address: string): Promise<string> {
+  const provider = requireInjected();
+  const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, provider);
+  const raw: bigint = await escrow.pendingWithdrawals(address);
+  return formatUnits(raw, TOKENS.USDT_DECIMALS);
+}
+
+/**
+ * Claim a deferred payout (audit H17b).
+ *
+ * The contract's `withdraw()` reverts when there is nothing pending, and a
+ * no-op would look like a successful claim — so this checks first and refuses
+ * before spending the player's gas.
+ */
+export async function withdrawPending(): Promise<string> {
+  await ensureCorrectChain();
+  const provider = requireInjected();
+  const signer = await provider.getSigner();
+  const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, signer);
+
+  const me = await signer.getAddress();
+  const pending: bigint = await escrow.pendingWithdrawals(me);
+  if (pending === 0n) {
+    throw new Error(
+      'Nothing to withdraw — the escrow does not owe you a deferred payout.',
+    );
+  }
+
+  const tx = await escrow.withdraw({ gasPrice: await safeGasPrice() });
+  await tx.wait();
+  return tx.hash as string;
+}
+
 /** Anyone can trigger a timeout refund after MATCH_TIMEOUT. */
 export async function refundTimeoutMatch(matchIdBytes32: string): Promise<string> {
   await ensureCorrectChain(); // H5
