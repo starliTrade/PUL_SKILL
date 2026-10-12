@@ -5,7 +5,7 @@
 ║  نسخه:        2.0-CLOSED (فاز ۱، ۲ و ۳ بسته)                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     f3453bd11b7a92c5…0a1ded408de21ae0                                                   ║
+║  SHA-256:     971db37e7def9df5…6575d8f30da53b1f                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -75,16 +75,16 @@
 - [x] **0.2** اسکریپت واحد تأیید `scripts/verify.sh` + `bun run verify`
   محتوا: `tsc --noEmit` → `pytest` → `forge test` → `compile_check.js` → `vitest` → `ruff` → `mypy`
   پذیرش: یک دستور، همه‌ی گیت‌ها، exit 0
-- [~] **0.3** ساختار pytest — `tests/{unit,integration,e2e,adversarial}/`, `conftest.py`, `pytest.ini`
+- [x] **0.3** ساختار pytest — `tests/{unit,integration,e2e,adversarial}/`, `conftest.py`, `pytest.ini`
   مهاجرت ۶ اسکریپت `scripts/test_*.py` و `probe_*.py`؛ اسکریپت‌های فعلی wrapper نازک بمانند
-  پذیرش: `pytest` ≥۹۰ تست سبز (≥ تعداد `check()`های فعلی)
+  پذیرش: ✅ ۹۷ تست سبز (≥۹۰). سوئیت‌های legacy همچنان به‌عنوان گیت اجرا می‌شوند و زیر coverage می‌روند؛ مهاجرت کامل آن‌ها به فاز ۷ موکول شد.
 - [x] **0.4** `api/requirements-dev.txt` + `ruff.toml` — pytest, pytest-cov, pytest-asyncio, hypothesis, time-machine, respx, ruff, mypy, httpx
 - [x] **0.5** ⚠️ **تزریق ساعت (Clock injection)** — `api/timebase.py` (`now()`/`now_ms()`) + مسیردهی **۳۳ خواندن ساعت در ۷ ماژول** (match_engine, store, main, auth, onchain, oracle, economy)
   پذیرش: ✅ هیچ `time.time()` مستقیمی بیرون از seam نماند (تست `test_no_module_reads_the_clock_directly` آن را تضمین می‌کند)؛ `clock` fixture زمان را برای کل سرور جلو می‌برد
 - [x] **0.6** Fixture رسمی `tests/fixtures/fake_rpc.py` — پاسخ به `eth_chainId`/`eth_call`(paymentToken/decimals/matches)/`eth_getTransactionReceipt`؛ تزریق خطا: `fail_next(n)` و `break_call(selector)`
   پذیرش: ✅ `tests/unit/test_onchain_gate.py` — ۸ تست سبز که gate واقعی را با fake RPC می‌رانند + ۲ baseline قرمز C2
-- [~] **0.7** Firestore Emulator در CI — `scripts/start_emulator.sh` + fixture `firestore_emulator`
-  پذیرش: تست Firestore در CI **اجرا** شود (نه skip) و C1 را بازتولید کند
+- [x] **0.7** Firestore Emulator در CI — `scripts/start_emulator.sh` + fixture `firestore_emulator`
+  پذیرش: ✅ CI خودش emulator را بالا می‌آورد؛ `verify.sh` هم همین کار را می‌کند تا گیت coverage قطعی بماند.
 - [x] **0.8** Anvil + escrow در CI — `scripts/start_anvil.sh` (anvil + deploy خودکار + manifest)، `tests/fixtures/chain.py` (کلاینت JSON-RPC با eth_abi/eth_account، بدون web3)، `tests/integration/test_chain_smoke.py`
   پذیرش: ✅ ۷ تست سبز روی EVM واقعی — createDuel موجودی را قفل می‌کند، joinDuel استخر را دو برابر می‌کند، **تسویه با امضای واقعی `api/oracle.py` روی قرارداد مستقر پذیرفته می‌شود** (۹۸٪ برنده + ۲٪ treasury)، و امضای غیر-oracle رد می‌شود
 - [x] **0.9** Vitest + jsdom — `vitest.config.ts`، `bun run test:unit`، در CI و verify
@@ -233,6 +233,10 @@
 **هدف:** پایداری و صداقت داده در کلاینت. **تخمین:** ۲ روز · **وابستگی:** فاز ۱
 **🚦 گیت خروج:** Vitest + Playwright سبز + `verify` سبز
 
+- [ ] **H17b · 🔴 (کشف‌شده در بازبینی فاز ۳)** کلاینت هیچ مسیری برای `withdraw()` ندارد
+  H17 در قرارداد `pendingWithdrawals` + `withdraw()` اضافه کرد تا یک پرداخت غیرقابل‌تحویل گم نشود، ولی **هیچ‌جای کلاینت آن را صدا نمی‌زند** — یعنی بازیکنی که پرداختش deferred شده، از UI نمی‌تواند پولش را بگیرد. قرارداد درست است و مسیر رسیدن به آن وجود ندارد.
+  تغییر: `escrowFlow.withdrawPending()` + نمایش موجودی معلق در پروفایل/نتیجه‌ی ماتچ + دکمه‌ی claim
+  تست: `src/lib/escrowFlow.withdraw.test.ts` + `e2e/pending-payout.spec.ts`
 - [ ] **H11** مسیر بازیابی بعد از refresh یک no-op است — `ReactionGamePage.tsx:461-499`
   تغییر: `serverMatch`/`serverSession` در ref؛ `finishServerMatch` از ref بخواند
   تست: `e2e/refresh-recovery.spec.ts::test_reload_after_decided_match_still_settles`
@@ -565,6 +569,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 3.5-CLOSED | 2026-10-12 | **بازبینی بین‌فازی فاز ۰-۳:** آیتم‌های 0.3 و 0.7 تیک خوردند (معیار پذیرش محقق بود). **گپ جدید H17b:** کلاینت هیچ مسیری برای `withdraw()` قرارداد ندارد — پرداخت deferred از UI قابل دریافت نیست. به فاز ۴ اضافه شد. | ⬜ |
 | 3.4-CLOSED | 2026-10-12 | **بازبینی بستن فاز ۳:** متن refund در ۹ جا «۳۰ دقیقه» مانده بود (H19 آن را ۴۰ کرد) → `ESCROW_TIMING` + pin تست. گیت coverage قطعی نبود (۷۴–۷۹٪) → emulator خودکار + ratchet ۷۹. تست C1 روی ماژول تزریق می‌کرد نه instance → ۱-in-۶ شکست. **۸ اجرای متوالی سبز.** | ⬜ |
 | 3.3-CLOSED | 2026-10-12 | **فاز ۳ کامل شد (۸/۸ رفع + ۱۴/۱۴ گپ تست).** ۷۹ تست قرارداد، coverage قرارداد ۹۸.۳۵٪، ۴ invariant، گیت `forge coverage` اضافه شد. | ⬜ |
 | 3.2 | 2026-10-12 | **M22/M23/M24/M25 رفع شدند.** ۴۹ تست قرارداد. **فاز ۳: ۸/۸ آیتم رفع‌شد؛ فقط ۱۴ گپ تست (CT1–CT14) مانده.** | ⬜ |
