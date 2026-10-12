@@ -52,6 +52,20 @@ def _fs_db() -> Any:
     return None
 
 
+def _firestore_module() -> Any:
+    """The google.cloud.firestore MODULE (for the @transactional decorator).
+
+    `store._firestore` is a DurableMatchStore instance attribute holding a
+    Client, which has no `transactional` — the same trap audit C1 hit.
+    """
+    try:
+        from google.cloud import firestore as _fs  # noqa: PLC0415
+
+        return _fs
+    except Exception:  # pragma: no cover - SDK absent
+        return None
+
+
 def ledger_available() -> bool:
     return _fs_db() is not None
 
@@ -199,22 +213,12 @@ def record_settlement(match: Any) -> None:
         ).hexdigest()
 
         match_ref = db.collection("matches").document(match_id)
-        existing = match_ref.get()
-        if existing.exists:
-            prev_id = (existing.to_dict() or {}).get("settlementId")
-            if prev_id == settlement_id:
-                return  # already ledgered — nothing to do (idempotent replay)
-            # A DIFFERENT settlement id for the same match should not happen
-            # (the engine settles once). Record the anomaly but keep the first
-            # ledger row: history is append-only from here.
-            if prev_id:
-                _log_ledger_error(
-                    "record_settlement",
-                    ValueError(
-                        f"settlement id drift for {match_id}: {prev_id} != {settlement_id}; keeping first"
-                    ),
-                )
-                return
+        # Audit H3: the idempotency gate used to be a plain `match_ref.get()`
+        # OUTSIDE any transaction, followed by a batch commit. Two replicas (or
+        # the two call sites in main.py) could both observe "no row yet" and
+        # both commit, double-counting wins / totalMatches / earnedUSDT for one
+        # duel. A read-then-write is not a mutex; a transaction is.
+        gate_ref = db.collection("settlements").document(settlement_id)
 
         doc: dict[str, Any] = {
             "id": match_id,
@@ -239,39 +243,69 @@ def record_settlement(match: Any) -> None:
             # validatedTimes (was: match.players misread as rounds — always []).
             doc["reactionTimes"] = {a: list(validated_times.get(a, [])) for a in players}
 
-        # ONE atomic batch: match doc + both user counters + leaderboard row
-        # commit together or not at all (F-07).
-        batch = db.batch()
-        batch.set(match_ref, doc, merge=True)
+        # ONE atomic transaction: the gate, the match doc, both user counters
+        # and the leaderboard row commit together or not at all. Firestore
+        # retries a conflicting transaction, so the loser of the race re-reads
+        # the gate, finds it present, and returns without touching a counter.
+        transactional = getattr(_firestore_module(), "transactional", None)
+        if transactional is None:
+            raise RuntimeError("google-cloud-firestore is required for the economy ledger")
 
-        for addr in players:
-            is_winner = addr == winner
-            batch.set(
-                db.collection("users").document(addr),
-                {
-                    "totalMatches": _inc(1),
-                    "wins": _inc(1) if is_winner else _inc(0),
-                    "losses": _inc(1) if (winner and not is_winner) else _inc(0),
-                    "voids": _inc(1) if not winner else _inc(0),
-                    "lastSettledAt": settled_at,
-                },
-                merge=True,
-            )
+        def _apply(tx: Any) -> bool:
+            gate = gate_ref.get(transaction=tx)
+            if gate.exists:
+                return False  # another replica already ledgered this settlement
 
-        if winner:
-            batch.set(
-                db.collection("leaderboard").document(winner),
-                {
-                    "address": winner,
-                    "wins": _inc(1),
-                    "totalMatches": _inc(1),
-                    "earnedUSDT": _inc(prize),
-                    "updatedAt": settled_at,
-                },
-                merge=True,
-            )
+            existing = match_ref.get(transaction=tx)
+            if existing.exists:
+                prev_id = (existing.to_dict() or {}).get("settlementId")
+                if prev_id == settlement_id:
+                    return False  # idempotent replay
+                if prev_id:
+                    # A DIFFERENT settlement id for the same match should not
+                    # happen (the engine settles once). Keep the first ledger
+                    # row: history is append-only from here.
+                    _log_ledger_error(
+                        "record_settlement",
+                        ValueError(
+                            f"settlement id drift for {match_id}: {prev_id} != "
+                            f"{settlement_id}; keeping first"
+                        ),
+                    )
+                    return False
 
-        batch.commit()
+            tx.set(gate_ref, {"matchId": match_id, "settlementId": settlement_id, "at": settled_at})
+            tx.set(match_ref, doc, merge=True)
+
+            for addr in players:
+                is_winner = addr == winner
+                tx.set(
+                    db.collection("users").document(addr),
+                    {
+                        "totalMatches": _inc(1),
+                        "wins": _inc(1) if is_winner else _inc(0),
+                        "losses": _inc(1) if (winner and not is_winner) else _inc(0),
+                        "voids": _inc(1) if not winner else _inc(0),
+                        "lastSettledAt": settled_at,
+                    },
+                    merge=True,
+                )
+
+            if winner:
+                tx.set(
+                    db.collection("leaderboard").document(winner),
+                    {
+                        "address": winner,
+                        "wins": _inc(1),
+                        "totalMatches": _inc(1),
+                        "earnedUSDT": _inc(prize),
+                        "updatedAt": settled_at,
+                    },
+                    merge=True,
+                )
+            return True
+
+        transactional(_apply)(db.transaction())
     except Exception as exc:
         # Ledger is a shadow of the money path — never raise into settlement,
         # but make the failure VISIBLE (F-07).

@@ -5,7 +5,7 @@
 # one instead of being a permanently-red number nobody reads.
 #
 #   phase 0         48%
-#   phase 1 (now)   69%   <- current, measured across pytest + the legacy suites
+#   phase 2 (now)   72%   <- current, measured across pytest + the legacy suites
 #   phase 1 target  55%   (C1-C4 regression tests)
 #   phase 2         65%   (server money path)
 #   phase 3         70%   (contract + chain)
@@ -23,7 +23,7 @@ omit =
     api/requirements*.txt
 
 [report]
-fail_under = 69
+fail_under = 72
 show_missing = True
 skip_covered = False
 exclude_lines =
