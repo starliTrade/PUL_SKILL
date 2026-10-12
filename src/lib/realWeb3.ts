@@ -165,6 +165,14 @@ export interface LeaderboardPlayer {
   level: number;
 }
 
+/**
+ * The localStorage key the game page persists a live ranked match under.
+ *
+ * Audit H15: the identity lock reads it, so the two modules must agree on the
+ * string — a typo here would silently disable the lock.
+ */
+export const ACTIVE_RANKED_MATCH_KEY = 'pulsar_active_ranked_match';
+
 class RealWeb3Manager {
   private currentAccount: ConnectedAccountState = {
     address: '',
@@ -178,6 +186,12 @@ class RealWeb3Manager {
   };
 
   private listeners: Array<() => void> = [];
+  /**
+   * Audit H15 — set when a wallet or network change was REFUSED because a
+   * ranked match is live. The UI reads it to tell the player what to do instead
+   * of silently ignoring their action.
+   */
+  public identityLockedReason = '';
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -189,17 +203,38 @@ class RealWeb3Manager {
         ethereum.on?.('accountsChanged', (accounts: string[]) => {
           if (!accounts || accounts.length === 0) {
             this.disconnect();
-          } else {
-            this.setConnectedAddress(
-              accounts[0],
-              this.currentAccount.providerName || 'MetaMask',
-              CHAIN.chainId,
-              ethereum
-            );
+            return;
           }
+          // Audit H15: switching accounts mid-match would change
+          // `wallet.fullAddress` while the server session, the match and the
+          // escrow deposits all belong to the previous address — the player
+          // would be playing as someone else, and `iWon` would be evaluated
+          // against the wrong wallet.
+          if (this.hasLiveRankedMatch()) {
+            this.identityLockedReason =
+              'Your wallet changed, but a ranked match is in progress. Finish or ' +
+              'leave the match before switching accounts.';
+            this.notify();
+            return;
+          }
+          this.setConnectedAddress(
+            accounts[0],
+            this.currentAccount.providerName || 'MetaMask',
+            CHAIN.chainId,
+            ethereum
+          );
         });
 
         ethereum.on?.('chainChanged', () => {
+          // Audit H15: a reload destroys the in-memory provider — on
+          // WalletConnect that loses the session mid-match. Refuse and explain.
+          if (this.hasLiveRankedMatch()) {
+            this.identityLockedReason =
+              'Your wallet switched network, but a ranked match is in progress. ' +
+              'Finish or leave the match, then switch back.';
+            this.notify();
+            return;
+          }
           window.location.reload();
         });
 
@@ -207,6 +242,25 @@ class RealWeb3Manager {
           this.disconnect();
         });
       }
+    }
+  }
+
+  /**
+   * True while a ranked duel is in flight (audit H15).
+   *
+   * The game page persists the live match under this key; while it is present
+   * the player's identity and network are frozen, because the server session,
+   * the match and the escrow deposits were all created under the current
+   * address on the current chain.
+   */
+  private hasLiveRankedMatch(): boolean {
+    try {
+      const raw = localStorage.getItem(ACTIVE_RANKED_MATCH_KEY);
+      if (!raw) return false;
+      const saved = JSON.parse(raw) as { matchId?: string };
+      return Boolean(saved?.matchId);
+    } catch {
+      return false;
     }
   }
 
@@ -1098,6 +1152,7 @@ class RealWeb3Manager {
 
   public disconnect(): void {
     this.bindActiveProvider(null);
+    this.identityLockedReason = '';
     try {
       if (this.wcProvider?.connected) {
         this.wcProvider.disconnect().catch(() => {});

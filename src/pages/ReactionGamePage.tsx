@@ -46,7 +46,7 @@ import {
 import { settleDuel as settleDuelOnChain, refundTimeoutMatch, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState, getTokenDecimals } from '../lib/escrowFlow';
 import { isEscrowConfigured, CHAIN, TOKENS, ECONOMY, REFUND_OPENS_AFTER_MINUTES } from '../lib/chain';
 import { ethers } from 'ethers';
-import { realWeb3Manager } from '../lib/realWeb3';
+import { realWeb3Manager, ACTIVE_RANKED_MATCH_KEY } from '../lib/realWeb3';
 import { reportError } from '../lib/monitoring';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { ConnectWallet } from '../components/ConnectWallet';
@@ -481,7 +481,7 @@ function isWalletCancel(msg: string): boolean {
   // Audit-#5 refresh recovery: persist the live ranked match so a full page
   // reload can RESUME it (score, round, role) instead of re-queuing and
   // re-depositing. Server state is always the source of truth.
-  const ACTIVE_MATCH_KEY = 'pulsar_active_ranked_match';
+  const ACTIVE_MATCH_KEY = ACTIVE_RANKED_MATCH_KEY;
   const persistActiveMatch = useCallback((view: MatchView | null) => {
     try {
       if (view && (view.status === 'waiting' || view.status === 'active')) {

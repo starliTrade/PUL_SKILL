@@ -60,6 +60,8 @@ vi.mock('../store/usePulsarStore', () => ({
 }));
 
 vi.mock('../lib/realWeb3', () => ({
+  // Audit H15: the page imports this key to persist the live match.
+  ACTIVE_RANKED_MATCH_KEY: 'pulsar_active_ranked_match',
   realWeb3Manager: {
     getActiveEip1193Provider: () => ({ request: vi.fn() }),
     disconnect: vi.fn(),
