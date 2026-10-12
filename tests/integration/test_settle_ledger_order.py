@@ -40,6 +40,28 @@ def client():
     return TestClient(server.app)
 
 
+@pytest.fixture(autouse=True)
+def memory_store(monkeypatch):
+    """Force the server onto a clean IN-MEMORY store for this module.
+
+    With FIRESTORE_EMULATOR_HOST set the server boots Firestore-backed, so a
+    match left WAITING by another test survives in the emulator and this
+    module's two players pair with it instead of each other — which showed up
+    as a confusing "matchId mismatch" that only reproduced in the full suite.
+
+    This module is about the ORDER of the ledger write, not about persistence,
+    so it gets a clean in-memory store. `_fs_store = None` keeps the existing
+    store object (and its installed persistence hooks) and just switches the
+    backend.
+    """
+    monkeypatch.setattr(server.store, "_fs_store", None)
+    mem = server.store.memory
+    mem.matches.clear()
+    mem.queue.clear()
+    mem.player_match.clear()
+    return server.store
+
+
 def _session(client: TestClient, account: Account) -> tuple[str, dict[str, str]]:
     addr = account.address.lower()
     r = client.post("/api/auth/nonce", json={"address": addr}, headers={"host": "pulsar.test"})

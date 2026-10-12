@@ -229,6 +229,58 @@ def _is_transient_backend_error(exc: BaseException) -> bool:
         return False
 
 
+# --- Lazy sweep throttle (audit H9) ------------------------------------------
+# `/api/queue` is the hottest endpoint (the client polls every 2.5s) and every
+# poll ran the expiry sweep plus the stale-settlement re-sign, which between
+# them issue three whole-collection scans. The sweep is a maintenance task, not
+# part of answering the request, so it runs at most once per window.
+SWEEP_MIN_INTERVAL_SECONDS = 15.0
+_last_sweep_at = 0.0
+_sweep_failures: dict[str, int] = {"sweep_expired": 0, "resign": 0, "total": 0}
+_sweep_last_error: dict[str, Any] = {}
+
+
+def _reset_sweep_clock() -> None:
+    """Test seam: force the next poll to sweep."""
+    global _last_sweep_at
+    _last_sweep_at = 0.0
+
+
+def _sweep_due() -> bool:
+    """True when the maintenance sweep may run again (audit H9)."""
+    global _last_sweep_at
+    now = timebase.now()
+    if now - _last_sweep_at < SWEEP_MIN_INTERVAL_SECONDS:
+        return False
+    _last_sweep_at = now
+    return True
+
+
+def _note_sweep_failure(where: str, exc: BaseException) -> None:
+    """A silent sweep failure looks exactly like a working one (audit H9).
+
+    The durable re-sign sweep (the F-12 prize rescue) can be dead in production
+    because a missing composite index raises and the old `except: pass` hid it.
+    Count it and surface it on /api/health.
+    """
+    _sweep_failures[where] = _sweep_failures.get(where, 0) + 1
+    _sweep_failures["total"] += 1
+    _sweep_last_error.clear()
+    _sweep_last_error.update(
+        {"where": where, "error": repr(exc)[:200], "at": int(timebase.now())}
+    )
+    print(f"[sweep] {where} failed: {exc!r}", file=sys.stderr)
+
+
+def sweep_health() -> dict[str, Any]:
+    return {
+        "minIntervalSeconds": SWEEP_MIN_INTERVAL_SECONDS,
+        "lastRunAt": int(_last_sweep_at),
+        "failures": dict(_sweep_failures),
+        "lastError": dict(_sweep_last_error),
+    }
+
+
 # Joiner-deposit timeout (audit #5, item 3): if the joiner's stake never lands
 # on-chain within this window after matchmaking, the match is voided so the
 # creator can refund (refundTimeoutMatch) instead of being locked for the
@@ -503,6 +555,9 @@ def health() -> dict[str, Any]:
         # window for the life of the project. Expose which backend is actually
         # enforcing and how often it fell back, so a dead distributed limiter is
         # visible in monitoring instead of being discovered during an incident.
+        # Audit H9: a dead sweep (e.g. a missing composite index) must be
+        # visible in monitoring, not discovered when a prize goes unclaimed.
+        "sweep": sweep_health(),
         "rateLimit": {
             "backend": "firestore" if getattr(store, "_fs_store", None) is not None else "memory",
             "fallbacks": _rl_fallback_count,
@@ -609,14 +664,25 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     _rl_check("queue", address, RL_QUEUE_MAX)
     if body.stake not in ALLOWED_STAKES:
         raise HTTPException(status_code=400, detail="Invalid stake")
-    # Audit H8: the sweep no longer voids ACTIVE matches past their play expiry
-    # — by then the grace window has passed, so they are forfeit settlements,
-    # not abandonments. It hands them back and we finalize them here.
-    for due in store.sweep_expired():
-        _finalize_if_due(due)
-    # Audit #10 (item 5): also refresh settled matches whose signed envelope
-    # expired while both clients were offline (sweep-driven F-12 re-sign).
-    _resign_stale_settlements()
+    # Audit H9: the sweep is maintenance, not part of answering this request —
+    # it runs at most once per SWEEP_MIN_INTERVAL_SECONDS instead of on every
+    # poll (three whole-collection scans per poll on the hottest endpoint).
+    if _sweep_due():
+        # Audit H8: the sweep no longer voids ACTIVE matches past their play
+        # expiry — by then the grace window has passed, so they are forfeit
+        # settlements, not abandonments. It hands them back; we finalize here.
+        try:
+            for due in store.sweep_expired():
+                _finalize_if_due(due)
+        except Exception as exc:
+            # Never break matchmaking, but never hide it either (audit H9).
+            _note_sweep_failure("sweep_expired", exc)
+        # Audit #10 (item 5): refresh settled matches whose signed envelope
+        # expired while both clients were offline (sweep-driven F-12 re-sign).
+        try:
+            _resign_stale_settlements()
+        except Exception as exc:
+            _note_sweep_failure("resign", exc)
     # Audit #8 F-13: durable idempotency — check Firestore for a live match
     # containing this address BEFORE enqueueing, so a re-poll that lands on a
     # different replica (or a recycled process) cannot mint an orphan match

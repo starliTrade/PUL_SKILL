@@ -131,3 +131,33 @@ def clock(monkeypatch):
     monkeypatch.setattr(timebase, "now", lambda: _real_now() + c.offset)
     monkeypatch.setattr(timebase, "now_ms", lambda: int((_real_now() + c.offset) * 1000))
     return c
+
+
+@pytest.fixture(autouse=True)
+def _isolate_server_store():
+    """Reset the server's in-process match state around every test.
+
+    `main.store` is a module-level singleton, so a match left WAITING by one
+    test is still in the queue bucket when the next test's players enqueue —
+    they pair with the previous test's player and get a different match id.
+    That surfaced as a confusing "matchId mismatch" in an unrelated test.
+
+    Only touches `main` when it is already imported, so tests that never touch
+    the server do not pay for importing it.
+    """
+    import sys
+
+    server = sys.modules.get("main")
+    if server is None:
+        yield
+        return
+
+    def _clear() -> None:
+        mem = server.store.memory
+        mem.matches.clear()
+        mem.queue.clear()
+        mem.player_match.clear()
+
+    _clear()
+    yield
+    _clear()

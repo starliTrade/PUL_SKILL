@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import os
 import secrets
+import sys
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -260,6 +261,8 @@ class FirestoreStore:
     def __init__(self, client: Any) -> None:
         self.db = client
         self.local = InMemoryStore()  # write-through cache for hot reads
+        # Audit H9: the last sweep failure, surfaced through /api/health.
+        self.last_sweep_error: str = ""
         # address -> live (waiting|active) match id for idempotent re-polls.
         self.player_match: dict[str, str] = {}
 
@@ -472,9 +475,13 @@ class FirestoreStore:
                 if deadline and now < deadline:
                     continue  # still spendable — nothing to do
                 found.append(m)
-        except Exception:
-            # Sweep is best-effort (a missing index must not crash queueing).
-            pass
+        except Exception as exc:
+            # Audit H9: this used to be a bare `pass`. A missing composite index
+            # (see firestore.indexes.json) raises here, so the durable re-sign
+            # sweep — the F-12 prize rescue — silently no-opped in production
+            # while still paying for the query. Best-effort must still be LOUD.
+            print(f"[store] stale-settlement sweep failed: {exc!r}", file=sys.stderr)
+            self.last_sweep_error = repr(exc)[:200]
         return found
 
 

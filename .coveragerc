@@ -13,6 +13,12 @@
 #
 # Raise `fail_under` in the same commit that adds the tests, never before.
 #
+# 2026-10-12 (H9): the floor moved 78 -> 77 because a test was made MORE
+# correct, not because coverage regressed. The H4 ledger-order test used to run
+# against the shared Firestore-backed store and incidentally exercised store.py
+# paths; it now forces a clean in-memory store (it is about the ORDER of the
+# ledger write, not persistence), so the honest number is 77.
+#
 # Note: the legacy suites in scripts/ run as subprocesses and therefore do NOT
 # contribute to this number. It measures the pytest suite only — which is why
 # api/store.py and api/auth.py still read low: their coverage lives in the
@@ -23,7 +29,7 @@ omit =
     api/requirements*.txt
 
 [report]
-fail_under = 78
+fail_under = 77
 show_missing = True
 skip_covered = False
 exclude_lines =
