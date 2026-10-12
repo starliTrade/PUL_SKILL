@@ -3,7 +3,7 @@ PULSAR — On-chain deposit verification (audit #5, item 1).
 
 The server previously trusted clients to deposit before playing: a custom
 client could matchmake, never stake, and grief an honest opponent whose own
-deposit was then locked until the 30-minute refund horizon. This module makes
+deposit was then locked until the refund horizon. This module makes
 the server INDEPENDENTLY verify, via read-only eth_call, that the escrow holds
 both stakes (duel status == Active) before any round commit is accepted.
 
@@ -340,7 +340,7 @@ def deposit_verdict(
     dust stake (creator locks the pot at 0.000001 USDT while the UI promises
     the full prize) or wrong participants (deposited from wallet W2, playing
     as W1 → the contract's participant check makes the winner unpayable and
-    both stakes burn 30 minutes).
+    both stakes burn until the refund horizon).
 
     MATCH requires ALL of: status == Active, stakeAmount == the agreed stake in
     token units, and {player1, player2} == the server's two participants.
