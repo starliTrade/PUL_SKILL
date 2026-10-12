@@ -132,8 +132,29 @@ function requireEscrowAddress(): string {
 // what wallets estimate (observed: node min 25 gwei vs wallet suggestion
 // 15 gwei → eth_sendRawTransaction reverted code 32603). Always floor the
 // price at 30 gwei so wallet suggestions can never dip below the node floor.
+/**
+ * Audit M41 — the gas floor is PER-CHAIN.
+ *
+ * A single 30 gwei floor is right for Polygon mainnet (its node floor is ~25-30
+ * gwei; a lower suggestion reverts with code 32603) and wrong everywhere else:
+ * on an L2 or a testnet it makes every transaction cost tens of times more than
+ * needed, and the user pays it.
+ */
+const GAS_FLOORS_WEI: Record<number, bigint> = {
+  137: 30_000_000_000n, // Polygon mainnet — the node floor is real
+  80002: 30_000_000n, // Polygon Amoy testnet
+  1: 1_000_000_000n, // Ethereum mainnet
+};
+
+/** A conservative floor for a chain we do not know: 1 gwei, not 30. */
+const DEFAULT_GAS_FLOOR_WEI = 1_000_000_000n;
+
+export function gasFloorWei(chainId: number): bigint {
+  return GAS_FLOORS_WEI[chainId] ?? DEFAULT_GAS_FLOOR_WEI;
+}
+
 async function safeGasPrice(): Promise<bigint> {
-  const FLOOR = parseUnits('30', 'gwei');
+  const FLOOR = gasFloorWei(CHAIN.chainId);
   try {
     const fee = await requireInjected().getFeeData();
     const suggested = fee.gasPrice ?? 0n;

@@ -70,8 +70,14 @@ export interface TierInfo {
 export class XPSystem {
   public static getLevel(totalXP: number): number {
     if (totalXP <= 0) return 1;
-    const lvl = Math.floor(Math.pow(totalXP / 100, 1 / 1.5)) + 1;
-    return Math.max(1, lvl);
+    // Audit M45: this floors while `getXPForLevel` rounds, so the two were not
+    // inverses — a player at exactly the XP for level 5 was shown as level 4.
+    // The estimate below is then corrected against the real thresholds, which
+    // makes the pair exact by construction.
+    let level = Math.floor(Math.pow(totalXP / 100, 1 / 1.5)) + 1;
+    while (this.getXPForLevel(level + 1) <= totalXP) level++;
+    while (level > 1 && this.getXPForLevel(level) > totalXP) level--;
+    return Math.max(1, level);
   }
 
   public static getXPForLevel(level: number): number {
