@@ -199,18 +199,7 @@ def record_settlement(match: Any) -> None:
         outcome = winner or "void"
         # Audit #11 C1: the key hashes the REAL validated times (was: a
         # nonexistent attribute → always ""), so idempotency is per-FACT.
-        times_key = validated_times
-        settlement_id = hashlib.sha256(
-            "|".join(
-                [
-                    match_id,
-                    outcome,
-                    f"{stake:.2f}",
-                    str(settled_at),
-                    str(sorted((k, tuple(v or ())) for k, v in times_key.items())),
-                ]
-            ).encode()
-        ).hexdigest()
+        settlement_id = _settlement_id(match_id, outcome, stake, settled_at, validated_times)
 
         match_ref = db.collection("matches").document(match_id)
         # Audit H3: the idempotency gate used to be a plain `match_ref.get()`
@@ -337,8 +326,43 @@ __all__ = [
 ]
 
 
-def settlement_id_for(match_id: str, outcome: str, stake: float, settled_at: int) -> str:
-    """Exposed for tests: the deterministic settlement id."""
+def _settlement_id(
+    match_id: str,
+    outcome: str,
+    stake: float,
+    settled_at: int,
+    times: dict[str, list[float]] | None = None,
+) -> str:
+    """The deterministic idempotency key for one settled duel.
+
+    Audit H5: this is the ONE definition. It used to exist twice — production
+    hashed the validated times while the exported test helper hashed an empty
+    string in that slot, so a test that used the helper to prove idempotency
+    passed no matter what the ledger did.
+    """
     return hashlib.sha256(
-        "|".join([match_id, outcome, f"{stake:.2f}", str(settled_at), ""]).encode()
+        "|".join(
+            [
+                match_id,
+                outcome,
+                f"{stake:.2f}",
+                str(settled_at),
+                str(sorted((k, tuple(v or ())) for k, v in (times or {}).items())),
+            ]
+        ).encode()
     ).hexdigest()
+
+
+def settlement_id_for(
+    match_id: str,
+    outcome: str,
+    stake: float,
+    settled_at: int,
+    times: dict[str, list[float]] | None = None,
+) -> str:
+    """Exposed for tests: the deterministic settlement id.
+
+    Takes the same facts production hashes, so a test using it is comparing
+    against reality rather than against a second, divergent implementation.
+    """
+    return _settlement_id(match_id, outcome, stake, settled_at, times)
