@@ -58,14 +58,40 @@ def test_active_matching_duel_lets_the_round_proceed(rpc):
     assert server._verify_deposits_or_void(_match()) is None
 
 
-def test_mismatched_stake_voids_the_match(rpc):
+def test_mismatched_stake_is_reported_as_a_void(rpc):
+    """The gate is PURE (audit H10): it reports, the caller persists.
+
+    It used to set `m.status = "void"` itself, which only worked because it ran
+    inside the store transaction. Now that it runs outside the lock it must not
+    mutate, so the void is persisted explicitly by `_gate_or_void`.
+    """
     import main as server
 
     rpc.duel.stake_units = 1  # dust stake while the UI promised 1.0 USDT
     m = _match()
     gate = server._verify_deposits_or_void(m)
     assert gate and gate.get("void") is True
-    assert m.status == "void"
+    assert m.status == "active", "the gate must not mutate the match any more"
+
+
+def test_gate_or_void_persists_the_void(rpc, monkeypatch):
+    """`_gate_or_void` refuses the round AND persists the void decision."""
+    import main as server
+    from fastapi import HTTPException
+
+    # Force the in-memory backend: with FIRESTORE_EMULATOR_HOST set the server
+    # boots Firestore-backed and this match only exists in process memory.
+    monkeypatch.setattr(server.store, "_fs_store", None)
+    server.store.memory.matches.clear()
+
+    rpc.duel.stake_units = 1
+    m = _match()
+    server.store.memory.put(m)
+
+    with pytest.raises(HTTPException) as exc:
+        server._gate_or_void(m.match_id)
+    assert exc.value.status_code == 409
+    assert server.store.get(m.match_id).status == "void"
 
 
 def test_mismatched_participants_void_the_match(rpc):

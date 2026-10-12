@@ -288,6 +288,45 @@ def sweep_health() -> dict[str, Any]:
 DEPOSIT_TIMEOUT_SECONDS = 300.0
 
 
+def _gate_or_void(match_id: str) -> None:
+    """Run the on-chain deposit gate BEFORE the store lock is taken (audit H10).
+
+    The gate is a blocking network read (up to RPC_TIMEOUT_SECONDS = 5) and the
+    in-memory store holds ONE global lock for every match, so calling it from
+    inside `store.update`'s mutate serialized every commit / reveal / submit /
+    settle in the process — a single slow RPC stalled all matchmaking. On
+    Firestore it also held an open transaction across socket I/O.
+
+    Safe to run on a snapshot: the gate's inputs (`stake`, `players`) are
+    immutable after activation, and the on-chain state is external anyway.
+
+    Raises 409 when the round must be refused, and persists the void when the
+    on-chain duel is provably a different match.
+    """
+    if not onchain.escrow_configured():
+        return  # practice / unconfigured dev — gate inactive
+    snapshot = store.get(match_id)
+    gate = _verify_deposits_or_void(snapshot)
+    if not gate:
+        return
+    if gate.get("void"):
+        _persist_void(match_id)
+    raise HTTPException(status_code=409, detail=gate["reason"])
+
+
+def _persist_void(match_id: str) -> None:
+    """Persist a gate void decision in its own short transaction (audit H10)."""
+
+    def _void(m: Any, eng: Any) -> None:
+        m.status = "void"
+        return None
+
+    try:
+        store.update(match_id, _void)
+    except (MatchError, HTTPException):
+        pass  # the 409 below is the caller-visible outcome either way
+
+
 def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
     """On-chain deposit gate for round actions. Returns None to proceed.
 
@@ -333,7 +372,8 @@ def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
                 ),
             )
         if verdict is onchain.DepositVerdict.MISMATCH:
-            m.status = "void"
+            # Audit H10: do NOT mutate here — this runs outside the store
+            # transaction now, so the caller persists the void explicitly.
             return {
                 "void": True,
                 "reason": (
@@ -350,7 +390,7 @@ def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
         # be voided the moment it finally pairs.
         clock_origin = m.play_started_at()
         if timebase.now() - clock_origin > DEPOSIT_TIMEOUT_SECONDS:
-            m.status = "void"
+            # Audit H10: the caller persists the void (see _gate_or_void).
             # H4 — honest money-UX: the contract only releases refunds at
             # createdAt + MATCH_TIMEOUT (30 min). Saying "refundable now" sends
             # players into a revert for ~25 minutes. State the real window.
@@ -728,16 +768,15 @@ def round_commit(body: CommitRequest, request: Request) -> dict[str, Any]:
         # (read-modify-write) so concurrent replicas cannot clobber rounds.
         # Audit-#5 gate: the escrow must hold BOTH stakes (read directly from
         # the chain) before any round is accepted — fail-closed.
-        def _mutate(m: Any, eng: Any) -> dict[str, Any] | None:
-            gate = _verify_deposits_or_void(m)
-            if gate:
-                return gate
+        # Audit H10: the gate runs BEFORE store.update — it is network I/O and
+        # must not be inside the lock.
+        _gate_or_void(body.matchId)
+
+        def _mutate(m: Any, eng: Any) -> None:
             eng.commit_intent(m, address, body.roundIndex, body.intentHash)
             return None
 
-        gate = store.update(body.matchId, _mutate)
-        if gate and gate.get("void"):
-            raise HTTPException(status_code=409, detail=gate["reason"])
+        store.update(body.matchId, _mutate)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {"ok": True}
@@ -750,10 +789,10 @@ def round_target(body: TargetRequest, request: Request) -> dict[str, Any]:
     try:
         # Same fail-closed deposit gate: revealing the target before the
         # escrow holds both stakes lets a stakeless client stall the duel.
+        # Audit H10: gate outside the lock (network I/O).
+        _gate_or_void(body.matchId)
+
         def _mutate(m: Any, eng: Any) -> dict[str, Any]:
-            gate = _verify_deposits_or_void(m)
-            if gate:
-                raise MatchError(gate["reason"])
             return eng.reveal_target(m, address, body.roundIndex)
 
         return store.update(body.matchId, _mutate)
@@ -770,10 +809,10 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
         # authoritative document, then (when it completes the match) settled
         # and signed in the SAME transaction so no concurrent writer can
         # wedge the match between settle and sign.
+        # Audit H10: gate outside the lock (network I/O).
+        _gate_or_void(body.matchId)
+
         def _mutate(m: Any, eng: Any) -> dict[str, Any]:
-            gate = _verify_deposits_or_void(m)
-            if gate:
-                raise MatchError(gate["reason"])
             res = eng.submit_result(m, address, body.roundIndex, body.measuredMs, body.resultProof)
             if m.status == "active" and eng.match_completed(m):
                 try:

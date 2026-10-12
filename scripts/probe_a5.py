@@ -101,7 +101,11 @@ orig_urlopen = onchain.urllib.request.urlopen
 onchain.urllib.request.urlopen = _FakeCreated
 try:
     gate = server._verify_deposits_or_void(m2)
-    check("CREATED + timeout → void", isinstance(gate, dict) and gate.get("void") is True and m2.status == "void")
+    # Audit H10: the gate is PURE — it reports the verdict and the CALLER
+    # persists the void (it now runs outside the store lock, so it must not
+    # mutate the match).
+    check("CREATED + timeout → void verdict", isinstance(gate, dict) and gate.get("void") is True)
+    check("gate does not mutate the match", m2.status == "active")
 finally:
     onchain.urllib.request.urlopen = orig_urlopen
 
@@ -201,18 +205,18 @@ try:
     gate = server._verify_deposits_or_void(m3)
     check(
         "ACTIVE but dust stake → void (F-03)",
-        isinstance(gate, dict) and gate.get("void") is True and m3.status == "void",
+        isinstance(gate, dict) and gate.get("void") is True,
     )
 
     # F-03 regression: deposited from wallet W2, playing as W1
-    m3.status = "active"
+    m3.status = "active"  # the gate no longer mutates; reset is a no-op guard
     _FakeEscrowRPC.stake_units = _STAKE_UNITS
     _FakeEscrowRPC.p2 = "0x" + "9" * 40
     onchain._cache.clear()
     gate = server._verify_deposits_or_void(m3)
     check(
         "ACTIVE but wrong participants → void (F-03)",
-        isinstance(gate, dict) and gate.get("void") is True and m3.status == "void",
+        isinstance(gate, dict) and gate.get("void") is True,
     )
 finally:
     onchain.urllib.request.urlopen = orig_urlopen
