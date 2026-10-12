@@ -5,7 +5,7 @@
 ║  نسخه:        2.0-CLOSED (فاز ۱، ۲ و ۳ بسته)                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     28542115f54d51a1…f140b1563596f920                                                   ║
+║  SHA-256:     1b3fea26189fc339…a1cbc651b4b64601                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -246,7 +246,7 @@
 - [x] **H13** اعشار توکن در نوشتن hardcode است — `chain.ts:51`, `escrowFlow.ts:133,145`, `ReactionGamePage.tsx:314`
   تغییر: خواندن `decimals()` یک‌بار + cache per-token؛ همه‌ی `parseUnits` و مقایسه‌ها از آن
   تست: `src/lib/escrowFlow.decimals.test.ts::test_stake_uses_onchain_decimals`
-- [ ] **H14** race تعویض حساب داده‌ی کاربر دیگر را نشان می‌دهد — `usePulsarStore.ts:56-71`
+- [x] **H14** race تعویض حساب داده‌ی کاربر دیگر را نشان می‌دهد — `usePulsarStore.ts:56-71`
   تغییر: capture آدرس در closure؛ اعمال نتیجه فقط اگر `account.address === captured && connected`؛ generation counter
   تست: `src/store/usePulsarStore.race.test.ts::test_stale_load_is_dropped`
 - [ ] **H15** قفل حساب/شبکه در حین ماتچ فعال — `realWeb3.ts:189-199`
@@ -569,6 +569,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 4.4 | 2026-10-12 | **H14 رفع شد** (پاسخ دیرهنگام حساب قبلی drop می‌شود؛ `getStoreSnapshot()` به‌عنوان seam تست). ۳۰ تست فرانت. | ⬜ |
 | 4.3 | 2026-10-12 | **H13 رفع شد** (`getTokenDecimals()` + cache؛ همه‌ی parseUnits/formatUnits). ۲۷ تست فرانت. | ⬜ |
 | 4.2 | 2026-10-12 | **H12 رفع شد** (نوشتن موجودی از `vaultBalance` حذف شد؛ زنجیره تنها منبع حقیقت است). ۲۳ تست فرانت. | ⬜ |
 | 4.1 | 2026-10-12 | **H11 رفع شد** (refs + ست‌کردن همزمان با state؛ نسخه‌ی effect-based کافی نبود). ۲۰ تست فرانت. | ⬜ |
