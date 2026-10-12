@@ -440,26 +440,20 @@ def _siwe_message(address: str, nonce: str, domain: str) -> str:
 
 app = FastAPI(title="PULSAR Game Server", version="1.1.1")
 
-# Audit #8 F-09 — production configuration is MANDATORY, not optional. When
-# the deployment looks like production (PULSAR_ENV=production), missing
-# ALLOWED_DOMAIN / CORS_ALLOW_ORIGINS / ESCROW_ADDRESS / ESCROW_RPC_URL must
-# fail startup instead of silently running with a Host-derived SIWE domain,
-# Audit #10 (item 2): the "deployment looks like production" check used to
-# be PULSAR_ENV == "production" EXACTLY — one typo ("prod", "Production ",
-# "main") or a staging box that simply forgot the var switched every
-# safeguard off (fail-open configuration). Now ANY of these implies a
-# deployment that must not run with insecure defaults:
-#   - PULSAR_ENV set to anything production-like (prod/production/main/release),
-#   - PULSAR_ENV unset but a deployment marker present (K_SERVICE, PORT-bound
-#     hosting with RENDER/TRIGGER/etc.),
-#   - a real ESCROW_ADDRESS configured (money mode — the gate must not be
-#     silently absent).
-# Plain local dev (no env at all) still boots without configuration.
-# Audit H6 — INVERTED DEFAULT. This used to fire only when PULSAR_ENV was one
-# of a fixed set of strings OR one of five platform markers was present, so a
-# self-hosted Docker/VM deployment with no marker and no PULSAR_ENV ran with no
-# required-env enforcement, wildcard CORS, no TrustedHost middleware and a
-# Host-derived SIWE domain. Fail-open security configuration.
+# Audit H6 — production configuration is MANDATORY, and the default is INVERTED.
+#
+# History, because the comments here used to describe three different policies:
+#   - audit #8 F-09: fail startup when the deployment "looks like production";
+#   - audit #10 item 2: that check was `PULSAR_ENV == "production"` EXACTLY, so
+#     one typo ("prod", "Production ") switched every safeguard off;
+#   - audit H6: even the widened version only fired for a fixed set of
+#     PULSAR_ENV strings or one of five platform markers, so a self-hosted
+#     Docker/VM deployment with neither ran with no required-env enforcement,
+#     wildcard CORS, no TrustedHost middleware and a Host-derived SIWE domain.
+#
+# The policy now: EVERY environment is production-like unless it explicitly
+# opts out with PULSAR_ENV=dev. Forgetting to set a variable must not disable
+# the safeguards. See `_is_prod_like` / `_missing_production_env`.
 #
 # Now: EVERY environment is production-like unless it explicitly opts out with
 # PULSAR_ENV=dev. Forgetting to set a variable must not disable the safeguards.

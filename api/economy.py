@@ -124,27 +124,42 @@ def record_claim(match_id: str, claimer: str, tx_hash: str, signature: str) -> b
         return False
     try:
         doc_ref = db.collection("matches").document(match_id)
-        existing = doc_ref.get()
-        if existing.exists:
-            prev_hash = (existing.to_dict() or {}).get("settlementTxHash")
-            if prev_hash and prev_hash != tx_hash:
-                _log_ledger_error(
-                    "record_claim",
-                    ValueError(
-                        f"claim conflict for {match_id}: already recorded {prev_hash}, refusing {tx_hash}"
-                    ),
-                )
-                return False
-        doc_ref.set(
-            {
-                "settlementTxHash": tx_hash,
-                "claimedBy": claimer.lower(),
-                "claimedAt": int(timebase.now()),
-                "onChain": True,
-            },
-            merge=True,
-        )
-        return True
+        # Audit H3 (closure review): this was a read-then-write — `doc_ref.get()`
+        # outside any transaction, then `set()`. Two concurrent claims with
+        # different tx hashes both passed the conflict check, both returned
+        # True, and the last write silently won. The documented invariant
+        # ("the first VERIFIED claim wins") was not enforced. Same class as H3
+        # in record_settlement, three lines above.
+        transactional = getattr(_firestore_module(), "transactional", None)
+        if transactional is None:
+            raise RuntimeError("google-cloud-firestore is required for the economy ledger")
+
+        def _apply(tx: Any) -> bool:
+            existing = doc_ref.get(transaction=tx)
+            if existing.exists:
+                prev_hash = (existing.to_dict() or {}).get("settlementTxHash")
+                if prev_hash and prev_hash != tx_hash:
+                    _log_ledger_error(
+                        "record_claim",
+                        ValueError(
+                            f"claim conflict for {match_id}: already recorded "
+                            f"{prev_hash}, refusing {tx_hash}"
+                        ),
+                    )
+                    return False
+            tx.set(
+                doc_ref,
+                {
+                    "settlementTxHash": tx_hash,
+                    "claimedBy": claimer.lower(),
+                    "claimedAt": int(timebase.now()),
+                    "onChain": True,
+                },
+                merge=True,
+            )
+            return True
+
+        return transactional(_apply)(db.transaction())
     except Exception as exc:
         _log_ledger_error("record_claim", exc)
         return False
