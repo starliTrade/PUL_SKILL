@@ -98,26 +98,51 @@ if [[ -f "$ROOT/pytest.ini" ]] && "$PY" -m pytest --version >/dev/null 2>&1; the
   if [[ -z "${FIRESTORE_EMULATOR_HOST:-}" ]] && curl -sf -o /dev/null "http://127.0.0.1:8081/" 2>/dev/null; then
     PYTEST_ENV=(env FIRESTORE_EMULATOR_HOST=127.0.0.1:8081 "GCLOUD_PROJECT=${GCLOUD_PROJECT:-demo-pulsar}")
   fi
-  # Plan item 0.12: coverage is a ratchet — .coveragerc's fail_under may
-  # only go up, and it is passed explicitly so a missing config cannot silently
-  # disable the gate.
-  run_gate "server tests (pytest)" "${PYTEST_ENV[@]}" "$PY" -m pytest -q --cov=api --cov-report=term-missing
+  # Plan item 0.12: coverage is a ratchet. It is measured across the WHOLE
+  # server suite — pytest AND the legacy scripts — because measuring only pytest
+  # under-reported by ~20 points (49% vs 69%): the legacy suites are what cover
+  # api/store.py and api/auth.py until item 0.3 migrates them.
+  if "$PY" -m coverage --version >/dev/null 2>&1; then
+    "$PY" -m coverage erase
+    run_gate "server tests (pytest)" "${PYTEST_ENV[@]}" "$PY" -m coverage run --source=api -m pytest -q
+    COVERAGE_ACTIVE=1
+  else
+    run_gate "server tests (pytest)" "${PYTEST_ENV[@]}" "$PY" -m pytest -q
+    COVERAGE_ACTIVE=0
+  fi
 else
   skip_gate "server tests (pytest)" "pytest not wired up yet (plan item 0.3)"
+  COVERAGE_ACTIVE=0
 fi
 
 # --- 5. Legacy server suites (kept until fully migrated) ----------------------
+# Run under the SAME coverage session as pytest so the ratchet sees the truth.
+legacy_run() { # legacy_run <name> <script>
+  local name="$1" script="$2"
+  if [[ "${COVERAGE_ACTIVE:-0}" == "1" ]]; then
+    run_gate "$name" "$PY" -m coverage run --append --source=api "$script"
+  else
+    run_gate "$name" "$PY" "$script"
+  fi
+}
+
 if [[ -f "$ROOT/scripts/test_game_server.py" ]]; then
-  run_gate "legacy protocol suite" "$PY" scripts/test_game_server.py
+  legacy_run "legacy protocol suite" scripts/test_game_server.py
 fi
 if [[ -f "$ROOT/scripts/test_http_e2e.py" ]]; then
-  run_gate "legacy HTTP E2E suite" "$PY" scripts/test_http_e2e.py
+  legacy_run "legacy HTTP E2E suite" scripts/test_http_e2e.py
 fi
 for probe in probe_a5 probe_a6 probe_a8; do
   if [[ -f "$ROOT/scripts/$probe.py" ]]; then
-    run_gate "legacy $probe" "$PY" "scripts/$probe.py"
+    legacy_run "legacy $probe" "scripts/$probe.py"
   fi
 done
+
+# --- 5b. Coverage ratchet over the whole server suite — plan item 0.12 --------
+if [[ "${COVERAGE_ACTIVE:-0}" == "1" ]]; then
+  run_gate "coverage ratchet (.coveragerc fail_under)" bash -c \
+    '"$0" -m coverage report --skip-covered' "$PY"
+fi
 
 # --- 6. Solidity contract tests (forge) — plan item 0.1 -----------------------
 if command -v forge >/dev/null 2>&1; then

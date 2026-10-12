@@ -141,32 +141,27 @@ class LocalChain:
         account = Account.from_key(private_key)
         sender = account.address
 
-        last_error: Exception | None = None
-        for attempt in range(2):
-            tx = {
-                "nonce": self._next_nonce(sender),
-                "to": to,
-                "value": value,
-                "gas": GAS_LIMIT,
-                "gasPrice": GAS_PRICE,
-                "chainId": self.chain_id,
-                "data": data,
-            }
-            signed = account.sign_transaction(tx)
-            raw = signed.raw_transaction.hex()
-            raw = raw if raw.startswith("0x") else "0x" + raw
-            try:
-                tx_hash = self.rpc("eth_sendRawTransaction", [raw])
-            except RuntimeError as exc:
-                last_error = exc
-                if "nonce" in str(exc).lower() and attempt == 0:
-                    continue  # re-read the nonce and retry once
-                raise
-            receipt = self.wait(tx_hash)
-            if int(receipt.get("status", "0x0"), 16) != 1:
-                raise RuntimeError(f"tx reverted: {tx_hash}")
-            return tx_hash
-        raise RuntimeError(f"could not send transaction: {last_error}")
+        # No retry loop on purpose: a retry after a "nonce too low" error can
+        # double-send when the first transaction actually landed, which shows up
+        # as a mysterious extra balance change in an unrelated test. A fresh
+        # nonce read per transaction is enough for a single-writer test chain.
+        tx = {
+            "nonce": self._next_nonce(sender),
+            "to": to,
+            "value": value,
+            "gas": GAS_LIMIT,
+            "gasPrice": GAS_PRICE,
+            "chainId": self.chain_id,
+            "data": data,
+        }
+        signed = account.sign_transaction(tx)
+        raw = signed.raw_transaction.hex()
+        raw = raw if raw.startswith("0x") else "0x" + raw
+        tx_hash = self.rpc("eth_sendRawTransaction", [raw])
+        receipt = self.wait(tx_hash)
+        if int(receipt.get("status", "0x0"), 16) != 1:
+            raise RuntimeError(f"tx reverted: {tx_hash}")
+        return tx_hash
 
     def wait(self, tx_hash: str, tries: int = 60) -> dict[str, Any]:
         import time
@@ -180,6 +175,11 @@ class LocalChain:
 
     def call(self, to: str, data: str) -> str:
         return self.rpc("eth_call", [{"to": to, "data": data}, "latest"])
+
+    # -- gas -------------------------------------------------------------------
+    def fund_eth(self, to: str, amount_wei: int = 10**18) -> str:
+        """Send native gas tokens from the deployer (anvil's funded account)."""
+        return self.send(self.manifest["deployer"]["privateKey"], to, "0x", value=amount_wei)
 
     # -- token -----------------------------------------------------------------
     def faucet(self, to: str, amount_units: int) -> str:

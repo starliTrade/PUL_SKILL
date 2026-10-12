@@ -17,6 +17,7 @@ import os
 import time
 
 import pytest
+from eth_account import Account
 
 import onchain
 import oracle
@@ -40,9 +41,19 @@ def chain() -> LocalChain:
 
 @pytest.fixture
 def funded(chain: LocalChain):
-    """Two players holding 100 MockUSDT each, with the escrow approved."""
-    players = chain.manifest["players"]
+    """Two FRESH players holding 100 MockUSDT each, with the escrow approved.
+
+    Fresh identities per test, not the shared anvil accounts: anvil keeps its
+    state between runs, so reusing the same two accounts makes balances
+    accumulate across tests and across invocations, and any exact-delta
+    assertion becomes a heisenbug that only fails on the Nth run.
+    """
+    players = []
+    for _ in range(2):
+        acct = Account.create()
+        players.append({"address": acct.address, "privateKey": acct.key.hex()})
     for p in players:
+        chain.fund_eth(p["address"])  # gas
         chain.faucet(p["address"], 100 * USDT)
         chain.approve(p["privateKey"], chain.escrow, 100 * USDT)
     return players

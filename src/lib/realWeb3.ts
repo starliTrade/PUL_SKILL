@@ -1079,6 +1079,12 @@ class RealWeb3Manager {
       try {
         if (typeof wc.disconnect === 'function') wc.disconnect().catch(() => {});
       } catch {}
+      // The recorded provider may BE this zombie (the WalletConnect connect and
+      // restore paths bind `this.wcProvider`). Clearing only `wcProvider` would
+      // leave `activeProvider` pointing at the dead object, and the fallback
+      // below would hand it straight back — every request then throws
+      // "undefined is not an object (evaluating 'this.namespace...')".
+      if (this.activeProvider === wc) this.activeProvider = null;
       this.wcProvider = null;
       this.wcConnectPromise = null;
     }

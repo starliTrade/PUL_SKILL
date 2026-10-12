@@ -130,6 +130,28 @@ describe('active EIP-1193 provider (audit C3)', () => {
     expect(realWeb3Manager.getActiveEip1193Provider()).not.toBe(metaMask);
   });
 
+  it('a WalletConnect zombie is not handed back once it dies', async () => {
+    // The WalletConnect connect/restore paths bind `this.wcProvider` as the
+    // active provider. When that session later dies (iOS suspend), clearing
+    // only `wcProvider` left `activeProvider` pointing at the corpse, so the
+    // fallback returned it and every request threw.
+    const injected = makeProvider('MetaMask');
+    (window as unknown as { ethereum: FakeProvider }).ethereum = injected;
+
+    const zombie = {
+      connected: true,
+      session: undefined,
+      accounts: [],
+      disconnect: () => Promise.resolve(),
+    };
+    (realWeb3Manager as unknown as { wcProvider: unknown }).wcProvider = zombie;
+    realWeb3Manager.bindActiveProvider(zombie);
+
+    const active = realWeb3Manager.getActiveEip1193Provider();
+    expect(active).not.toBe(zombie);
+    expect(active).toBe(injected);
+  });
+
   it('a WalletConnect zombie does not shadow the connected injected provider', async () => {
     const injected = makeProvider('MetaMask');
     (window as unknown as { ethereum: FakeProvider }).ethereum = injected;
