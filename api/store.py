@@ -158,9 +158,23 @@ class InMemoryStore:
         self.queue: dict[float, list[str]] = {}
         # address -> live (waiting|active) match id (idempotent enqueue).
         self.player_match: dict[str, str] = {}
+        # Audit H23: address -> ELO rating (process-local, see DurableMatchStore).
+        self.ratings: dict[str, float] = {}
         self._lock = threading.Lock()
 
-    def enqueue(self, address: str, stake: float) -> Match:
+    def rating_for(self, address: str) -> float:
+        return self.ratings.get(address.lower(), _default_engine.DEFAULT_RATING)
+
+    def apply_rating_result(self, winner: str, loser: str) -> None:
+        win = winner.lower()
+        lose = loser.lower()
+        rw = self.rating_for(win)
+        rl = self.rating_for(lose)
+        delta = _default_engine.K_FACTOR * (1.0 - 1.0 / (1.0 + 10 ** ((rl - rw) / 400.0)))
+        self.ratings[win] = rw + delta
+        self.ratings[lose] = rl - delta
+
+    def enqueue(self, address: str, stake: float, rtt_ms: float | None = None) -> Match:
         addr = address.lower()
         with self._lock:
             live = self.player_match.get(addr)
@@ -286,7 +300,7 @@ class FirestoreStore:
 
     # -- public interface (mirrors MatchStore) --------------------------------
 
-    def enqueue(self, address: str, stake: float) -> Match:
+    def enqueue(self, address: str, stake: float, rtt_ms: float | None = None) -> Match:
         addr = address.lower()
         live = self.player_match.get(addr)
         if live:
@@ -542,12 +556,30 @@ class DurableMatchStore:
     def durable(self) -> bool:
         return self.backend_name == "firestore"
 
-    def enqueue(self, address: str, stake: float) -> Match:
+    def enqueue(self, address: str, stake: float, rtt_ms: float | None = None) -> Match:
+        # Audit H1: `rtt_ms` must be forwarded. It was missing here, so the ping
+        # cap and the RTT record were silently bypassed on the DURABLE store —
+        # i.e. in production, while the in-memory store (used by unit tests)
+        # enforced them. A gate that only exists in tests is not a gate.
         if self._fs_store is not None:
-            match = self._fs_store.enqueue(address, stake)
+            match = self._fs_store.enqueue(address, stake, rtt_ms)
             self._mirror(match)
             return match
-        return self.memory.enqueue(address, stake)
+        return self.memory.enqueue(address, stake, rtt_ms)
+
+    def rating_for(self, address: str) -> float:
+        """Audit H23: the durable store keeps ratings in the in-memory backend.
+
+        Ratings are per-player aggregates, not per-match state, so they do not
+        belong in the match documents. Persisting them durably is a phase-6
+        concern (they need their own collection and a migration); until then
+        they are process-local and reset on restart, which is honest for a
+        feature that is not yet live.
+        """
+        return self.memory.rating_for(address)
+
+    def apply_rating_result(self, winner: str, loser: str) -> None:
+        self.memory.apply_rating_result(winner, loser)
 
     def get(self, match_id: str) -> Match:
         if self._fs_store is not None:

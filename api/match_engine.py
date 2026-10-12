@@ -106,6 +106,25 @@ MATCH_SETTLE_GRACE_SECONDS = 480  # 8 minutes after activation (unchanged)
 MAX_COMPENSATION_MS = 150.0  # never credit more than this, whatever is reported
 MAX_QUEUE_RTT_MS = 400.0  # entry gate: above this the experience is unplayable
 
+# Audit H23 / G5 — skill-based matchmaking (D1 = option D: real money).
+#
+# Pairing the first two players in a stake bucket is, under real money, a
+# money-transfer mechanism: a novice and a veteran queue at the same stake, are
+# paired instantly, and the novice's stake moves to the veteran. No amount of
+# anti-cheat fixes that — the veteran is not cheating.
+#
+# The rating is ELO-style and derived from settled OUTCOMES. It is deliberately
+# NOT derived from raw reaction times: a reaction time is one noisy sample, and
+# a rating built on noise would move every player's number by tens of points per
+# match, which makes the band meaningless.
+DEFAULT_RATING = 1200.0
+K_FACTOR = 32.0  # standard ELO step
+RATING_BAND = 150.0  # initial pairing window, in rating points
+RATING_BAND_WIDEN_SECONDS = 10.0  # wait this long and the window grows
+MAX_RATING_BAND = 800.0  # ...but never past this: a queue that never matches
+                         # is its own failure, and beyond this the mismatch is
+                         # worse than the wait
+
 
 def settlement_deadline(match: Any) -> int:
     """Return the contract's refund horizon for this match.
@@ -296,6 +315,33 @@ class MatchStore:
         # minting orphan waiting matches every poll (the deadlock that left
         # the first player forever in matchmaking while P2 played alone).
         self.player_match: dict[str, str] = {}
+        # Audit H23: address -> ELO rating. Absent means "new player", so the
+        # default is applied at read time rather than seeded here.
+        self.ratings: dict[str, float] = {}
+
+    def rating_for(self, address: str) -> float:
+        """The player's current rating (audit H23). Default for a new player."""
+        return self.ratings.get(address.lower(), DEFAULT_RATING)
+
+    def apply_rating_result(self, winner: str, loser: str) -> None:
+        """ELO update from a settled match (audit H23).
+
+        Zero-sum by construction: the winner gains exactly what the loser drops,
+        so the pool cannot inflate and the band keeps its meaning.
+        """
+        win = winner.lower()
+        lose = loser.lower()
+        rw = self.rating_for(win)
+        rl = self.rating_for(lose)
+        expected_w = 1.0 / (1.0 + 10 ** ((rl - rw) / 400.0))
+        delta = K_FACTOR * (1.0 - expected_w)
+        self.ratings[win] = rw + delta
+        self.ratings[lose] = rl - delta
+
+    def _rating_band(self, waited_seconds: float) -> float:
+        """The pairing window after waiting this long (audit H23)."""
+        widened = RATING_BAND + (waited_seconds / RATING_BAND_WIDEN_SECONDS) * RATING_BAND
+        return min(widened, MAX_RATING_BAND)
 
     def enqueue(self, address: str, stake: float, rtt_ms: float | None = None) -> Match:
         """Queue a player. `rtt_ms` is the client's measured round trip.
@@ -324,6 +370,14 @@ class MatchStore:
                 continue
             if addr in m.players:
                 bucket.remove(other)
+                continue
+            # Audit H23: pair within a rating band, widened by how long the
+            # WAITING player has been in the queue. A queue that never matches
+            # is its own failure, so the band is not a hard filter.
+            other_addr = next(iter(m.players), "")
+            waited = timebase.now() - float(m.players.get(other_addr, {}).get("joinedAt", 0.0))
+            band = self._rating_band(max(waited, 0.0))
+            if abs(self.rating_for(addr) - self.rating_for(other_addr)) > band:
                 continue
             # Found an opponent: activate the match.
             m.players[addr] = {"address": addr, "joinedAt": timebase.now()}
@@ -656,6 +710,20 @@ def match_completed(match: Match) -> bool:
             if timebase.now() - match.play_started_at() <= MATCH_SETTLE_GRACE_SECONDS:
                 return False
     return True
+
+
+def apply_settlement_ratings(store: MatchStore, result: dict[str, Any]) -> None:
+    """Update both players' ratings from a settled result (audit H23).
+
+    Kept OUT of `settle()` because that function is pure match logic with no
+    store handle, and because a VOID must not move anyone's rating: nobody won.
+    """
+    if result.get("status") != "settled":
+        return
+    winner = result.get("winner")
+    loser = result.get("loser")
+    if winner and loser:
+        store.apply_rating_result(winner, loser)
 
 
 def settle(match: Match) -> dict[str, Any]:

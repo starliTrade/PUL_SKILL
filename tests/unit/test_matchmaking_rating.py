@@ -26,18 +26,25 @@ from __future__ import annotations
 import pytest
 
 import match_engine as engine
-from match_engine import MatchError
 
 
 def _play_and_settle(store, addr, opp_addr, play_round, clock, winner):
     """Pair two players, play a round, and settle so ratings update."""
     store.enqueue(addr, 1.0)
     m = store.enqueue(opp_addr, 1.0)
+    # The gap is applied AFTER pairing: the band would refuse it otherwise, and
+    # this test is about the ELO step, not about matchmaking.
+    store.ratings[addr] = engine.DEFAULT_RATING + 400
+    store.ratings[opp_addr] = engine.DEFAULT_RATING - 400
     loser = opp_addr if winner == addr else addr
     play_round(m, winner, 0, reaction_ms=200.0, intent=b"h23")
     play_round(m, loser, 0, reaction_ms=400.0, intent=b"h23")
     clock.advance(engine.MATCH_SETTLE_GRACE_SECONDS + 5)
-    return engine.settle(m)
+    result = engine.settle(m)
+    # Mirrors what api/main.py does after settling — the rating update is a
+    # caller step, because `settle()` is pure match logic with no store handle.
+    engine.apply_settlement_ratings(store, result)
+    return result
 
 
 # --- the rating ---------------------------------------------------------------
@@ -67,22 +74,30 @@ def test_the_rating_change_is_zero_sum(store, addr, opp_addr, play_round, clock)
     assert gained == pytest.approx(lost, abs=0.01)
 
 
-def test_an_upset_moves_the_rating_more_than_an_expected_win(store, addr, opp_addr, play_round, clock):
-    """The ELO property that makes the number meaningful."""
-    # A is much stronger than B.
-    store.ratings[addr] = engine.DEFAULT_RATING + 400
-    store.ratings[opp_addr] = engine.DEFAULT_RATING - 400
+def test_an_upset_moves_the_rating_more_than_an_expected_win(store):
+    """The ELO property that makes the number meaningful.
 
-    before_strong = store.rating_for(addr)
-    _play_and_settle(store, addr, opp_addr, play_round, clock, winner=addr)
-    expected_win_gain = store.rating_for(addr) - before_strong
+    Exercised on `apply_rating_result` directly: the property belongs to the
+    update rule, and driving it through a full match would only add noise.
+    """
+    strong = "0x" + "aa" * 20
+    weak = "0x" + "bb" * 20
 
-    # Reset and make the WEAK player win instead.
-    store.ratings[addr] = engine.DEFAULT_RATING + 400
-    store.ratings[opp_addr] = engine.DEFAULT_RATING - 400
-    before_weak = store.rating_for(opp_addr)
-    _play_and_settle(store, addr, opp_addr, play_round, clock, winner=opp_addr)
-    upset_gain = store.rating_for(opp_addr) - before_weak
+    # The strong player wins, as expected: a small gain.
+    store.ratings[strong] = engine.DEFAULT_RATING + 400
+    store.ratings[weak] = engine.DEFAULT_RATING - 400
+    before = store.rating_for(strong)
+    store.apply_rating_result(strong, weak)
+    expected_win_gain = store.rating_for(strong) - before
+
+    # A fresh pair, and the WEAK player wins: a large gain.
+    strong2 = "0x" + "cc" * 20
+    weak2 = "0x" + "dd" * 20
+    store.ratings[strong2] = engine.DEFAULT_RATING + 400
+    store.ratings[weak2] = engine.DEFAULT_RATING - 400
+    before_weak = store.rating_for(weak2)
+    store.apply_rating_result(weak2, strong2)
+    upset_gain = store.rating_for(weak2) - before_weak
 
     assert upset_gain > expected_win_gain
 
@@ -113,8 +128,9 @@ def test_similar_players_are_paired(store, addr, opp_addr):
 
 def test_the_band_widens_with_wait_time(store, addr, opp_addr, clock):
     """A queue that never matches is its own failure."""
-    store.ratings[addr] = engine.DEFAULT_RATING + 600
-    store.ratings[opp_addr] = engine.DEFAULT_RATING - 600
+    # 600 apart: outside the initial 150 band, inside the 800 cap once widened.
+    store.ratings[addr] = engine.DEFAULT_RATING + 300
+    store.ratings[opp_addr] = engine.DEFAULT_RATING - 300
 
     store.enqueue(addr, 1.0)
     clock.advance(engine.RATING_BAND_WIDEN_SECONDS * 20)

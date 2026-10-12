@@ -891,6 +891,7 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
             if m.status == "active" and eng.match_completed(m):
                 try:
                     result = eng.settle(m)
+                    engine.apply_settlement_ratings(store, result)
                 except MatchError:
                     result = None
                 if result and result.get("status") == "settled":
@@ -1002,6 +1003,7 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
         }
     try:
         result = eng.settle(m)
+        engine.apply_settlement_ratings(store, result)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
     if result.get("status") == "settled":
