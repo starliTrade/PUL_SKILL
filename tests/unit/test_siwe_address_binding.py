@@ -17,13 +17,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "api"))
 
-import auth  # noqa: E402
 from eth_account import Account  # noqa: E402
 from eth_account.messages import encode_defunct  # noqa: E402
+
+import auth  # noqa: E402
 
 DOMAIN = "localhost"
 

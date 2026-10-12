@@ -31,6 +31,7 @@ import hmac
 import json
 import os
 import secrets
+import sys
 from dataclasses import dataclass
 from datetime import UTC
 from typing import Any
@@ -136,13 +137,32 @@ def _durable_backend() -> Any | None:
     return None
 
 
+# Audit M3: how long into a new window a nonce issued in the PREVIOUS one is
+# still accepted. Without this, a nonce issued in the last seconds of a window
+# fails if it is verified in the next one — a random login failure with no cause
+# the user can act on. The BURN is what prevents replay; the window is only a
+# staleness bound, so this costs nothing.
+NONCE_BOUNDARY_GRACE_SECONDS = 30
+
+
 def _fresh_window(window: int | None) -> bool:
-    """Audit #8 F-02: the previous-window grace is GONE. A nonce is valid only
-    in the exact window it was issued in — the replay pre-condition window
-    shrinks from up to 10 minutes to exactly the issuance window."""
+    """Is this nonce's issuance window still acceptable?
+
+    Audit #8 F-02 shrank this from "up to 10 minutes" to the issuance window,
+    which is right. Audit M3 adds back a BOUNDED grace for the previous window:
+    the boundary was a coin flip, and the replay protection is the burn, not the
+    window.
+    """
     if window is None:
         return False
-    return window == int(timebase.now() // NONCE_WINDOW_SECONDS)
+    now = int(timebase.now())
+    current = now // NONCE_WINDOW_SECONDS
+    if window == current:
+        return True
+    if window == current - 1:
+        # Only for the first NONCE_BOUNDARY_GRACE_SECONDS of the new window.
+        return (now % NONCE_WINDOW_SECONDS) <= NONCE_BOUNDARY_GRACE_SECONDS
+    return False
 
 
 def nonce_is_fresh(nonce: str) -> bool:
@@ -198,8 +218,14 @@ def _burn_nonce(nonce: str) -> bool:
                     "expiresAt": int(timebase.now()) + 2 * NONCE_WINDOW_SECONDS,
                 }
             )
-        except Exception:
-            # create() raises when the document EXISTS → replay.
+        except Exception as exc:
+            # Audit M2: create() raises when the document EXISTS → replay. Any
+            # OTHER exception is an outage, and reporting it as a replay makes
+            # an outage look like an attack. Still fail CLOSED — an unverifiable
+            # burn cannot authenticate — but record and log the difference.
+            if _is_already_exists(exc):
+                return False
+            _note_burn_error(exc)
             return False
         # Reflect in the local set too (fast-path rejection on this replica).
         _remember_used(nonce)
@@ -210,6 +236,45 @@ def _burn_nonce(nonce: str) -> bool:
     # every verify, so a revived nonce still fails _fresh_window).
     _remember_used(nonce)
     return True
+
+
+_burn_errors = 0
+
+
+def nonce_burn_errors() -> int:
+    """How many burns failed for a reason OTHER than a replay (audit M2)."""
+    return _burn_errors
+
+
+def _note_burn_error(exc: BaseException) -> None:
+    global _burn_errors
+    _burn_errors += 1
+    _log_burn_error(exc)
+
+
+def _log_burn_error(exc: BaseException) -> None:
+    print(
+        f"[auth] nonce burn failed (NOT a replay — an outage): {exc!r}",
+        file=sys.stderr,
+    )
+
+
+def _is_already_exists(exc: BaseException) -> bool:
+    """True when the exception means the document already existed.
+
+    Matched by name rather than by importing the Firestore exception class, so
+    this module keeps working when the durable backend is absent.
+    """
+    name = type(exc).__name__
+    if name in ("AlreadyExists", "Conflict"):
+        return True
+    code = getattr(exc, "code", None)
+    if callable(code):
+        try:
+            code = code()
+        except Exception:
+            code = None
+    return str(code).lower() in ("already_exists", "6", "409")
 
 
 def _remember_used(nonce: str) -> None:
@@ -344,6 +409,13 @@ def verify_siwe(message: str, signature: str, expected_domain: str) -> str | Non
         return None
     address = getattr(recovered, "address", recovered)
     verified = str(address).lower() or None
+    # Audit M1: the recovered signer must BE the address the message claims.
+    # Returning the signer for a statement that names someone else is not
+    # directly exploitable today (the caller uses the return value), but the
+    # contract was ambiguous — and ambiguity in an authentication function is
+    # how the next change becomes a vulnerability.
+    if verified and verified != fields.address.lower():
+        return None
     if verified:
         # Audit #8 F-02: the burn IS the replay check now — _burn_nonce
         # returns False when the nonce was already consumed (durable create
