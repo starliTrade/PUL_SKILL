@@ -140,6 +140,22 @@ function isWalletCancel(msg: string): boolean {
   // P0-fix (audit #2): per-round proof from the reveal step. Every result
   // submission must carry it — the server rejects results without it.
   const resultProofRef = useRef<string>('');
+  /**
+   * Audit C4 — single-flight guard for one round submission.
+   *
+   * A touch tap fires `touchend` on the action-phase root div AND a synthetic
+   * `click` on the target button. Both handlers see the same render's
+   * `phase === 'action'`, so both call processVerification; `stopPropagation()`
+   * inside the click handler cannot cancel a touchend that already ran. The
+   * second submission gets a 409 ("Result already submitted"), which the catch
+   * block turns into outcome:'void' + phase:'bot-detected' — a touch player
+   * loses the match to a browser event quirk.
+   *
+   * A ref is the only guard that works here: React state updates are async, so
+   * both handlers read the same stale `phase`. Cleared in `finally` so the next
+   * round can submit normally.
+   */
+  const verifyingRef = useRef<boolean>(false);
 
   // Randomize calibration target for human latency check
   const randomizeCalibrationTarget = useCallback(() => {
@@ -868,6 +884,18 @@ function isWalletCancel(msg: string): boolean {
   };
 
   const processVerification = async (timeMs: number, eventCheck?: { isTrusted: boolean; pointerType?: string; hasNaturalJitter: boolean }) => {
+    // Audit C4: one physical tap must produce exactly one submission. See the
+    // verifyingRef comment — this must stay synchronous and before any await.
+    if (verifyingRef.current) return;
+    verifyingRef.current = true;
+    try {
+      await processVerificationInner(timeMs, eventCheck);
+    } finally {
+      verifyingRef.current = false;
+    }
+  };
+
+  const processVerificationInner = async (timeMs: number, eventCheck?: { isTrusted: boolean; pointerType?: string; hasNaturalJitter: boolean }) => {
     setPhase('verifying');
     setVerifyProgress(0);
 
@@ -1371,6 +1399,8 @@ function isWalletCancel(msg: string): boolean {
                 <div className="relative w-full h-64 mt-5 linear-card overflow-hidden">
                   <div className="absolute inset-0 bg-grid opacity-20 pointer-events-none" />
                   <motion.button
+                    data-testid="pulsar-verify-node"
+                    aria-label="Start the duel"
                     onClick={handleVerifyNodeClick}
                     className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full p-4 flex items-center justify-center cursor-pointer shadow-lg active:scale-90 transition-transform"
                     style={{
@@ -1466,6 +1496,8 @@ function isWalletCancel(msg: string): boolean {
 
                 {/* Dynamic Anti-Cheat Pulsar Strike Target */}
                 <motion.button
+                  data-testid="pulsar-target"
+                  aria-label="Hit the target"
                   initial={{ scale: 0.3, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   whileTap={{ scale: 0.9 }}

@@ -2,10 +2,10 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  نسخه:        1.6-LOCKED                                                 ║
+║  نسخه:        1.7-LOCKED                                                 ║
 ║  تاریخ قفل:   2026-10-12                                                 ║
 ║  مبنا:        docs/audit/FULL-AUDIT-2026-10-12.md  (109 یافته)           ║
-║  SHA-256:     b7b848dc5f4c4ce2…fa8c211d09409562                                                   ║
+║  SHA-256:     1e40e473434300fe…69ae4dd166513d72                                                   ║
 ║  وضعیت:       🔒 قفل‌شده — اجرا در جریان                                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -91,6 +91,7 @@
   پذیرش: ✅ `src/lib/realWeb3.provider.test.ts` (۴ تست) — زیرساخت کار می‌کند و **C3 را قرمز نشان داد** قبل از fix
 - [ ] **0.10** Playwright + کیف پول mock — `e2e/`, `e2e/fixtures/mockWallet.ts`
   پذیرش: تست نمونه اپ را load کند و connect را بزند
+  **یادداشت (v1.7):** تست رگرسیون C4 به‌جای Playwright با **React Testing Library** نوشته شد — صفحه‌ی واقعی را رندر می‌کند، از فاز human-verify تا action می‌رود، و جفت رویداد واقعی (touchend + click) را می‌فرستد. سریع‌تر، قطعی‌تر، و مستقیماً همان باگ را می‌گیرد. Playwright برای E2E کامل فاز ۱۰ باقی می‌ماند.
 - [ ] **0.11** axe-core — `e2e/a11y.spec.ts`؛ پذیرش: axe روی صفحه‌ی اصلی اجرا شود
 - [x] **0.12** گیت coverage با ratchet — `.coveragerc` (fail_under=48، فقط بالا می‌رود) + `--cov=api` در verify و CI
   پذیرش: ✅ گیت هم سبز می‌شود (۴۸٪) و هم قرمز (با floor=99 → exit 1) — گیت معتبر است، نه تشریفاتی. مسیر ratchet: ۴۸ → ۵۵ (فاز ۱) → ۶۵ (فاز ۲) → ۷۰ (فاز ۳) → ۸۰ (فاز ۷)
@@ -118,7 +119,7 @@
   تغییر: ذخیره‌ی provider فعال (یا `rdns`) در `setConnectedAddress`؛ `getActiveEip1193Provider` دقیقاً همان را برگرداند؛ resolve مجدد با rdns
   تست: `src/lib/realWeb3.provider.test.ts::test_active_provider_is_the_connected_one` + `::test_wc_zombie_does_not_shadow_injected`
   پذیرش: provider برگشتی همانی باشد که کاربر انتخاب کرده
-- [ ] **C4 · 🔴** تپ دوباره‌ی موبایل ماتچ را void می‌کند
+- [x] **C4 · 🔴** تپ دوباره‌ی موبایل ماتچ را void می‌کند
   `src/pages/ReactionGamePage.tsx:1153-1154, 1472, 580-598, 612-623`
   تغییر: گارد سنکرون `verifyingRef.current` در ابتدای `processVerification`؛ پاک‌سازی در پایان راند؛ ادغام یکپارچه‌ی touch+click
   تست: `e2e/mobile-tap.spec.ts::test_single_tap_submits_exactly_once` + `::test_single_tap_never_voids_the_match`
@@ -547,5 +548,6 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 1.7-LOCKED | 2026-10-12 | **C4** تیک خورد. **فاز ۱ کامل شد: هر ۴ CRITICAL رفع و با تست قرمز→سبز اثبات شدند.** تست C4 با RTL به‌جای Playwright (دقیق‌تر و سریع‌تر)؛ 0.10 برای فاز ۱۰ باقی است. | ⬜ |
 | 1.6-LOCKED | 2026-10-12 | آیتم 0.9 (Vitest) و **C3** تیک خوردند. `bindActiveProvider()` در هر ۴ مسیر اتصال + disconnect صدا زده می‌شود. | ⬜ |
 | 1.5-LOCKED | 2026-10-12 | **C1 و C2 رفع شدند** (تست‌های قرمز → سبز). یافته‌ی جدید در حین رفع C2: `token_decimals()` هر مقدار ۳۲-بایتی را می‌پذیرفت → `Decimal(10) ** 3.7e9` → Overflow → 500 روی مسیر پول. با سقف uint8 (۲۵۵) و tri-state verdict رفع شد. | ⬜ |
