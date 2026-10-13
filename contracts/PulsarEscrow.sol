@@ -384,8 +384,19 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         // "the signature expires before the permissionless refund opens" was
         // guaranteed only by the server's clamp — one over-long deadline and a
         // settlement could land after refunds were live, racing them.
+        //
+        // Audit 2026-10-13: the horizon must use the SAME anchor as
+        // `refundTimeoutMatch`. H20 moved the refund clock to ACTIVATION but
+        // left this one on `createdAt`, so the two disagreed by exactly the
+        // queue wait. The server's `settlement_deadline` follows the refund, so
+        // every proof it minted more than 20 minutes after the deposit — and
+        // EVERY F-12 re-sign, whose whole purpose is the late winner — was
+        // rejected here. The winner could only get a refund.
+        uint256 clockOrigin = activatedAt[proof.matchId] > duel.createdAt
+            ? activatedAt[proof.matchId]
+            : duel.createdAt;
         require(
-            proof.deadline <= duel.createdAt + MATCH_TIMEOUT,
+            proof.deadline <= clockOrigin + MATCH_TIMEOUT,
             "deadline exceeds horizon"
         );
 

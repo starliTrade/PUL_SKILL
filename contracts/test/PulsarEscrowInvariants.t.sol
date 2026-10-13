@@ -29,6 +29,13 @@ contract EscrowHandler is Test {
     uint256 public refundedCount;
     uint256 public cancelledCount;
 
+    /// id -> the terminal status it first reached (0 = not terminal yet).
+    /// Audit 2026-10-13: the "terminal" invariant used to assert only
+    /// `status != None`, which is true for every match the handler ever touched
+    /// — it could not fail, so it tested nothing. Recording the first terminal
+    /// status is what makes "terminal" checkable.
+    mapping(bytes32 => PulsarEscrow.MatchStatus) public terminalStatus;
+
     constructor(PulsarEscrow _escrow, MockUSDT _token, uint256 _oracleKey) {
         escrow = _escrow;
         token = _token;
@@ -46,6 +53,17 @@ contract EscrowHandler is Test {
     function statusOf(bytes32 id) public view returns (PulsarEscrow.MatchStatus) {
         (, , , , , , PulsarEscrow.MatchStatus status, , , ) = escrow.matches(id);
         return status;
+    }
+
+    /// Remember the terminal status a match first reached, if it is terminal.
+    function _recordTerminal(bytes32 id) internal {
+        PulsarEscrow.MatchStatus status = statusOf(id);
+        if (status == PulsarEscrow.MatchStatus.None) return;
+        if (status == PulsarEscrow.MatchStatus.Created) return;
+        if (status == PulsarEscrow.MatchStatus.Active) return;
+        if (terminalStatus[id] == PulsarEscrow.MatchStatus.None) {
+            terminalStatus[id] = status;
+        }
     }
 
     function player1Of(bytes32 id) public view returns (address) {
@@ -99,6 +117,7 @@ contract EscrowHandler is Test {
         if (matchIds.length == 0) return;
         bytes32 id = matchIds[idSeed % matchIds.length];
         if (statusOf(id) != PulsarEscrow.MatchStatus.Active) return;
+        _recordTerminal(id);
 
         address winner = _actor(winnerSeed) == player1Of(id) ? player1Of(id) : player2Of(id);
 
@@ -131,6 +150,7 @@ contract EscrowHandler is Test {
     function refund(uint256 idSeed) public {
         if (matchIds.length == 0) return;
         bytes32 id = matchIds[idSeed % matchIds.length];
+        _recordTerminal(id);
         PulsarEscrow.MatchStatus status = statusOf(id);
         if (status != PulsarEscrow.MatchStatus.Created && status != PulsarEscrow.MatchStatus.Active) return;
 
@@ -199,13 +219,23 @@ contract PulsarEscrowInvariantsTest is Test {
         for (uint256 i = 0; i < n; i++) {
             bytes32 id = handler.matchIds(i);
             PulsarEscrow.MatchStatus status = handler.statusOf(id);
-            // The handler only ever moves a match forward, so a Settled match
-            // must still be Settled and a Refunded one still Refunded. A match
-            // cannot be both, because the status is a single value.
             assertTrue(
                 status != PulsarEscrow.MatchStatus.None,
                 "a created match lost its record"
             );
+            // Audit 2026-10-13: the real property. Once a match reached a
+            // terminal state it must still be in THAT state — a settled duel
+            // must never become refundable, and a refunded one must never be
+            // settled. The old body asserted only `status != None`, which is
+            // true for every match the handler touched, so it could not fail.
+            PulsarEscrow.MatchStatus first = handler.terminalStatus(id);
+            if (first != PulsarEscrow.MatchStatus.None) {
+                assertEq(
+                    uint8(status),
+                    uint8(first),
+                    "a terminal duel changed status"
+                );
+            }
         }
     }
 
