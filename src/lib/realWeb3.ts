@@ -17,7 +17,7 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 import { getDb } from './firebase';
-import { logoutServerSession } from './gameServerClient';
+import { checkUsername, ensureSession, logoutServerSession } from './gameServerClient';
 import { CHAIN, TOKENS } from './chain';
 
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
@@ -1773,6 +1773,32 @@ class RealWeb3Manager {
     }
 
     const cleanUserAddr = (currentUserAddress || this.currentAccount.address || '').toLowerCase();
+
+    // Audit M12 (2026-10-13): ask the SERVER first. The registry endpoint was
+    // the authoritative, rate-limited path and nothing called it, so it
+    // protected nothing. The direct Firestore read below stays as the offline
+    // fallback (it is a public collection, so it is not a weaker source — just
+    // an unthrottled one).
+    if (cleanUserAddr) {
+      try {
+        const session = await ensureSession(cleanUserAddr, async (message: string) => {
+          const provider = this.getActiveEip1193Provider();
+          if (!provider) throw new Error('No active wallet to sign in with.');
+          return await provider.request({ method: 'personal_sign', params: [message, cleanUserAddr] });
+        });
+        const serverCheck = await checkUsername(session, cleanTag);
+        if (serverCheck.available) {
+          return { available: true, cleanTag };
+        }
+        return {
+          available: false,
+          cleanTag,
+          error: `Username "${cleanTag}" is already taken by another player`,
+        };
+      } catch {
+        /* no session / offline → fall through to the direct read */
+      }
+    }
 
     try {
       // 1. Check usernames registry document (primary index for O(1) collision detection)

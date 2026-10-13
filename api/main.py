@@ -1616,7 +1616,9 @@ def username_claim(body: UsernameRequest, request: Request) -> dict[str, Any]:
 
 @app.get("/api/username/{name}")
 def username_lookup(name: str, request: Request) -> dict[str, Any]:
-    _auth(request)  # must hold a session; reads stay public via Firestore
+    # Must hold a session: the registry is the server's, and the response must
+    # not be an anonymous enumeration oracle.
+    _auth(request)
     # Audit #11 H3: session auth alone does not stop name enumeration (a
     # script can hold one valid session). IP-keyed cap keeps the check cheap
     # for the UI (a couple of calls per claim) while throttling crawlers.
@@ -1633,8 +1635,15 @@ def username_lookup(name: str, request: Request) -> dict[str, Any]:
     snap = db.collection("usernames").document(normalized).get()
     if not snap.exists:
         return {"available": True, "username": normalized}
-    owner = (snap.to_dict() or {}).get("address", "")
-    return {"available": False, "username": normalized, "taken": True, "owner": owner.lower()}
+    owner = ((snap.to_dict() or {}).get("address") or "").lower()
+    # Audit M12 (2026-10-13): this returned `owner` — the wallet address of
+    # whoever holds the name. The finding was marked fixed in phase 6.10 and was
+    # not: any session holder could enumerate names and map them to addresses.
+    # The caller learns only whether the name is theirs.
+    caller = _auth(request)
+    if owner and owner == caller.lower():
+        return {"available": True, "username": normalized, "alreadyOwned": True}
+    return {"available": False, "username": normalized, "taken": True}
 
 
 @app.get("/api/player/{address}/stats")

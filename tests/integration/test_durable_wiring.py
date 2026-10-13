@@ -132,3 +132,51 @@ def test_a_rate_limit_document_carries_a_ttl_stamp(durable_store):
         "the rate-limit document has no TTL stamp — the collection grows forever"
     )
     assert body["expiresAt"] is not None
+
+
+def test_the_username_lookup_does_not_leak_the_owner(durable_store):
+    """Audit M12 (2026-10-13): the endpoint returned the owner's wallet address.
+
+    The finding was marked fixed in phase 6.10 and was not — any session holder
+    could enumerate names and map them to addresses. The caller now learns only
+    whether the name is free, taken, or already theirs.
+    """
+    import main as server
+    from eth_account import Account
+    from eth_account.messages import encode_defunct
+    from fastapi.testclient import TestClient
+
+    owner = Account.create()
+    other = Account.create()
+    owner_addr = owner.address.lower()
+    db = durable_store._fs_store.db
+    db.collection("usernames").document("taken-name").set(
+        {"username": "taken-name", "tag": "Taken", "address": owner_addr}
+    )
+
+    client = TestClient(server.app)
+
+    def headers_for(account: Account) -> dict[str, str]:
+        addr = account.address.lower()
+        r = client.post("/api/auth/nonce", json={"address": addr}, headers={"host": "pulsar.test"})
+        message = r.json()["message"]
+        sig = account.sign_message(encode_defunct(text=message)).signature.hex()
+        if not sig.startswith("0x"):
+            sig = "0x" + sig
+        r = client.post(
+            "/api/auth/verify",
+            json={"message": message, "signature": sig},
+            headers={"host": "pulsar.test"},
+        )
+        assert r.status_code == 200, r.text
+        return {"Authorization": f"Bearer {r.json()['token']}"}
+
+    # A stranger asks: no address in the answer.
+    body = client.get("/api/username/taken-name", headers=headers_for(other)).json()
+    assert body == {"available": False, "username": "taken-name", "taken": True}, body
+    assert "owner" not in body, "the lookup still leaks the owner's address (audit M12)"
+
+    # The owner asks: told it is theirs, still without echoing the address.
+    body = client.get("/api/username/taken-name", headers=headers_for(owner)).json()
+    assert body.get("available") is True and body.get("alreadyOwned") is True, body
+    assert "owner" not in body

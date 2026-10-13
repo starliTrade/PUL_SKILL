@@ -29,7 +29,7 @@ First scaffold forge-std (one time) and run the test suite on your machine:
 
 ```bash
 cd contracts && forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-commit
-forge test        # 10-test lifecycle suite: replay, forged sig, high-s, deadlines, refunds
+forge test        # the full suite (~81 tests): replay, forged sig, high-s, deadlines, refunds, tokens, invariants
 ```
 
 Then deploy with the provided script (Amoy shown; mainnet = add `--chain 137`):
@@ -111,9 +111,9 @@ Server environment (all **secrets** — set on the host, never in git):
 | `PULSAR_MATCH_STORE` | `firestore` (or unset for in-memory dev fallback) |
 | `FIRESTORE_PROJECT_ID` | Your Firebase project ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Service-account JSON path (or use ambient Cloud Run credentials) |
-| `CORS_ALLOW_ORIGINS` (optional) | Comma-separated allowlist; leave unset ("*") while frontend and API are on different origins |
+| `CORS_ALLOW_ORIGINS` | **Required in production.** Comma-separated origin allowlist. Audit 2026-10-13: this row said "optional — leave unset (`*`)", but the H6 fail-closed gate (`REQUIRED_PRODUCTION_ENV`) refuses to start without it, so following this doc produced a server that would not boot. An unset value is refused rather than defaulting to `*` |
+| `ALLOWED_DOMAIN` | **Required in production.** The SIWE domain the server issues and accepts statements for. Audit H7: it is taken from here, never from the client's `Host` header, so a spoofed header cannot choose the domain a user signs for |
 | `SENTRY_DSN` (optional) | Server error monitoring |
-| `ALLOWED_DOMAIN` (optional) | Force the SIWE domain if behind a proxy that rewrites Host |
 
 Smoke-test the deployment: `GET https://<server>/api/health` must return
 `{"ok": true, "matchStore": "firestore"}` in production.

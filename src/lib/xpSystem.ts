@@ -1,7 +1,17 @@
 /**
- * Pulsar Protocol - Cryptographic Skill-to-Earn Tokenomics & XP Engine ($PULSAR)
+ * PULSAR — the XP engine.
  *
- * Mathematically Non-Exploitable Economic Model:
+ * Audit 2026-10-13: this header used to describe a product that does not exist —
+ * a "$PULSAR" token, a "Fixed Base Mining Rate (100 XP = 1 $PULSAR)", tier
+ * "yield boosts", a "Biometric Entropy Threshold >= 80%", and an "Anti-Farming
+ * Cooldown". `TOKENOMICS_SPEC` was deleted precisely because there is no token,
+ * and H16 removed the fabricated biometric claims from the anti-cheat module —
+ * but this block kept advertising all of it at the top of the file.
+ *
+ * What the engine actually does: converts a settled duel's outcome, stake and
+ * reaction time into XP, and XP into a level. The server owns the numbers
+ * (`api/xp.py`); this copy is for practice mode and for describing a total the
+ * client did not compute. `tests/fixtures/xp_vectors.json` pins the two together.
  *
  * 1. Leveling Curve:
  *    - XP Required for Level L: Threshold(L) = round(100 * (L - 1)^1.5)
@@ -28,17 +38,9 @@
  *    - Streak Multiplier: +min(winStreak * 15, 75) XP, where `winStreak` is the
  *      streak INCLUDING this win (so the first win of a streak earns none)
  *
- * 3. Native Token Conversion & Staking Yield:
- *    - Fixed Base Mining Rate: 100 XP = 1 $PULSAR Token (0.01 $PULSAR per XP)
- *    - Tier Multipliers ($PULSAR Airdrop & Mining Velocity):
- *      * Tier I (Novice Duelist - Lv 1-10): 1.00x Base Yield
- *      * Tier II (Veteran Duelist - Lv 11-25): 1.25x Yield Boost
- *      * Tier III (Cyber Master - Lv 26-49): 1.50x Yield Boost
- *      * Tier IV (Apex Predator - Lv 50+): 2.00x Max Yield Boost
- *
- * 4. Anti-Bot & Proof-of-Skill Guardrails:
- *    - Biometric Entropy Threshold: Must achieve >= 80% entropy confidence to mine bonus reflex XP.
- *    - Anti-Farming Cooldown: Repeated consecutive duels with identical peers have diminishing XP returns.
+ * 3. Tiers: cosmetic bands over the level curve (Novice / Veteran / Cyber Master
+ *    / Apex Predator). They carry NO economic multiplier — there is no token to
+ *    multiply. `tierMultiplier` is kept because the UI renders it as a label.
  */
 
 export interface XPSummary {

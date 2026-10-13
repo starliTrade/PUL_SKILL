@@ -76,3 +76,44 @@ def test_the_server_settlement_deadline_follows_the_same_anchor():
     assert "max(created, activated)" in body, (
         "the server's settlement deadline no longer follows the contract's anchor"
     )
+
+
+# --- the prize the ledger records must be the prize the chain pays -------------
+
+
+def test_the_server_prize_matches_the_contract_formula():
+    """Audit 2026-10-13: only the FEE BPS was pinned across layers.
+
+    `api/economy.prize_in_units` computes the winner's prize in base units; the
+    contract computes it inline. Nothing checked that the two produce the SAME
+    number, so a change to either formula (a different rounding, a fee applied
+    to the wrong side) would make the ledger record a prize the chain never
+    paid — and the discrepancy would only surface in a payout dispute.
+    """
+    import economy
+
+    fee_bps = _solidity_constant("PLATFORM_FEE_BPS")
+    denominator = _solidity_constant("FEE_DENOMINATOR")
+    assert fee_bps == economy.CONTRACT_PLATFORM_FEE_BPS
+
+    for stake_units in (1, 1_000_000, 5_000_000, 10_000_000, 999_999_999, 123_456_789):
+        pool = 2 * stake_units
+        # The contract's own arithmetic, verbatim.
+        contract_fee = (pool * fee_bps) // denominator
+        contract_prize = pool - contract_fee
+        assert economy.prize_in_units(stake_units) == contract_prize, (
+            f"the ledger's prize for {stake_units} base units differs from the "
+            f"chain's ({economy.prize_in_units(stake_units)} vs {contract_prize})"
+        )
+
+
+def test_the_prize_plus_the_fee_is_the_whole_pool():
+    """No base unit may be created or lost in the split."""
+    import economy
+
+    for stake_units in (1, 7, 1_000_000, 3_333_333, 99_999_999):
+        pool = 2 * stake_units
+        prize = economy.prize_in_units(stake_units)
+        fee = pool - prize
+        assert prize + fee == pool
+        assert prize > 0

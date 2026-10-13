@@ -329,6 +329,37 @@ export interface PendingChallengesResponse {
 export const fetchPendingChallenges = (session: ServerSession): Promise<PendingChallengesResponse> =>
   request<PendingChallengesResponse>("/api/challenges", undefined, session, "GET");
 
+/**
+ * Ask the SERVER whether a username is free (audit M12, 2026-10-13).
+ *
+ * The registry endpoint existed and was tested but nothing called it, so the
+ * authoritative check (and its rate limit) protected nothing. The response
+ * deliberately does NOT include the owner's address — only whether the name is
+ * free, taken, or already yours.
+ */
+export const checkUsername = (
+  session: ServerSession,
+  name: string
+): Promise<{ available: boolean; username: string; taken?: boolean; alreadyOwned?: boolean }> =>
+  request("/api/username/" + encodeURIComponent(name), undefined, session, "GET");
+
+/**
+ * Report a match for operator review (phase 6.4 / G8).
+ *
+ * Audit 2026-10-13: the endpoint existed, was tested, and had NO client path —
+ * a player could not file the report the feature is named for. This is the
+ * H22b class again (a mechanism in one layer with no consumer in another).
+ *
+ * A report is a request for review: it never touches match state or the money
+ * path, and only a participant may file one.
+ */
+export const reportDispute = (
+  session: ServerSession,
+  matchId: string,
+  reason: string
+): Promise<{ ok: boolean; matchId: string }> =>
+  request<{ ok: boolean; matchId: string }>("/api/dispute", { matchId, reason }, session);
+
 export const commitRound = (
   session: ServerSession,
   matchId: string,

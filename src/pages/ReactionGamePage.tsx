@@ -52,6 +52,7 @@ import { reportError } from '../lib/monitoring';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { ConnectWallet } from '../components/ConnectWallet';
 import { DuelCertificateModal } from '../components/DuelCertificateModal';
+import { DisputeReportButton } from '../components/DisputeReportButton';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
@@ -2084,6 +2085,15 @@ function isWalletCancel(msg: string): boolean {
                     <ShieldCheck className="w-4 h-4 text-sky-400" />
                     <span>View Cryptographic Certificate & Proof</span>
                   </button>
+
+                  {/* Audit 2026-10-13: `POST /api/dispute` had no client path —
+                      a player could not file the report the feature exists for. */}
+                  {serverMatch && wallet.fullAddress && (
+                    <DisputeReportButton
+                      matchId={serverMatch.matchId}
+                      address={wallet.fullAddress}
+                    />
+                  )}
 
                   <button
                     onClick={handleBackToLobby}
