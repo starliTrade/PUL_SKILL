@@ -171,6 +171,60 @@ contract PulsarEscrowLifecycleTest is Test {
         assertEq(uint8(_status(id)), uint8(PulsarEscrow.MatchStatus.Refunded));
     }
 
+    // --- audit 2026-10-13: ONE anchor for both clocks ------------------------
+    //
+    // H20 moved the REFUND clock to activation but left `settleDuel`'s horizon
+    // on `createdAt`. The server's `settlement_deadline` follows the refund
+    // (activation), so every proof it minted after `createdAt + 20 minutes` —
+    // including EVERY F-12 re-sign, whose whole purpose is the late winner —
+    // was rejected by the contract. The winner could only get a refund.
+
+    function test_a_late_join_does_not_shorten_the_settle_window() public {
+        bytes32 id = keccak256("audit-late-join-horizon");
+        _create(id);
+
+        // A slow queue: the joiner pairs 20 minutes after the deposit.
+        vm.warp(block.timestamp + 20 minutes);
+        _join(id);
+
+        // The server anchors its deadline on ACTIVATION, so a deadline 20
+        // minutes after activation is legitimate. The old `createdAt` cap
+        // rejected it (createdAt + 30 min < createdAt + 40 min).
+        uint256 deadline = block.timestamp + 20 minutes;
+        vm.warp(block.timestamp + 1 minutes);
+
+        _settleWithDeadline(id, alice, deadline);
+        assertEq(
+            uint8(_status(id)),
+            uint8(PulsarEscrow.MatchStatus.Settled),
+            "a late join shortened the settle window and stranded the prize"
+        );
+    }
+
+    function test_the_settle_window_still_closes_before_the_refund_opens() public {
+        // The H19 property must survive the re-anchor: settlement is the only
+        // exit until the horizon, and the refund opens strictly later.
+        bytes32 id = keccak256("audit-h19-still-holds");
+        _create(id);
+        vm.warp(block.timestamp + 20 minutes);
+        _join(id);
+        uint256 activatedAt = block.timestamp;
+
+        // One second past the settle horizon the proof is no longer acceptable.
+        uint256 pastHorizon = activatedAt + TIMEOUT + 1;
+        vm.warp(pastHorizon);
+        vm.expectRevert("deadline exceeds horizon");
+        _settleWithDeadline(id, alice, pastHorizon + 10 minutes);
+
+        // ...and the refund is still not open (it needs REFUND_GRACE more).
+        vm.expectRevert("Match not timed out");
+        escrow.refundTimeoutMatch(id);
+
+        vm.warp(activatedAt + TIMEOUT + escrow.REFUND_GRACE());
+        escrow.refundTimeoutMatch(id);
+        assertEq(uint8(_status(id)), uint8(PulsarEscrow.MatchStatus.Refunded));
+    }
+
     function test_an_unpaired_duel_still_refunds_on_the_deposit_clock() public {
         // No activation ever happened, so `createdAt` remains the anchor.
         bytes32 id = keccak256("h20-unpaired");
