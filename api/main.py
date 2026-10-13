@@ -1579,11 +1579,13 @@ def player_stats(address: str, request: Request) -> dict[str, Any]:
     of reporting zeros — a zero that means "no data" and a zero that means "no
     wins" must not look the same to the client.
     """
-    _auth(request)
+    caller = _auth(request)
     addr = (address or "").strip().lower()
     if not _is_address(addr):
         raise HTTPException(status_code=400, detail="Invalid address")
-    _rl_check("player_stats", addr, RL_PLAYER_STATS_MAX)
+    # Keyed by the CALLER, not the requested address: keying on the target let
+    # one caller spend a victim's budget and 429 that victim's own reads.
+    _rl_check("player_stats", caller, RL_PLAYER_STATS_MAX)
     stats = economy.player_stats(addr)
     if stats is None:
         return {"available": False}

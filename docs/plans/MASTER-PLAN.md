@@ -315,43 +315,44 @@
 
 ---
 
-# فاز ۷ — MEDIUM (۳۹ مورد باقی‌مانده) 📋
+# فاز ۷ — MEDIUM ✅ بسته شد
 **تخمین:** ۳ روز · **وابستگی:** فاز ۲-۴
+**وضعیت:** همه‌ی ۳۸ آیتم بسته شدند (M32 به فاز ۹ منتقل شد). بازبینی بستن انجام شد.
 
 ### ۷.۱ — امنیت و اعتبارسنجی
-- [ ] **M1** `verify_siwe` آدرس بازیابی‌شده را با ادعاشده مقایسه کند — `auth.py:338-352`
-- [ ] **M2** `_burn_nonce` فقط `AlreadyExists` را replay بداند؛ TTL واقعی — `auth.py:186-204`
-- [ ] **M3** پنجره‌ی nonce: پذیرش پنجره‌ی قبلی برای ۳۰s (رفع fail تصادفی) — `auth.py:137-143`
-- [ ] **M4** eviction در `_remember_used` از O(n) به O(1) — `auth.py:213-221`
-- [ ] **M5** `verify_session` نوع payload را اعتبارسنجی کند — `auth.py:373-382`
-- [ ] **M6** `_signature_to_low_s_bytes` برای `v∈{27,28}` + تست high-s — `oracle.py:79-82`
-- [ ] **M7** `sign_settlement` منبع رکورد را اعتبارسنجی کند (HMAC engine-marker) — `oracle.py:175-242`
-- [ ] **M8** cache کردن signer — `oracle.py:227,239`
-- [ ] **M9** `_settle_once` بدون پرتاب HTTPException داخل mutate — `main.py:718-721`
-- [ ] **M10** `match_view` بعد از finalize دوباره get کند — `main.py:556-560`
-- [ ] **M11** `claim_match` نیاز به برنده بودن claimer + چک `receipt.from` — `main.py:838-851`
-- [ ] **M14** `queue` با استیک متفاوت را رد کند — `store.py:270-277`
-- [ ] **M19** `oracle._match_id_bytes32` روی id غیر-hex ۶۴ کاراکتری crash می‌کند — `oracle.py:124-130`
-- [ ] **M20** حذف override `PLATFORM_FEE_BPS` از env — `economy.py:88-93`
-- [ ] **M21** محاسبه‌ی prize با `Decimal` و واحد پایه — `economy.py:180`
+- [x] **M1** `verify_siwe` آدرس بازیابی‌شده را با ادعاشده مقایسه کند — `auth.py:338-352`
+- [x] **M2** `_burn_nonce` فقط `AlreadyExists` را replay بداند؛ TTL واقعی — `auth.py:186-204`
+- [x] **M3** پنجره‌ی nonce: پذیرش پنجره‌ی قبلی برای ۳۰s (رفع fail تصادفی) — `auth.py:137-143`
+- [x] **M4** eviction در `_remember_used` از O(n) به O(1) — `auth.py:213-221`
+- [x] **M5** `verify_session` نوع payload را اعتبارسنجی کند — `auth.py:373-382`
+- [x] **M6** `_signature_to_low_s_bytes` برای `v∈{27,28}` + تست high-s — `oracle.py:79-82`
+- [x] **M7** `sign_settlement` منبع رکورد را اعتبارسنجی کند (HMAC engine-marker) — `oracle.py:175-242`
+- [x] **M8** cache کردن signer — `oracle.py:227,239`
+- [x] **M9** `_settle_once` بدون پرتاب HTTPException داخل mutate — `main.py:718-721`
+- [x] **M10** `match_view` بعد از finalize دوباره get کند — `main.py:556-560`
+- [x] **M11** `claim_match` نیاز به برنده بودن claimer + چک `receipt.from` — `main.py:838-851`
+- [x] **M14** `queue` با استیک متفاوت را رد کند — `store.py:270-277`
+- [x] **M19** `oracle._match_id_bytes32` روی id غیر-hex ۶۴ کاراکتری crash می‌کند — `oracle.py:124-130`
+- [x] **M20** حذف override `PLATFORM_FEE_BPS` از env — `economy.py:88-93`
+- [x] **M21** محاسبه‌ی prize با `Decimal` و واحد پایه — `economy.py:180`
 
 ### ۷.۲ — کلاینت
-- [ ] **M26** `searchPlayers` با playerId — `realWeb3.ts:1444-1491`
-- [ ] **M27** «چالش دوست» واقعی یا تغییر برچسب — `FriendChallengeModal.tsx:124-128`
-- [ ] **M31** progression از ledger سرور — `usePulsarStore.ts:186-235`
+- [x] **M26** `searchPlayers` با playerId — `realWeb3.ts:1444-1491`
+- [x] **M27** «چالش دوست» واقعی یا تغییر برچسب — `FriendChallengeModal.tsx:124-128`
+- [x] **M31** progression از ledger سرور — `usePulsarStore.ts:186-235`
 - [ ] **M32** حذف داده‌ی ساختگی روی سطوح پولی (به فاز ۹ منتقل شد — ادغام)
-- [ ] **M33** یک منبع حقیقت برای `isEscrowConfigured` — `chain.ts:117-119` vs `escrowFlow.ts:20-40`
-- [ ] **M34** نام شبکه/توکن از `CHAIN`/`TOKENS` — `ConnectWallet.tsx:566,568,787,795`
-- [ ] **M35** پاک کردن URI کهنه‌ی WC + یکسان‌سازی آستانه‌ها — `ConnectWallet.tsx:323-339`
-- [ ] **M36** `disconnect()` در cancel + حلقه‌ی معکوس purge — `realWeb3.ts:900-916, 431-438`
-- [ ] **M37** هر دو طرف بتوانند تسویه را اجبار کنند — `ReactionGamePage.tsx:748-761`
-- [ ] **M39** پر کردن `match.hash` تا گواهی واقعی شود — `DuelCertificateModal.tsx:134-142`
-- [ ] **M40** `EligibilityGate` فقط کلاینت است — `EligibilityGate.tsx:14,49`
-- [ ] **M41** گاز floor ۳۰ gwei روی همه‌ی شبکه‌ها — `escrowFlow.ts:98-111`
-- [ ] **M42** `subscribeGlobalMatches` پاک‌سازی ورودی‌های کهنه — `realWeb3.ts:1349-1386`
-- [ ] **M43** `LanguageContext` بدون رجکس/replacement string — `LanguageContext.tsx:81-83`
-- [ ] **M44** Sentry lazy load — `monitoring.ts:14`
-- [ ] **M45** معکوس دقیق `getLevel`/`getXPForLevel` — `xpSystem.ts:71-80`
+- [x] **M33** یک منبع حقیقت برای `isEscrowConfigured` — `chain.ts:117-119` vs `escrowFlow.ts:20-40`
+- [x] **M34** نام شبکه/توکن از `CHAIN`/`TOKENS` — `ConnectWallet.tsx:566,568,787,795`
+- [x] **M35** پاک کردن URI کهنه‌ی WC + یکسان‌سازی آستانه‌ها — `ConnectWallet.tsx:323-339`
+- [x] **M36** `disconnect()` در cancel + حلقه‌ی معکوس purge — `realWeb3.ts:900-916, 431-438`
+- [x] **M37** هر دو طرف بتوانند تسویه را اجبار کنند — `ReactionGamePage.tsx:748-761`
+- [x] **M39** پر کردن `match.hash` تا گواهی واقعی شود — `DuelCertificateModal.tsx:134-142`
+- [x] **M40** `EligibilityGate` فقط کلاینت است — `EligibilityGate.tsx:14,49`
+- [x] **M41** گاز floor ۳۰ gwei روی همه‌ی شبکه‌ها — `escrowFlow.ts:98-111`
+- [x] **M42** `subscribeGlobalMatches` پاک‌سازی ورودی‌های کهنه — `realWeb3.ts:1349-1386`
+- [x] **M43** `LanguageContext` بدون رجکس/replacement string — `LanguageContext.tsx:81-83`
+- [x] **M44** Sentry lazy load — `monitoring.ts:14`
+- [x] **M45** معکوس دقیق `getLevel`/`getXPForLevel` — `xpSystem.ts:71-80`
 
 ---
 
@@ -576,6 +577,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 7.0-CLOSED | 2026-10-13 | **فاز ۷ کامل شد (۳۸/۳۸؛ M32 به فاز ۹ منتقل شد).** این نشست: M36 (بستن relay در cancel + حلقه‌ی معکوس purge)، M37 (تسویه از هر دو طرف)، M39 (ثبت tx تسویه تا گواهی واقعی شود)، M42 (پاک‌شدن feed خالی)، M44 (Sentry فقط وقتی DSN هست)، M9 (خطای دامنه به‌جای HTTPException در store)، M10 (view تازه بعد از finalize)، M26 (جست‌وجو با playerId)، M40 (متن صادقانه‌ی gate)، **M27 (چالش دوست واقعی: رزرو ماتچ برای آدرس هدف، در هر سه store + کلاینت)**، **M31 (progression سرورمحور: `api/xp.py` + ledger + `GET /api/player/{addr}/stats` + کلاینت؛ پیمان parity با `tests/fixtures/xp_vectors.json`)**. **دو گپ در بازبینی بستن پیدا و رفع شد:** (۱) در `record_settlement` خواندن بعد از نوشتن داخل تراکنش Firestore بود (تست emulator گرفتش، نه unit)؛ (۲) سطح/نوار پیشرفت از دو ledger مختلف می‌آمدند. **یک گپ باقی‌مانده مستند شد:** بازیکن چالش‌شده هیچ مسیری برای فهمیدن چالش ندارد. **رفع خارج از فاز:** مرحله‌ی install در CI قبل از هر تست می‌مرد (`python3-sqlite3` روی noble وجود ندارد). ۲۳۷ تست سرور + ۱۳۲ تست فرانت. | ⬜ |
 | 6.0-CLOSED | 2026-10-12 | **فاز ۶ کامل شد (۴/۴).** 6.1 metrics، 6.2 health، 6.3 admin tooling، 6.4 dispute. ۱۵۷ تست سرور. | ⬜ |
 | 5.4-CLOSED | 2026-10-12 | **فاز ۵ کامل شد (۵/۵).** H23 رفع شد — ELO + باند جفت‌سازی با گشادشدن زمانی. **سه گپ بین‌لایه‌ای در حین wiring پیدا شد:** `DurableMatchStore` پارامتر `rtt_ms` را فوروارد نمی‌کرد (یعنی گیت پینگ H1 در production بی‌اثر بود!)، و `InMemoryStore`/`FirestoreStore` هرکدام `enqueue` جدا دارند. ۱۲۷ تست سرور. | ⬜ |
 | 5.3 | 2026-10-12 | **H24 رفع شد.** بازیکن غایب کل مسابقه را forfeit می‌کند؛ و اگر مسابقه کامل نشود و امتیاز مساوی نباشد، جلوتر می‌برد (چون void به عقب‌مانده سود می‌رساند). **محدودیت باقی‌مانده صادقانه مستند شد:** سرور نمی‌تواند تشخیص دهد چه کسی رفت، پس قاعده جلوتر را ترجیح می‌دهد — بستنش نیاز به سیگنال حضور دارد (فاز ۱۰). ۱۱۹ تست سرور. | ⬜ |
