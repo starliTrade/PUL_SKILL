@@ -32,6 +32,10 @@ const manifest = existsSync(manifestPath)
 
 export default defineConfig({
   testDir: './e2e',
+  // The suite reuses anvil's deterministic accounts, so it must also reset the
+  // state those accounts accumulated — otherwise a match from a previous run
+  // is handed back by `/api/queue` and every symptom looks like an app bug.
+  globalSetup: './e2e/global-setup.ts',
   // The stack is shared and stateful (one Firestore emulator, one anvil), so
   // tests run in one worker. Parallelism here would make failures unrepeatable.
   workers: 1,
