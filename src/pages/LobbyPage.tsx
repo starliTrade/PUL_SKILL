@@ -548,10 +548,11 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                 // is a fact; show nothing rather than a plausible number.
                 const reactionMs =
                   match.yourTime || match.reactionTime || match.opponentTime || null;
-                const stakeVal = Number(match.entryFee ?? match.stake ?? 1);
-                const prizeVal = Number(
-                  match.prize || prizeForStake(stakeVal),
-                );
+                // Audit (phase-9 audit, finding 5): `match.prize || prizeForStake(...)`
+                // invented a payout for a row that carried none, and rendered it
+                // as money the player earned. A missing prize is a fact.
+                const stakeVal = Number(match.entryFee ?? match.stake ?? 0);
+                const prizeVal = Number(match.prize ?? 0);
 
                 const timeAgo = match.timestamp
                   ? (() => {

@@ -534,7 +534,10 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                   const prize = Number(
                     m.prize || prizeForStake(fee),
                   );
-                  const timeMs = m.yourTime || m.reactionTime || 185;
+                  // Audit 9.2 (found by the phase-9 audit): the SAME `|| 185`
+                  // fabrication the LobbyPage fix removed survived here. A
+                  // missing measurement is a fact; show nothing.
+                  const timeMs = m.yourTime || m.reactionTime || null;
 
                   return (
                     <div
@@ -557,12 +560,15 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                         <div className="min-w-0">
                           <div className="text-xs font-semibold text-white truncate flex items-center gap-1.5">
                             <span className="truncate">{opp}</span>
-                            <span className="text-[10px] font-mono font-normal text-zinc-400">
-                              ({timeMs}ms)
-                            </span>
+                            {timeMs ? (
+                              <span className="text-[10px] font-mono font-normal text-zinc-400">
+                                ({timeMs}ms)
+                              </span>
+                            ) : null}
                           </div>
                           <div className="text-[10px] font-mono text-zinc-500">
-                            ${fee} USDT Stake · {m.oracleSignature ? 'Oracle Verified' : 'Local Result'}
+                            ${fee} USDT {t('stakeLabel')} ·{' '}
+                            {m.oracleSignature ? t('oracleVerified') : t('localResult')}
                           </div>
                         </div>
                       </div>

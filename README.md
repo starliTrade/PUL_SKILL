@@ -23,22 +23,23 @@ bun run dev            # Vite dev server
 bun run build          # production build (dist/)
 bun run lint           # tsc --noEmit && eslint . --max-warnings 0
 
-bun run verify         # the full gate: 15 checks, 0 tolerated failures
+bun run verify         # the full gate: 15 checks run, 0 tolerated failures
+                       # (one more — Playwright — always SKIPs until phase 10)
 bun run test:unit      # frontend (vitest)
-bun run test:server    # server protocol suite (pytest)
+bun run test:server    # the standalone protocol smoke script (not pytest)
 bun run test:contract  # Solidity compile gate (solc 0.8.20, paris + shanghai)
 ```
 
 `bun run verify` is the single source of truth for "is this green". It runs the
-frontend suite, the Python suite, the coverage ratchet, ruff, mypy, the contract
-compile gate, and a set of protocol/security probes. CI runs the same gates plus
-`forge test` and the Firestore emulator.
+frontend suite, the Python suite, the coverage ratchet, ruff, mypy, `forge test`,
+the contract compile gate, and a set of protocol/security probes — starting the
+Firestore emulator itself when one is not already running. CI runs the same gates.
 
 Current counts (measured, not remembered):
 
 | Suite | Count |
 |---|---|
-| Frontend (vitest) | 201 tests, 48 files |
+| Frontend (vitest) | 202 tests, 48 files |
 | Server (pytest) | 278 tests |
 | Contract (forge) | 81 tests |
 | Coverage ratchet | 84% (floor 79) |
@@ -68,6 +69,11 @@ Current counts (measured, not remembered):
   4.15:1 and `text-zinc-600` 2.59:1 on the app's darkest surface (AA needs 4.5:1
   for normal text).
 - **Ratings are process-local**, so the pairing band holds within a replica.
+- **The "no fabricated data" gate has a known blind spot.** It sees the literal
+  `Math.random()` token and bare measurement literals. A fabrication that uses
+  neither — a hardcoded number in a variable, a `crypto.getRandomValues` value,
+  a helper that wraps randomness — is invisible to it. That class is caught by
+  reading the copy, which is why the audit is a separate step from the gate.
 - **No real-money deployment is authorized** until the rehearsal checklist in
   [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) passes end-to-end.
 
