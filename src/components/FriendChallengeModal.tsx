@@ -172,6 +172,8 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
           </div>
           <button
             onClick={onClose}
+            // Audit 8.5: an icon-only button needs an accessible name.
+            aria-label={t('closeModal')}
             className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800/80 transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />

@@ -108,6 +108,8 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
               sounds.playClick();
               onClose();
             }}
+            // Audit 8.5: an icon-only button needs an accessible name.
+            aria-label={t('closeModal')}
             className="absolute top-3.5 right-3.5 p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
@@ -201,6 +203,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                 </div>
                 <button
                   onClick={() => handleCopy(duelId, 'duelId')}
+                  aria-label={t('copyId')}
                   className="p-1 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white shrink-0"
                 >
                   {copiedKey === 'duelId' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -215,6 +218,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                   </div>
                   <button
                     onClick={() => handleCopy(txHash, 'txHash')}
+                    aria-label={t('copyTxHash')}
                     className="p-1 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white shrink-0"
                   >
                     {copiedKey === 'txHash' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
