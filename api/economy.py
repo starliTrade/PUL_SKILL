@@ -112,7 +112,13 @@ def player_stats(address: str) -> dict[str, Any] | None:
         return None
     try:
         snap = db.collection("users").document(address.lower()).get()
-        d = (snap.to_dict() or {}) if snap.exists else {}
+        if not snap.exists:
+            # No row means NO RECORD, not "zero wins". Reporting zeros as
+            # authoritative would let the client overwrite a real local
+            # progression with 0/level 1 — the exact confusion this contract
+            # exists to prevent. The caller falls back to its local estimate.
+            return None
+        d = snap.to_dict() or {}
         return {
             "wins": int(d.get("wins", 0) or 0),
             "losses": int(d.get("losses", 0) or 0),

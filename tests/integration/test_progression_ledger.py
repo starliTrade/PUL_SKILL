@@ -121,8 +121,8 @@ def test_stats_says_unavailable_rather_than_reporting_zeros(client):
 pytest_emulator = pytest.mark.emulator
 
 
-@pytest_emulator
-def test_a_settlement_writes_progression_and_the_endpoint_reads_it_back(client, monkeypatch):
+def _emulator_db(monkeypatch):
+    """Point the ledger at the emulator, or skip."""
     firestore = pytest.importorskip("google.cloud.firestore")
     host = os.environ.get("FIRESTORE_EMULATOR_HOST")
     if not host:
@@ -132,11 +132,37 @@ def test_a_settlement_writes_progression_and_the_endpoint_reads_it_back(client, 
         db.collection("_probe").document("ping").set({"ok": True})
     except Exception as exc:  # pragma: no cover - environment problem
         pytest.skip(f"Firestore emulator unreachable at {host}: {exc}")
-
     import store as store_module
     from store import FirestoreStore
 
     monkeypatch.setattr(store_module, "_fs_store", FirestoreStore(db), raising=False)
+    return db
+
+
+@pytest_emulator
+def test_a_player_with_no_ledger_row_is_not_reported_as_zeros(client, monkeypatch):
+    """A LIVE ledger with no row for this player must not answer "all zeros".
+
+    The memory-mode test above cannot see this: with the ledger disabled the
+    endpoint short-circuits to `available: false` for a different reason. In
+    production the ledger is up, so "no row" was reported as
+    `available: true, wins: 0, xp: 0` — and the client overwrote a real local
+    progression with it.
+    """
+    _emulator_db(monkeypatch)
+    headers = _session(client, Account.create())
+    never_played = "0x" + "77" * 20
+
+    r = client.get(f"/api/player/{never_played}/stats", headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"available": False}, (
+        "a missing ledger row was reported as authoritative zeros (audit M31)"
+    )
+
+
+@pytest_emulator
+def test_a_settlement_writes_progression_and_the_endpoint_reads_it_back(client, monkeypatch):
+    db = _emulator_db(monkeypatch)
 
     stamp = f"m31-{time.time_ns()}"
     winner = "0x" + format(abs(hash(stamp + "w")) % (1 << 160), "040x")

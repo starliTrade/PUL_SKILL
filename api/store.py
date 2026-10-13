@@ -535,9 +535,16 @@ class FirestoreStore:
             entries = _queue_entries(data)
             if not entries:
                 continue
-            # Audit M27: the queue document holds a LIST of waiting slots now.
-            # Prune dangling/paired/expired ones and write the survivors back.
-            kept: list[dict[str, Any]] = []
+            # Audit M27 closure: this loop used to rewrite the whole queue
+            # document with the surviving slots. That is a non-transactional
+            # read-modify-write on shared state, and a concurrent `enqueue`
+            # appending a slot between the read and the write was silently
+            # dropped — a lost wakeup that stranded a waiting player. The sweep
+            # no longer writes the queue document at all: `enqueue` prunes
+            # dangling/paired slots itself when it loads them, and
+            # `pending_challenges` ignores slots whose match is not waiting. So
+            # the slot list self-heals on the next enqueue and nothing depends
+            # on the sweep tidying it.
             for entry in entries:
                 snap = self._match_ref(str(entry["matchId"])).get()
                 if not snap.exists:
@@ -551,11 +558,6 @@ class FirestoreStore:
                 if m.status == "active" and now - m.play_started_at() > MATCH_EXPIRY_SECONDS:
                     due.append(m)  # settle it, do not void it (audit H8)
                     continue
-                # A slot for a match that is no longer waiting is stale: the
-                # slot is cleared at pairing, so this is leftover state.
-                if m.status == "waiting":
-                    kept.append(entry)
-            qd.reference.set({"waiting": kept})
 
         # Active matches are not always reachable through a queue slot (the
         # slot is cleared on pairing). Scan active-looking docs directly so
