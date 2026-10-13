@@ -134,7 +134,7 @@ describe('the document (plan items 8.1, 8.2)', () => {
       for (const m of src.matchAll(/>\s*([A-Z][A-Za-z][^<>{}\n]{6,80}?)\s*</g)) {
         const text = String(m[1]).trim();
         if (ALLOWED.has(text)) continue;
-        offenders.push(`${rel}:${src.slice(0, m.start()).split('\n').length} "${text}"`);
+        offenders.push(`${rel}:${src.slice(0, m.index).split('\n').length} "${text}"`);
       }
     }
     expect(offenders, `hardcoded user-facing text:\n${offenders.join('\n')}`).toEqual([]);

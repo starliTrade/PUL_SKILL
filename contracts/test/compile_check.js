@@ -138,6 +138,79 @@ function compileFile(solc, source, key, evmVersion) {
   return names;
 }
 
+/**
+ * Compile a source that IMPORTS from contracts/lib (forge-std, OpenZeppelin).
+ *
+ * Audit 8.18: the gate only compiled PulsarEscrow.sol and a re-shimmed
+ * MockUSDT, so a syntax or type error in ANY `*.t.sol` was invisible to
+ * `bun run test:contract` — only `forge test` would catch it, and that needs
+ * Foundry installed. This compiles the test files too, resolving their imports
+ * from `contracts/lib` through solc's import callback.
+ */
+function compileWithImports(solc, key, source, evmVersion) {
+  // Register EVERY contract file under contracts/ (except lib/out/cache) with
+  // its path relative to contracts/. solc then resolves the test files'
+  // relative imports (`../PulsarEscrow.sol`, `./TokenVariants.sol`) itself —
+  // its import callback does not tell us which file is asking.
+  const root = path.join(here, '..');
+  const sources = { [key]: { content: source } };
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'lib' || entry.name === 'out' || entry.name === 'cache') continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith('.sol')) {
+        // Keyed WITH the `contracts/` prefix, because the source unit name we
+        // compile is `contracts/test/x.t.sol` — solc resolves `../PulsarEscrow.sol`
+        // against that and produces `contracts/PulsarEscrow.sol`.
+        const rel = 'contracts/' + path.relative(root, full).split(path.sep).join('/');
+        if (!(rel in sources)) sources[rel] = { content: fs.readFileSync(full, 'utf8') };
+      }
+    }
+  };
+  walk(root);
+
+  const input = {
+    language: 'Solidity',
+    sources,
+    settings: {
+      optimizer: { enabled: true, runs: 200 },
+      evmVersion,
+      outputSelection: { '*': { '*': ['abi'] } },
+    },
+  };
+  const libRoot = path.join(here, '..', 'lib');
+  const resolveImport = (importPath, context) => {
+    // A relative import resolves against the IMPORTING file, not the root —
+    // `../PulsarEscrow.sol` from `contracts/test/x.t.sol` is
+    // `contracts/PulsarEscrow.sol`. solc passes the importer as `context`.
+    const fromImporter = context
+      ? path.resolve(path.join(here, '..'), path.dirname(context), importPath)
+      : null;
+    const candidates = [
+      fromImporter,
+      // Foundry's remappings: `forge-std/` -> `lib/forge-std/src/` and
+      // `@openzeppelin/contracts/` -> `lib/openzeppelin-contracts/contracts/`.
+      path.join(libRoot, importPath.replace(/^forge-std\//, 'forge-std/src/')),
+      path.join(
+        libRoot,
+        'openzeppelin-contracts',
+        importPath.replace(/^@openzeppelin\//, '')
+      ),
+      path.join(libRoot, importPath),
+      path.join(here, '..', importPath),
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) return { contents: fs.readFileSync(candidate, 'utf8') };
+    }
+    return { error: `import not found: ${importPath} (from ${context ?? '?'})` };
+  };
+  const out = JSON.parse(solc.compile(JSON.stringify(input), { import: resolveImport }));
+  const errs = (out.errors || []).filter((e) => (e.severity ?? e.type) === 'error');
+  if (errs.length) throw new Error(errs.map((e) => e.formattedMessage).join('\n'));
+  return Object.keys(out.contracts?.[key] || {});
+}
+
 function main() {
   const solc = loadSolc();
   console.log('solc version:', solc.version());
@@ -178,6 +251,33 @@ function main() {
     console.error('FAIL Deploy.s.sol missing');
   } else {
     console.log('OK Deploy.s.sol present (full compile via forge on dev machine)');
+  }
+
+  // 4) The Foundry test files (audit 8.18). They import forge-std, so this runs
+  //    only when contracts/lib is populated; otherwise it says so rather than
+  //    reporting a pass it did not earn.
+  const forgeStd = path.join(here, '..', 'lib', 'forge-std', 'src', 'Test.sol');
+  if (!fs.existsSync(forgeStd)) {
+    console.log(
+      'SKIP test-file compile: contracts/lib/forge-std is absent ' +
+        '(run `cd contracts && forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-commit`)'
+    );
+  } else {
+    const testFiles = fs.readdirSync(here).filter((f) => f.endsWith('.t.sol'));
+    for (const file of testFiles) {
+      try {
+        const names = compileWithImports(
+          solc,
+          `contracts/test/${file}`,
+          fs.readFileSync(path.join(here, file), 'utf8'),
+          'paris'
+        );
+        console.log(`OK ${file} -> ${names.length} contract(s)`);
+      } catch (e) {
+        failed = true;
+        console.error(`FAIL ${file}\n${e.message}`);
+      }
+    }
   }
 
   console.log(failed ? 'COMPILE CHECK FAILED' : 'COMPILE CHECK PASSED');

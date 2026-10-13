@@ -172,7 +172,7 @@ def prize_in_units(stake_units: int, decimals: int = 6) -> int:
     return pool - fee
 
 
-def record_claim(match_id: str, claimer: str, tx_hash: str, signature: str) -> bool:
+def record_claim(match_id: str, claimer: str, tx_hash: str) -> bool:
     """Persist the on-chain settlement transaction AFTER the winner claims.
 
     F-04: the caller (main.py) has ALREADY verified the receipt on-chain —
