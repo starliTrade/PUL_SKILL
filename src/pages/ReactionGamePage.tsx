@@ -1802,9 +1802,18 @@ function isWalletCancel(msg: string): boolean {
                 </div>
 
                 <h2 className="text-xl font-bold text-red-400">
+                  {/* Audit 2026-10-13 (found by the phase-10 ranked E2E): every
+                      server-mode failure was headed "Could not reach the duel
+                      server" — including a WALLET refusal, which the user can
+                      act on and the server cannot. The heading now names the
+                      side that actually failed. */}
                   {matchResult.reason && isWalletCancel(matchResult.reason)
                     ? t('reasonWalletCancelled')
-                    : isServerMode ? t('serverConnError') : t('antiCheatTriggered')}
+                    : matchResult.reason && /wallet|signature|personal_sign|rejected the request/i.test(matchResult.reason)
+                    ? t('walletActionFailed')
+                    : isServerMode
+                    ? t('serverConnError')
+                    : t('antiCheatTriggered')}
                 </h2>
                 <p className="text-xs text-zinc-400 mt-1.5 leading-relaxed px-3">
                   {matchResult.reason || t('reasonNonHuman')}

@@ -9,15 +9,11 @@
  * server pairs them, and both land in a real staked duel with the escrow
  * configured and the deposit gate armed.
  *
- * WHAT IT DOES NOT COVER, and why — stated rather than implied:
- * the round loop does not complete. The duel reaches the arena, then the app
- * reports "Could not reach the duel server" with the server answering
- * `invalid value: string "<the SIWE message>" expected a valid hex string` —
- * the SIWE MESSAGE is being sent where a SIGNATURE belongs. A console probe
- * inside the mock wallet shows its `personal_sign` is NEVER CALLED, so the
- * signature is not coming from the injected provider at all. That is a real
- * defect in the ranked path, and it is the next thing to fix; until it is,
- * asserting the loop here would only produce a red test that hides it.
+ * The blocker this spec used to document is FIXED: the mock wallet was passing
+ * the SIWE message to anvil unencoded, and `personal_sign` takes it as HEX
+ * (MetaMask encodes internally; a raw node does not). The app surfaced that
+ * wallet error as "Could not reach the duel server", which is why it looked
+ * like a server problem. See e2e/wallet.ts.
  */
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { clearEligibilityGate } from './helpers';
@@ -72,12 +68,28 @@ test.describe('the ranked duel', () => {
       await pageA.waitForTimeout(2500);
       await pageB.getByRole('button', { name: /Enter/i }).first().click();
 
-      // Both land in a real duel: the server created a match with both stakes.
+      // Both land on the duel screen.
       await expect(pageA.getByTestId('pulsar-game-root')).toBeVisible({ timeout: 40_000 });
       await expect(pageB.getByTestId('pulsar-game-root')).toBeVisible({ timeout: 40_000 });
 
-      // The arena shows a ranked, server-verified duel with the real prize.
-      await expect(pageA.getByText(/Ranked/i).first()).toBeVisible();
+      // TAPPING THE VERIFY NODE IS WHAT STARTS THE SERVER FLOW (SIWE → queue →
+      // deposit). Without it the page sits in the local-bot path and every
+      // assertion below would pass against a PRACTICE duel — which is exactly
+      // the false green this spec shipped with.
+      await pageA.getByTestId('pulsar-verify-node').click();
+      await pageB.getByTestId('pulsar-verify-node').click();
+
+      // The server flow must actually run: a real match, not the local bot.
+      await expect(pageA.getByText(/Ranked · Server verified/i).first()).toBeVisible({
+        timeout: 40_000,
+      });
+
+      // The round loop is NOT asserted here yet: the server refuses the first
+      // commit with 409 because the app has not locked the stakes in the
+      // escrow. The deposit gate is doing its job (fail-closed); what is
+      // missing is the app's on-chain deposit step (approve → createDuel /
+      // joinDuel) before the round flow starts. That is the next thing to fix,
+      // and asserting the loop before it works would only hide it.
     } finally {
       await ctxA.close();
       await ctxB.close();

@@ -57,7 +57,7 @@ ESCROW_RPC_URL="$RPC" \
 ORACLE_PRIVATE_KEY="$ORACLE_KEY" \
 ORACLE_CHAIN_ID="$CHAIN_ID" \
 ORACLE_SIGNING_SECRET="$SIGNING_SECRET" \
-nohup "$ROOT/.venv/bin/python" -m uvicorn main:app --port "$PORT" --log-level warning \
+nohup "$ROOT/.venv/bin/python" -m uvicorn main:app --port "$PORT" --log-level info \
   > "$LOGFILE" 2>&1 &
 echo $! > "$PIDFILE"
 
