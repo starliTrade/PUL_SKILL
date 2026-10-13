@@ -1196,7 +1196,7 @@ function isWalletCancel(msg: string): boolean {
 
     if (isMatchDecided) {
       // Final Match Outcome
-      const finalWinner = newUserScore >= 2 ? 'win' : 'loss';
+      const finalWinner = newUserScore >= BO3_TARGET_WINS ? 'win' : 'loss';
       const avgUserTime = Math.round(
         newRounds.reduce((acc, r) => acc + r.userTime, 0) / newRounds.length
       );
@@ -1393,7 +1393,7 @@ function isWalletCancel(msg: string): boolean {
               <span
                 className={cn(
                   'w-3 h-3 rounded-full transition-all duration-300 border',
-                  bo3State.userScore >= 2
+                  bo3State.userScore >= BO3_TARGET_WINS
                     ? 'bg-emerald-400 border-emerald-300 shadow-[0_0_10px_rgba(52,211,153,0.8)]'
                     : 'bg-zinc-800 border-zinc-700'
                 )}
@@ -1429,7 +1429,7 @@ function isWalletCancel(msg: string): boolean {
               <span
                 className={cn(
                   'w-3 h-3 rounded-full transition-all duration-300 border',
-                  bo3State.opponentScore >= 2
+                  bo3State.opponentScore >= BO3_TARGET_WINS
                     ? 'bg-sky-400 border-sky-300 shadow-[0_0_10px_rgba(56,189,248,0.8)]'
                     : 'bg-zinc-800 border-zinc-700'
                 )}
@@ -1555,7 +1555,7 @@ function isWalletCancel(msg: string): boolean {
                   <div className="absolute inset-0 bg-grid opacity-20 pointer-events-none" />
                   <motion.button
                     data-testid="pulsar-verify-node"
-                    aria-label="Start the duel"
+                    aria-label={t('ariaStartDuel')}
                     onClick={handleVerifyNodeClick}
                     className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full p-4 flex items-center justify-center cursor-pointer shadow-lg active:scale-90 transition-transform"
                     style={{
@@ -1657,7 +1657,7 @@ function isWalletCancel(msg: string): boolean {
                 {/* Dynamic Anti-Cheat Pulsar Strike Target */}
                 <motion.button
                   data-testid="pulsar-target"
-                  aria-label="Hit the target"
+                  aria-label={t('ariaHitTarget')}
                   initial={{ scale: 0.3, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   whileTap={{ scale: 0.9 }}
@@ -1734,14 +1734,15 @@ function isWalletCancel(msg: string): boolean {
                 </div>
 
                 {/* Audit 8.8: this feedback is motion-only — a screen reader
-                    user never learned that the round ended or who won it. */}
-                <h3
-                  role="status"
-                  aria-live="polite"
-                  className="text-sm font-bold text-sky-400 tracking-wider uppercase font-mono"
-                >
-                  {roundTransitionMessage}
-                </h3>
+                    user never learned that the round ended or who won it.
+                    The live region is a WRAPPER, not the heading itself: a
+                    `role` on a heading replaces its heading role, and the
+                    document outline loses it. */}
+                <div role="status" aria-live="polite">
+                  <h3 className="text-sm font-bold text-sky-400 tracking-wider uppercase font-mono">
+                    {roundTransitionMessage}
+                  </h3>
+                </div>
 
                 {/* Round Speeds Compare */}
                 <div className="linear-card p-3 w-full mt-3 space-y-2 text-xs">
@@ -1872,9 +1873,8 @@ function isWalletCancel(msg: string): boolean {
                   )}
                 </motion.div>
 
+                <div role="status" aria-live="polite">
                 <h2
-                  role="status"
-                  aria-live="polite"
                   className={cn(
                     'text-2xl font-bold tracking-tight',
                     matchResult.outcome === 'win' ? 'text-emerald-400' : 'text-sky-300'
@@ -1882,6 +1882,7 @@ function isWalletCancel(msg: string): boolean {
                 >
                   {matchResult.outcome === 'win' ? t('matchVictory') : t('matchDefeat')}
                 </h2>
+                </div>
 
                 <div className="text-xs font-mono text-zinc-400 mt-1">
                   {t('finalScore')}: {matchResult.userScore} - {matchResult.opponentScore}

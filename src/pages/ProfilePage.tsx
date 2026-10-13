@@ -218,7 +218,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                           setTagInput(e.target.value);
                           if (tagError) setTagError(null);
                         }}
-                        placeholder="e.g. StarWarrior_7"
+                        placeholder={t('placeholderGamerTag')}
                         maxLength={20}
                         autoFocus
                         className="bg-black/90 border border-sky-500/50 rounded px-2 py-0.5 text-xs text-white font-mono focus:outline-none focus:border-sky-400 min-w-0 flex-1 disabled:opacity-50"
@@ -227,7 +227,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                         type="submit"
                         disabled={isSavingTag}
                         className="p-1 rounded bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-black font-bold text-[10px] shrink-0 cursor-pointer flex items-center justify-center min-w-[24px] min-h-[24px]"
-                        title="Claim Unique Username"
+                        title={t('titleClaimUsername')}
                       >
                         {isSavingTag ? (
                           <Loader2 className="w-3 h-3 animate-spin text-black" />
@@ -240,7 +240,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                         disabled={isSavingTag}
                         onClick={() => setIsEditingTag(false)}
                         className="p-1 rounded bg-white/[0.08] hover:bg-white/[0.15] disabled:opacity-50 text-zinc-300 text-[10px] shrink-0 cursor-pointer min-w-[24px] min-h-[24px] flex items-center justify-center"
-                        title="Cancel"
+                        title={t('titleCancel')}
                       >
                         <X className="w-3 h-3" />
                       </button>
@@ -275,7 +275,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                         <button
                           onClick={handleStartEditTag}
                           className="p-0.5 rounded bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white transition-all cursor-pointer shrink-0"
-                          title="Edit Gamer Tag"
+                          title={t('titleEditGamerTag')}
                         >
                           <Edit2 className="w-2.5 h-2.5" />
                         </button>
@@ -283,7 +283,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                           <button
                             onClick={handleCopyPlayerId}
                             className="p-0.5 rounded bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white transition-all cursor-pointer shrink-0"
-                            title="Copy Player ID"
+                            title={t('titleCopyPlayerId')}
                           >
                             {copiedPlayerId ? (
                               <Check className="w-2.5 h-2.5 text-emerald-400" />

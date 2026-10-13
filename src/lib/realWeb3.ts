@@ -362,8 +362,9 @@ class RealWeb3Manager {
     }
 
     provider.on('connect', () => {
-      const accounts = provider.accounts || [];
-      if (!accounts || accounts.length === 0) {
+      // Audit 8.20: this was a third, hand-rolled session walk.
+      const accounts = this.wcAccounts(provider);
+      if (accounts.length === 0) {
         const session = provider.session || provider?.signer?.session;
         if (session?.namespaces) {
           for (const ns of Object.values(session.namespaces) as any[]) {
@@ -611,8 +612,8 @@ class RealWeb3Manager {
     if (isWc) {
       try {
         const provider = await this.ensureWcProvider();
-        const accounts = provider?.accounts || [];
-        if (!accounts || accounts.length === 0) {
+        const accounts = this.wcAccounts(provider);
+        if (accounts.length === 0) {
           const activeSessions = provider?.client?.session?.getAll?.() || [];
           if (activeSessions.length > 0) {
             const latestSession = activeSessions[activeSessions.length - 1];
@@ -706,25 +707,36 @@ class RealWeb3Manager {
     return this.activeSessionAccounts(provider);
   }
 
-  /** Accounts already approved in a live WalletConnect session (survives tab suspend). */
+  /**
+   * Accounts already approved in a live WalletConnect session (survives tab
+   * suspend).
+   *
+   * Audit 8.20: the two session lookups in this file disagreed — the `connect`
+   * handler read `provider.session.namespaces` while the resume paths read
+   * `provider.client.session.getAll()`. They can differ (the first is the
+   * CURRENT session, the second is every persisted one), so "connected" was
+   * true in one flow and false in another. This checks both, in that order.
+   */
   private activeSessionAccounts(provider: any): string[] {
     const out: string[] = [];
-    try {
-      const activeSessions = provider?.client?.session?.getAll?.() || [];
-      if (activeSessions.length > 0) {
-        const latestSession = activeSessions[activeSessions.length - 1];
-        const namespaces = latestSession?.namespaces || {};
-        for (const ns of Object.values(namespaces) as any[]) {
-          if (ns?.accounts && Array.isArray(ns.accounts)) {
-            for (const acc of ns.accounts) {
-              const cleanAddr = String(acc).split(':').pop();
-              if (cleanAddr && cleanAddr.startsWith('0x')) {
-                out.push(cleanAddr);
-              }
+    const collect = (namespaces: any) => {
+      for (const ns of Object.values(namespaces || {}) as any[]) {
+        if (ns?.accounts && Array.isArray(ns.accounts)) {
+          for (const acc of ns.accounts) {
+            const cleanAddr = String(acc).split(':').pop();
+            if (cleanAddr && cleanAddr.startsWith('0x') && !out.includes(cleanAddr)) {
+              out.push(cleanAddr);
             }
           }
         }
       }
+    };
+    try {
+      // The live session first (the `connect` handler's source) …
+      collect(provider?.session?.namespaces);
+      // … then every persisted session (the resume paths' source).
+      const activeSessions = provider?.client?.session?.getAll?.() || [];
+      for (const session of activeSessions) collect(session?.namespaces);
     } catch {}
     return out;
   }
@@ -785,9 +797,13 @@ class RealWeb3Manager {
       try {
         const provider = await this.ensureWcProvider();
 
-        if (provider.session && provider.accounts?.length) {
+        // Audit 8.20: this required `provider.accounts` to be populated and so
+        // skipped the session fallback the other paths have — the exact
+        // "approved while the tab was suspended" case it exists for.
+        const fastAccounts = this.wcAccounts(provider);
+        if (provider.session && fastAccounts.length) {
           return await this.setConnectedAddress(
-            provider.accounts[0],
+            fastAccounts[0],
             providerName,
             provider.chainId || CHAIN.chainId,
             provider

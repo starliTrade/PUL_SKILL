@@ -53,12 +53,17 @@ export const EligibilityGate: React.FC<EligibilityGateProps> = ({ onProceed }) =
     }
   })();
 
-  // Audit 8.4: role/aria-modal/focus-trap/Escape + focus restore. The gate is a
-  // dialog the user must answer, so it also gets `aria-modal`.
+  // Audit 8.4: role/aria-modal/focus-trap + focus restore. The gate is a dialog
+  // the user must ANSWER, so it gets `aria-modal` and — audit 2026-10-13 —
+  // `escapeCloses: false`. Escape used to dismiss it, which turned an 18+ /
+  // jurisdiction declaration into a single keystroke. The trap still holds
+  // focus, so the only ways out are Accept (which records consent) and Decline.
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const closeGate = () => setDismissed(true);
-  useModalA11y(!(alreadyConsented || dismissed), closeGate, dialogRef);
+  useModalA11y(!(alreadyConsented || dismissed), closeGate, dialogRef, {
+    escapeCloses: false,
+  });
 
   if (alreadyConsented || dismissed) return null;
 

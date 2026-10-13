@@ -16,7 +16,7 @@
  * (see `modalDialogProps`) plus `tabIndex={-1}` so the container itself can
  * receive focus when it holds nothing focusable.
  */
-import { useEffect, type RefObject } from 'react';
+import { useEffect, useRef, type RefObject } from 'react';
 
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -27,11 +27,36 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(', ');
 
+export interface ModalA11yOptions {
+  /**
+   * Whether Escape closes the dialog. Default true.
+   *
+   * Set false for a dialog the user must ANSWER rather than dismiss — the
+   * eligibility gate is a self-declaration, and letting Escape skip it turns a
+   * legal prompt into a keystroke.
+   */
+  escapeCloses?: boolean;
+}
+
 export function useModalA11y(
   isOpen: boolean,
   onClose: () => void,
-  containerRef: RefObject<HTMLElement | null>
+  containerRef: RefObject<HTMLElement | null>,
+  options: ModalA11yOptions = {}
 ): void {
+  const { escapeCloses = true } = options;
+
+  // `onClose` is read through a ref, NOT a dependency.
+  //
+  // Two of the four call sites pass an inline arrow (`() => setShow(false)`),
+  // which is a NEW function on every render. With `onClose` in the dependency
+  // array the effect re-ran on every re-render of the owner — restoring focus
+  // to whatever had it before and then moving it to the first focusable
+  // element. Typing in the friend-search input, or ticking the eligibility
+  // gate's checkboxes, threw focus back to the top of the dialog.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   useEffect(() => {
     if (!isOpen) return;
     const container = containerRef.current;
@@ -46,8 +71,9 @@ export function useModalA11y(
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (!escapeCloses) return; // a gate must be answered, not dismissed
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -76,7 +102,7 @@ export function useModalA11y(
       document.removeEventListener('keydown', onKeyDown, true);
       previouslyFocused?.focus?.();
     };
-  }, [isOpen, onClose, containerRef]);
+  }, [isOpen, containerRef, escapeCloses]);
 }
 
 /** The ARIA attributes every modal container needs (audit 8.4). */

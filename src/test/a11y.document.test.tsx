@@ -139,4 +139,32 @@ describe('the document (plan items 8.1, 8.2)', () => {
     }
     expect(offenders, `hardcoded user-facing text:\n${offenders.join('\n')}`).toEqual([]);
   });
+
+  it('has no hardcoded user-facing ATTRIBUTES left (plan item 8.9)', () => {
+    // The text-node scan above misses the other half: a tooltip or an
+    // accessible name is read by the user too. Thirteen were hardcoded when
+    // this guard was written (`title="Remove Friend"`, `aria-label="Close"`,
+    // `title="Copy full address"`, …).
+    const files: string[] = [];
+    for (const dir of ['src/components', 'src/pages']) {
+      for (const name of fs.readdirSync(path.resolve(process.cwd(), dir))) {
+        if (name.endsWith('.tsx') && !name.endsWith('.test.tsx')) files.push(`${dir}/${name}`);
+      }
+    }
+
+    const offenders: string[] = [];
+    for (const rel of files) {
+      const src = fs.readFileSync(path.resolve(process.cwd(), rel), 'utf8');
+      for (const m of src.matchAll(/(aria-label|title|placeholder|alt)="([^"]{4,})"/g)) {
+        const value = m[2];
+        // A URL or a pure symbol is not prose.
+        if (/^https?:/.test(value)) continue;
+        if (!/[A-Za-z]{4,}/.test(value)) continue;
+        offenders.push(
+          `${rel}:${src.slice(0, m.index).split('\n').length} ${m[1]}="${value}"`
+        );
+      }
+    }
+    expect(offenders, `hardcoded attributes:\n${offenders.join('\n')}`).toEqual([]);
+  });
 });

@@ -61,11 +61,9 @@ const store = vi.hoisted(() => ({
 
 vi.mock('../store/usePulsarStore', () => ({ usePulsarStore: () => ({ ...store }) }));
 
-vi.mock('../components/AppHeader', () => ({ AppHeader: () => null }));
 vi.mock('../components/ConnectWallet', () => ({ ConnectWallet: () => null }));
 vi.mock('../components/PulsarCosmicBackground', () => ({ PulsarCosmicBackground: () => null }));
 vi.mock('../components/FriendChallengeModal', () => ({ FriendChallengeModal: () => null }));
-vi.mock('../components/PulsarHeroVisualizer', () => ({ PulsarHeroVisualizer: () => null }));
 
 import { HomePage } from '../pages/HomePage';
 import { LegalPage } from '../pages/LegalPage';

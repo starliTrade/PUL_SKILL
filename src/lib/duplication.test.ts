@@ -50,6 +50,17 @@ describe('duplicated rules are unified (plan item 8.20)', () => {
     // `activeSessionAccounts` is the primitive; everything else goes through
     // `wcAccounts`. One call site in the helper itself is expected.
     const calls = src.match(/this\.activeSessionAccounts\(/g) ?? [];
-    expect(calls.length, `activeSessionAccounts called ${calls.length} times`).toBeLessThanOrEqual(2);
+    expect(calls.length, `activeSessionAccounts called ${calls.length} times`).toBeLessThanOrEqual(1);
+
+    // A bare `provider.accounts` read is the shape that drifted: it skips the
+    // session fallback, so a session that survived a tab suspend looks like
+    // "no accounts". Only the helper may read it.
+    const bare = src
+      .split('\n')
+      .map((line, i) => ({ line, n: i + 1 }))
+      .filter(({ line }) => /provider\??\.accounts/.test(line))
+      .filter(({ line }) => !/^\s*(\/\/|\*|\/\*)/.test(line)) // comments explain the rule
+      .filter(({ line }) => !/const direct = provider\?\.accounts/.test(line)); // the helper itself
+    expect(bare.map((b) => `${b.n}: ${b.line.trim()}`), 'bare provider.accounts reads').toEqual([]);
   });
 });

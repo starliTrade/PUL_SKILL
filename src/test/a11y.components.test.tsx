@@ -26,6 +26,17 @@ vi.mock('../lib/sound', () => ({
   },
 }));
 
+vi.mock('../lib/realWeb3', () => ({
+  realWeb3Manager: {
+    getAccount: () => ({ address: '', connected: false }),
+    subscribeGlobalMatches: () => () => {},
+    getActiveEip1193Provider: () => null,
+    lastWcUri: null,
+    onWcUri: () => () => {},
+    prepareWalletConnect: vi.fn(),
+  },
+}));
+
 vi.mock('../lib/escrowFlow', () => ({
   escrowStatus: () => ({ configured: true, escrowAddress: '0x' + 'ab'.repeat(20), message: '' }),
   // A non-zero credit so the card actually renders (it hides itself at zero).
@@ -49,6 +60,8 @@ import { AppHeader } from '../components/AppHeader';
 import { FriendChallengeModal } from '../components/FriendChallengeModal';
 import { IdentityLockBanner } from '../components/IdentityLockBanner';
 import { DisputeReportButton } from '../components/DisputeReportButton';
+import { ConnectWallet } from '../components/ConnectWallet';
+import { PulsarHeroVisualizer } from '../components/PulsarHeroVisualizer';
 import { DuelCertificateModal } from '../components/DuelCertificateModal';
 import { PendingPayoutCard } from '../components/PendingPayoutCard';
 import { BottomNav } from '../components/BottomNav';
@@ -133,6 +146,18 @@ describe('axe sweep — components (plan item 8.13)', () => {
     const { container } = render(<IdentityLockBanner />);
     await expectClean(container, 'IdentityLockBanner');
     storeState.identityLockedReason = '';
+  });
+
+  // Audit 2026-10-13: these two were stubbed out in the PAGE sweep and absent
+  // here, so nothing ever audited them.
+  it('ConnectWallet (closed)', async () => {
+    const { container } = render(<ConnectWallet />);
+    await expectClean(container, 'ConnectWallet');
+  });
+
+  it('PulsarHeroVisualizer', async () => {
+    const { container } = render(<PulsarHeroVisualizer />);
+    await expectClean(container, 'PulsarHeroVisualizer');
   });
 
   it('DisputeReportButton', async () => {

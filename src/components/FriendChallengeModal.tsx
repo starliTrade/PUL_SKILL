@@ -446,7 +446,7 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
                       <button
                         onClick={() => handleToggleSaveFriend(friend)}
                         className="text-zinc-500 hover:text-rose-400 text-[10px] p-1 transition-colors cursor-pointer"
-                        title="Remove Friend"
+                        title={t('titleRemoveFriend')}
                       >
                         <X className="w-3.5 h-3.5" />
                       </button>

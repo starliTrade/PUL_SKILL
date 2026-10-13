@@ -127,6 +127,13 @@
   }
 
   /* IMMUTABLE USERNAME BADGE, WALLET ADDRESS & PLAYER TAG: Absolute protection across all languages */
+  /* Audit 2026-10-13: this rule locks the FONT, DIRECTION and ISOLATION of a
+     username/address so it cannot be broken by an RTL language. It also forced
+     `font-size: 11px` and `font-weight: 600` on the element AND every
+     descendant — which overrode the size the design asked for. The hero's
+     reflex timer (`text-3xl sm:text-4xl font-black`) rendered at 11px/600, and
+     every username badge ignored its own `text-sm font-bold`. Size and weight
+     are the element's business; only the script-safety properties belong here. */
   html [data-user-badge],
   html .user-badge-chip,
   html .user-badge-text,
@@ -139,9 +146,6 @@
     direction: ltr !important;
     unicode-bidi: isolate !important;
     letter-spacing: -0.01em !important;
-    font-size: 11px !important;
-    font-weight: 600 !important;
-    line-height: 1 !important;
     text-transform: none !important;
   }
 

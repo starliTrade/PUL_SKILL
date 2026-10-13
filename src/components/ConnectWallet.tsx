@@ -157,6 +157,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
   const walletTitleId = useId();
   const handleCloseModalRef = useRef<() => void>(() => {});
   useModalA11y(isOpen, () => handleCloseModalRef.current(), walletDialogRef);
+
   const setIsOpen = (open: boolean) => {
     setInternalIsOpen(open);
     if (!open && controlledOnClose) {
@@ -168,6 +169,14 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [copiedAddr, setCopiedAddr] = useState(false);
   const [showDepositModal, setShowDepositModal] = useState(false);
+
+  // Audit 2026-10-13: the deposit modal is a SECOND dialog, opened from inside
+  // the wallet dialog. It had no role, no trap and no Escape, and
+  // `handleCloseModal` never touched it — so Escape closed the wallet dialog
+  // underneath while the deposit modal stayed on screen, orphaned.
+  const depositDialogRef = useRef<HTMLDivElement>(null);
+  const depositTitleId = useId();
+  useModalA11y(showDepositModal, () => setShowDepositModal(false), depositDialogRef);
   const [depositStatusMsg, setDepositStatusMsg] = useState<string | null>(null);
   const [connectingWalletId, setConnectingWalletId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -276,6 +285,8 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
     setConnectingWalletId(null);
     setActiveHandoff(null);
     setErrorMessage(null);
+    // Audit 2026-10-13: the nested deposit modal must not outlive its parent.
+    setShowDepositModal(false);
     setIsOpen(false);
   };
   // Audit 8.4: the dialog hook above reads the handler through this ref.
@@ -505,8 +516,13 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
         : wallet.address || 'Connected';
     const userLabel = wallet.playerId ? wallet.playerId.split('#')[0] : shortDisplay;
 
+    // Audit 2026-10-13 (8.10): this panel holds TRANSLATED copy (the vault card,
+    // Disconnect Session, Win Rate, …), so forcing `dir="ltr"` broke the word
+    // order for Persian and Arabic. The address fragments inside carry their own
+    // `data-user-badge` LTR isolation, which is where it is actually needed.
+    // `text-left` became `text-start` for the same reason.
     return (
-      <div className="relative inline-block text-left" dir="ltr" style={{ direction: 'ltr' }}>
+      <div className="relative inline-block text-start">
         {/* Compact User Chip in Navbar (Prevents clutter and mobile overflow) */}
         <button
           ref={triggerRef}
@@ -624,7 +640,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                       }
                     }}
                     className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1 text-[10px] font-mono cursor-pointer disabled:opacity-50 transition-colors px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20"
-                    title="Refresh live on-chain balance"
+                    title={t('titleRefreshBalance')}
                   >
                     <RefreshCw className={cn('w-3 h-3', isRefreshingBalance && 'animate-spin')} />
                     <span>{isRefreshingBalance ? 'Syncing...' : 'Sync'}</span>
@@ -716,7 +732,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                         ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
                         : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.08] text-zinc-300 hover:text-white'
                     )}
-                    title="Copy full address"
+                    title={t('titleCopyAddress')}
                   >
                     {copiedAddr ? (
                       <>
@@ -736,7 +752,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                     target="_blank"
                     rel="noreferrer"
                     className="p-1.5 rounded-lg border border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white transition-colors cursor-pointer"
-                    title="View on Polygonscan"
+                    title={t('titleViewExplorer')}
                   >
                     <ExternalLink className="w-3 h-3" />
                   </a>
@@ -772,11 +788,12 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                 onClick={() => setShowDepositModal(false)}
               />
               <motion.div
+                ref={depositDialogRef}
+                {...modalDialogProps(depositTitleId)}
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
-                className="relative z-10 w-full max-w-sm rounded-2xl bg-zinc-950 border border-emerald-500/30 p-5 shadow-2xl space-y-4 text-left"
-                dir="ltr"
+                className="relative z-10 w-full max-w-sm rounded-2xl bg-zinc-950 border border-emerald-500/30 p-5 shadow-2xl space-y-4 text-start"
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -784,12 +801,16 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                       <ArrowDownLeft className="w-4 h-4" />
                     </div>
                     <div>
-                      <h4 className="text-sm font-bold text-white">{t('cwReceiveTitle')}</h4>
+                      <h4 id={depositTitleId} className="text-sm font-bold text-white">
+                        {t('cwReceiveTitle')}
+                      </h4>
                       <p className="text-[11px] text-zinc-400">{t('cwDepositSubtitle', { chainId: CHAIN.chainId })}</p>
                     </div>
                   </div>
                   <button
                     onClick={() => setShowDepositModal(false)}
+                    // Audit 2026-10-13: an icon-only button needs a name.
+                    aria-label={t('closeModal')}
                     className="text-zinc-500 hover:text-white p-1 rounded-lg"
                   >
                     <X className="w-4 h-4" />
@@ -935,7 +956,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                       type="button"
                       onClick={handleCloseModal}
                       className="text-zinc-400 hover:text-white p-1.5 rounded-full hover:bg-white/[0.08] transition-colors cursor-pointer shrink-0 -mr-1"
-                      aria-label="Close"
+                      aria-label={t('closeModal')}
                     >
                       <X className="w-4 h-4" />
                     </button>
@@ -1058,6 +1079,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                                 setActiveHandoff(null);
                                 setConnectingWalletId(null);
                               }}
+                              aria-label={t('titleCancel')}
                               className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition-colors shrink-0"
                             >
                               <X className="w-4 h-4" />
