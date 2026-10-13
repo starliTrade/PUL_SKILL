@@ -1585,6 +1585,18 @@ class RealWeb3Manager {
     if (!q) return [];
 
     const matched: FriendProfile[] = [];
+    const toProfile = (data: UserWalletData): FriendProfile => ({
+      address: data.address,
+      playerId: data.playerId || `Player#${data.address.slice(2, 6)}`,
+      shortAddress: `${data.address.slice(0, 6)}...${data.address.slice(-4)}`,
+      level: data.level || 1,
+      xp: data.xp || 0,
+      wins: data.wins || 0,
+      totalMatches: data.totalMatches || 0,
+      bestReactionMs: data.bestReactionMs || 0,
+      winRate: data.totalMatches > 0 ? Math.round((data.wins / data.totalMatches) * 100) : 0,
+      status: 'online',
+    });
 
     // Only real registered players are returned. No fabricated profiles.
     if (q.startsWith('0x') && q.length >= 6) {
@@ -1594,18 +1606,7 @@ class RealWeb3Manager {
           const userDoc = await getDoc(doc(getDb(), 'users', q));
           if (userDoc.exists()) {
             const data = userDoc.data() as UserWalletData;
-            matched.push({
-              address: data.address,
-              playerId: data.playerId || `Player#${data.address.slice(2, 6)}`,
-              shortAddress: `${data.address.slice(0, 6)}...${data.address.slice(-4)}`,
-              level: data.level || 1,
-              xp: data.xp || 0,
-              wins: data.wins || 0,
-              totalMatches: data.totalMatches || 0,
-              bestReactionMs: data.bestReactionMs || 0,
-              winRate: data.totalMatches > 0 ? Math.round((data.wins / data.totalMatches) * 100) : 0,
-              status: 'online',
-            });
+            matched.push(toProfile(data));
           } else if (q.length === 42) {
             // New valid EVM address
             matched.push({
@@ -1624,6 +1625,25 @@ class RealWeb3Manager {
           }
         } catch {}
       }
+    } else {
+      // Audit M26: search by playerId too. The tag is what players actually
+      // share with each other — address-only search made the feature useless
+      // to anyone who does not know their friend's 42-character hex address.
+      try {
+        const snap = await getDocs(
+          query(
+            collection(getDb(), 'users'),
+            where('playerId', '==', searchQuery.trim()),
+            limit(10)
+          )
+        );
+        snap.forEach((docSnap) => {
+          const data = docSnap.data() as UserWalletData;
+          if (!data?.address) return;
+          if (matched.some((m) => m.address.toLowerCase() === data.address.toLowerCase())) return;
+          matched.push(toProfile(data));
+        });
+      } catch {}
     }
 
     return matched;
