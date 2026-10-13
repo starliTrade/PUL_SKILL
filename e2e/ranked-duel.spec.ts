@@ -31,14 +31,21 @@
  *     gets `youAreCreator: true`, B gets `youAreJoiner: true`, and a re-read
  *     agrees.
  *
- * What is LEFT, and it is one thing: **the creator's page never leaves
- * "Connecting to matchmaking server… Waiting for a ranked opponent…"** even
- * though the server paired the two players. So the creator never sends
- * `createDuel`, the joiner's `joinDuel` has nothing to join, and the error's
- * `transaction.data` (`0x09dfe770` = `createDuel`) is the joiner's retry path
- * rather than the creator's first attempt. The next question is therefore:
- * does the creator's client re-poll `/api/queue` (or `/api/match/{id}`) after
- * the pairing, and if so why does it not act on it?
+ *   - the client's queue polling: it does re-poll with exponential backoff, and
+ *     the server hands the creator the paired match on the very next poll
+ *     (verified against the live API).
+ *   - the gas price floor: chain 31337 falls back to 1 gwei, which anvil
+ *     accepts.
+ *
+ * What is LEFT: with a CLEAN Firestore the roles are right and the pairing
+ * works, but the creator still fails at `createDuel` with
+ * `missing revert data (action="estimateGas", data=null)` while the joiner
+ * waits. The one thing this suite does NOT reset is **anvil** — the chain keeps
+ * every duel from every previous run — so the next suspect is the on-chain
+ * `matchId` the client derives: `createDuel` reverts when
+ * `matches[matchId].status != None`. Resetting anvil (which redeploys the
+ * escrow and rewrites the manifest, so the API must restart too) is the next
+ * experiment.
  */
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { clearEligibilityGate } from './helpers';
@@ -116,13 +123,7 @@ test.describe('the ranked duel', () => {
       // THE DEPOSIT PROOF. The server's gate reads the escrow before every
       // round and refuses with 409 unless BOTH stakes are locked on-chain, and
       // a refusal puts the app on its error shell. So: the duel is running,
-      // the round counter advanced, and there is NO error shell — which can
-      // only be true if SIWE → queue → approve → createDuel/joinDuel → the
-      // gate → commit → reveal all succeeded.
-      //
-      // Asserting the TARGET's visibility instead would be flaky by design:
-      // this is a reaction game, the target appears and the round advances on
-      // its own clock, and two players' clocks are independent.
+      // the round counter advanced, and there is NO error shell.
       await expect(pageA.getByText(/Round \d of 3/i).first()).toBeVisible({ timeout: 60_000 });
       await expect(pageB.getByText(/Round \d of 3/i).first()).toBeVisible({ timeout: 60_000 });
       await expect(pageA.getByText(/Could not reach the duel server/i)).toHaveCount(0);
