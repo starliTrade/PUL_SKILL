@@ -1082,6 +1082,15 @@ def match_view(match_id: str, request: Request) -> dict[str, Any]:
     # Any participant polling the view finalizes a due match (completed, or
     # grace window passed) and immediately receives the authoritative status.
     _finalize_if_due(match)
+    # Audit M10: the finalizer settles through `store.update`, whose
+    # read-modify-write is ISOLATED on Firestore — the object read above does
+    # not carry the settlement it just produced. Re-read so the view reflects
+    # the status we just created; otherwise a poll that settled the match
+    # answers "active", and the client's refresh recovery branches on that.
+    try:
+        match = store.get(match_id)
+    except MatchError:
+        pass
     return match.public_view(for_address=address)
 
 
@@ -1269,7 +1278,11 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
         result = eng.settle(m)
         engine.apply_settlement_ratings(store, result)
     except MatchError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        # Audit M9: this body runs INSIDE `store.update`'s mutate — on Firestore,
+        # inside a transaction. Raising the web framework's exception there
+        # couples the persistence layer to HTTP and hands it an error it cannot
+        # classify. Raise the engine's own error; the endpoint translates it.
+        raise MatchError(str(e)) from e
     if result.get("status") == "settled":
         envelope = _attach_signed_envelope(m, result)
         # Audit H4: the ledger write moved OUT of this mutate. It used to run
@@ -1290,7 +1303,8 @@ def _finalize_if_due(match: Any) -> None:
     try:
         store.update(match.match_id, _settle_once)
         _ledger_settlement(match.match_id)
-    except (MatchError, HTTPException):
+    except MatchError:
+        # Audit M9: the settlement body raises only domain errors now.
         pass
 
 
@@ -1324,7 +1338,8 @@ def _resign_stale_settlements() -> None:
             try:
                 store.update(mid, _settle_once)
                 _ledger_settlement(mid)
-            except (MatchError, HTTPException):
+            except MatchError:
+                # Audit M9: the settlement body raises only domain errors now.
                 pass
         for m in store.sweep_stale_settlements():
             deadline = int((m.signed_settlement or {}).get("deadline", 0) or 0)
@@ -1333,7 +1348,8 @@ def _resign_stale_settlements() -> None:
             try:
                 store.update(m.match_id, _settle_once)
                 _ledger_settlement(m.match_id)
-            except (MatchError, HTTPException):
+            except MatchError:
+                # Audit M9: the settlement body raises only domain errors now.
                 pass
     except Exception:
         pass  # observability nicety — must never break matchmaking
@@ -1360,7 +1376,13 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
     # players on different backend replicas can no longer produce two
     # different signatures; the transaction serializes them and the loser of
     # the race replays the ONE stored proof.
-    envelope = store.update(match_id, _settle_once)
+    try:
+        envelope = store.update(match_id, _settle_once)
+    except MatchError as e:
+        # Audit M9: the domain error raised by the settlement body maps to the
+        # same 409 the store used to raise itself. The translation lives here,
+        # at the HTTP boundary, instead of inside the persistence layer.
+        raise HTTPException(status_code=409, detail=str(e))
     _ledger_settlement(match_id)
     return envelope
 
