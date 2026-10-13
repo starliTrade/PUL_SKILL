@@ -809,20 +809,24 @@ function isWalletCancel(msg: string): boolean {
         ? Math.round(((currentStake * 2 * ECONOMY.winnerShareBps) / 10_000) * 100) / 100
         : 0;
 
-      // Winner submits the oracle-signed proof to release the pot.
+      // The oracle-signed proof is the SAME for both players. Build it once so
+      // either side can submit it.
+      const proofFrom = (bytes32: string) => ({
+        matchId: bytes32,
+        winner: result.winner,
+        winnerTimeMs: result.winnerTimeMs,
+        loserTimeMs: result.loserTimeMs,
+        nonce: result.serverNonce.toString(),
+        deadline: result.deadline,
+        signature: result.signature,
+      });
+
       let txHash = '';
       if (iWon) {
+        // Winner submits the oracle-signed proof to collect the pot.
         try {
           const bytes32 = await matchIdToBytes32(result.matchId);
-          const proof = {
-            matchId: bytes32,
-            winner: result.winner,
-            winnerTimeMs: result.winnerTimeMs,
-            loserTimeMs: result.loserTimeMs,
-            nonce: result.serverNonce.toString(),
-            deadline: result.deadline,
-            signature: result.signature,
-          };
+          const proof = proofFrom(bytes32);
           setLastProof(proof);
           txHash = await settleDuelOnChain(proof);
           setSettlementTxHash(txHash);
@@ -857,6 +861,28 @@ function isWalletCancel(msg: string): boolean {
         }
       } else {
         sounds.playLoss();
+        // Audit M37: settlement is permissionless on-chain — `settleDuel` pays
+        // `proof.winner` no matter who submits it. Gating submission behind
+        // `iWon` meant a winner who closed their tab left the pot locked until
+        // the refund horizon (where the loser could even refund a stake they
+        // lost). The loser's client releases the pot too. Best-effort and
+        // non-fatal: the result screen must render regardless.
+        try {
+          const bytes32 = await matchIdToBytes32(result.matchId);
+          const state = await getDuelState(bytes32);
+          // status 3 = Settled. Skip the tx (and its gas) when the winner
+          // already settled first — the common case.
+          if (state.status !== 3) {
+            const proof = proofFrom(bytes32);
+            setLastProof(proof);
+            const releaseTx = await settleDuelOnChain(proof);
+            setSettlementTxHash(releaseTx);
+            setOnchainAction(`Pot released to the winner: ${releaseTx.slice(0, 10)}…${releaseTx.slice(-8)}`);
+          }
+        } catch (releaseError) {
+          // The winner may still settle, or the refund window covers it.
+          reportError(releaseError, { context: 'loser_settlement_release', matchId: result.matchId });
+        }
       }
 
       const avgUser = Math.round(rounds.reduce((a, r) => a + r.userTime, 0) / Math.max(rounds.length, 1));
@@ -1823,6 +1849,11 @@ function isWalletCancel(msg: string): boolean {
                       {onchainAction && <p className="text-[10px] font-mono text-zinc-400">{onchainAction}</p>}
                     </div>
                   </>
+                )}
+                {settlementTxHash && matchResult.outcome !== 'win' && (
+                  <p className="text-[10px] font-mono text-zinc-400 mt-1">
+                    You released the winner's prize on-chain.
+                  </p>
                 )}
                 {settlementTxHash && (
                   <a
