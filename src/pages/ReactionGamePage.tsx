@@ -1864,6 +1864,9 @@ function isWalletCancel(msg: string): boolean {
             {/* PHASE 7B: Regular Final Result (Win or Loss after Best of 3) */}
             {phase === 'result' && matchResult && (
               <motion.div
+                // Audit 10.1: the terminal screen had no testid, so an E2E
+                // could not address the end of a duel.
+                data-testid="pulsar-result"
                 initial={{ opacity: 0, scale: 0.92 }}
                 animate={{ opacity: 1, scale: 1 }}
                 className="flex flex-col items-center w-full max-w-sm text-center"

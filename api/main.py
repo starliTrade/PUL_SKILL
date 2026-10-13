@@ -919,6 +919,18 @@ def metrics_endpoint() -> dict[str, Any]:
     return body
 
 
+def _oracle_address_or_none() -> str | None:
+    """The oracle's address, or None when the signer is not configured.
+
+    The health endpoint must answer even when the server is misconfigured —
+    that is the whole point of a probe.
+    """
+    try:
+        return oracle.oracle_address()
+    except Exception:  # noqa: BLE001 — a probe reports, it does not raise
+        return None
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {
@@ -952,7 +964,15 @@ def health() -> dict[str, Any]:
         "tokenDecimals": onchain.token_decimals(),
         # Public by design: it is in every settlement packet. An operator needs
         # it to confirm the deployed contract trusts the key we hold.
-        "oracleAddress": oracle.oracle_address(),
+        #
+        # Audit 2026-10-13 (found by the phase-10 load run): this called
+        # `oracle_address()` unguarded, and `load_signer()` RAISES when
+        # ORACLE_PRIVATE_KEY is absent — so /api/health answered 500. A liveness
+        # probe that fails instead of reporting turns "the oracle key is
+        # missing" into a crash loop, and the operator sees a restarting
+        # container rather than the one fact they need.
+        "oracleAddress": _oracle_address_or_none(),
+        "oracleConfigured": _oracle_address_or_none() is not None,
         "rateLimit": {
             "backend": "firestore" if getattr(store, "_fs_store", None) is not None else "memory",
             "fallbacks": _rl_fallback_count,
