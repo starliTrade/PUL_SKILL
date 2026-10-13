@@ -24,6 +24,9 @@ SCRIPT_ONLY = {
     "MOCK_USDT",
     "PLAYER1_KEY",
     "PLAYER2_KEY",
+    # The chaos suite passes PATH through to the anvil subprocess; it is the
+    # shell's variable, not the server's configuration.
+    "PATH",
 }
 
 # Public configuration, not secrets — a chain id is in every RPC request.
