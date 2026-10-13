@@ -691,6 +691,21 @@ class RealWeb3Manager {
     return openWalletConnectInNativeApp(walletId, uri);
   }
 
+  /**
+   * The accounts a WalletConnect provider can actually use.
+   *
+   * Audit 8.20: `provider.accounts` falls back to the live session in five
+   * places, each written slightly differently — one checks `Array.isArray`,
+   * another `?.length`, another mutates the provider's own array. A session that
+   * survives a tab suspend is only visible through the session path, so a
+   * divergence here means "connected" in one flow and "no accounts" in another.
+   */
+  private wcAccounts(provider: any): string[] {
+    const direct = provider?.accounts;
+    if (Array.isArray(direct) && direct.length > 0) return [...direct];
+    return this.activeSessionAccounts(provider);
+  }
+
   /** Accounts already approved in a live WalletConnect session (survives tab suspend). */
   private activeSessionAccounts(provider: any): string[] {
     const out: string[] = [];
@@ -725,10 +740,7 @@ class RealWeb3Manager {
     // storage. Reuse it instead of starting yet another pairing round.
     try {
       const existing: any = await this.ensureWcProvider();
-      const existingAccts: string[] =
-        (Array.isArray(existing?.accounts) && existing.accounts.length
-          ? [...existing.accounts]
-          : null) ?? this.activeSessionAccounts(existing);
+      const existingAccts: string[] = this.wcAccounts(existing);
       if (existing?.session && existingAccts.length) {
         this.lastWcUri = null;
         return await this.setConnectedAddress(
@@ -747,8 +759,7 @@ class RealWeb3Manager {
       // If a session with accounts exists NOW, use it immediately.
       try {
         const p: any = this.wcProvider;
-        const sessAccts: string[] =
-          (p?.accounts?.length ? [...p.accounts] : null) ?? this.activeSessionAccounts(p);
+        const sessAccts: string[] = this.wcAccounts(p);
         if (p?.session && sessAccts?.length) {
           this.wcConnectPromise = null;
           this.lastWcUri = null;
@@ -808,13 +819,9 @@ class RealWeb3Manager {
           uriUnsub();
         }
 
-        const accounts = provider.accounts || [];
-        if (!accounts || accounts.length === 0) {
-          const fromSession = this.activeSessionAccounts(provider);
-          for (const a of fromSession) accounts.push(a);
-        }
+        const accounts = this.wcAccounts(provider);
 
-        if (accounts && accounts.length > 0) {
+        if (accounts.length > 0) {
           const chainId = provider.chainId || CHAIN.chainId;
           return await this.setConnectedAddress(accounts[0], providerName, chainId, provider);
         }
@@ -1125,8 +1132,7 @@ class RealWeb3Manager {
       // A zombie must NOT shadow the healthy injected provider.
       let alive: boolean;
       try {
-        const accts: string[] = Array.isArray(wc.accounts) ? wc.accounts : [];
-        alive = !!(wc.session && (accts.length > 0 || this.activeSessionAccounts(wc).length > 0));
+        alive = !!(wc.session && this.wcAccounts(wc).length > 0);
       } catch {
         alive = false;
       }

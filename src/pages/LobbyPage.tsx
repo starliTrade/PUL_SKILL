@@ -7,7 +7,7 @@ import { ConnectWallet } from '../components/ConnectWallet';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { FriendChallengeModal } from '../components/FriendChallengeModal';
 import { getRandomOpponent } from '../lib/antiCheat';
-import { ECONOMY, CHAIN } from '../lib/chain';
+import { CHAIN, prizeForStake } from '../lib/chain';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { realWeb3Manager, MatchRecord } from '../lib/realWeb3';
@@ -105,7 +105,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
 
   // F-17: prize math derives from the single shared constant (mirrors the
   // contract's PLATFORM_FEE_BPS) — no layer-local hardcodes left.
-  const prize = (selectedStake * 2 * ECONOMY.winnerShareBps) / 10_000;
+  const prize = prizeForStake(selectedStake);
 
   const handleStartMatchmaking = () => {
     // P1.15/P2.2: real-money mode is honest — it only exists when BOTH the
@@ -529,7 +529,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                 const reactionMs = match.yourTime || match.reactionTime || match.opponentTime || 185;
                 const stakeVal = Number(match.entryFee ?? match.stake ?? 1);
                 const prizeVal = Number(
-                  match.prize || ((stakeVal * 2 * ECONOMY.winnerShareBps) / 10_000),
+                  match.prize || prizeForStake(stakeVal),
                 );
 
                 const timeAgo = match.timestamp

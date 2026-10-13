@@ -10,7 +10,7 @@ import { DuelCertificateModal } from '../components/DuelCertificateModal';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { XPSystem } from '../lib/xpSystem';
 import { MatchRecord } from '../lib/realWeb3';
-import { ECONOMY } from '../lib/chain';
+import { prizeForStake } from '../lib/chain';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
@@ -532,7 +532,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                   const opp = m.opponentName || m.opponent || 'Duelist';
                   const fee = Number(m.entryFee ?? m.stake ?? 1);
                   const prize = Number(
-                    m.prize || ((fee * 2 * ECONOMY.winnerShareBps) / 10_000),
+                    m.prize || prizeForStake(fee),
                   );
                   const timeMs = m.yourTime || m.reactionTime || 185;
 

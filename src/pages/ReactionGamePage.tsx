@@ -8,7 +8,8 @@ import { usePulsarStore } from '../store/usePulsarStore';
 import { XPSummary } from '../lib/xpSystem';
 import { gameServerConfigured, ensureSession, measureServerRttMs, queueForMatch, commitRound, revealRoundTarget, submitRoundResult, settleMatch, claimMatch, getMatch, matchIdToBytes32, type ServerSession, type MatchView } from '../lib/gameServerClient';
 import { settleDuel as settleDuelOnChain, refundTimeoutMatch, approveUsdt, createDuel, joinDuel, getDuelState, getTokenDecimals, findSettlementTx } from '../lib/escrowFlow';
-import { isEscrowConfigured, CHAIN, ECONOMY, REFUND_OPENS_AFTER_MINUTES } from '../lib/chain';
+import { isEscrowConfigured, CHAIN, REFUND_OPENS_AFTER_MINUTES, prizeForStake } from '../lib/chain';
+import { BO3_TARGET_WINS, bo3Decided } from '../lib/bo3';
 import { ethers } from 'ethers';
 import { realWeb3Manager, ACTIVE_RANKED_MATCH_KEY } from '../lib/realWeb3';
 import { reportError } from '../lib/monitoring';
@@ -134,7 +135,7 @@ function isWalletCancel(msg: string): boolean {
     opponentScore: 0,
     currentRound: 1,
     rounds: [],
-    targetWins: 2,
+    targetWins: BO3_TARGET_WINS,
     isMatchOver: false,
   });
 
@@ -390,7 +391,7 @@ function isWalletCancel(msg: string): boolean {
       }
 
       sounds.playMatchFound();
-      setBo3State({ userScore: 0, opponentScore: 0, currentRound: 1, rounds: [], targetWins: 2, isMatchOver: false });
+      setBo3State({ userScore: 0, opponentScore: 0, currentRound: 1, rounds: [], targetWins: BO3_TARGET_WINS, isMatchOver: false });
       setPhase('ready');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -468,13 +469,13 @@ function isWalletCancel(msg: string): boolean {
         applyServerMatch(queued);
       }
       const scores = restoreBo3FromServer(view);
-      if (!(view.status === 'active' && (scores.userScore >= 2 || scores.opponentScore >= 2))) {
+      if (!(view.status === 'active' && bo3Decided(scores.userScore, scores.opponentScore))) {
         setBo3State({
           userScore: scores.userScore,
           opponentScore: scores.opponentScore,
           currentRound: scores.currentRound,
           rounds: [],
-          targetWins: 2,
+          targetWins: BO3_TARGET_WINS,
           isMatchOver: false,
         });
         setPhase('ready');
@@ -561,13 +562,13 @@ function isWalletCancel(msg: string): boolean {
         }
       }
       // Reconciliation safety net: a mutual 2-0/2-1 majority must be terminal.
-      if (userScore >= 2 || opponentScore >= 2) {
+      if (bo3Decided(userScore, opponentScore)) {
         setBo3State({
           userScore,
           opponentScore,
           currentRound: Math.min(currentRound, 3),
           rounds: [],
-          targetWins: 2,
+          targetWins: BO3_TARGET_WINS,
           isMatchOver: true,
         });
         void finishServerMatch([], userScore, opponentScore, 0, 0);
@@ -738,7 +739,7 @@ function isWalletCancel(msg: string): boolean {
     const newUserScore = bo3State.userScore + (roundWinner === 'user' ? 1 : 0);
     const newOpponentScore = bo3State.opponentScore + (roundWinner === 'opponent' ? 1 : 0);
     const newRounds = [...bo3State.rounds, newRoundResult];
-    const decided = newUserScore >= 2 || newOpponentScore >= 2;
+    const decided = bo3Decided(newUserScore, newOpponentScore);
 
     setLastRoundResult(newRoundResult);
     setBo3State({
@@ -746,7 +747,7 @@ function isWalletCancel(msg: string): boolean {
       opponentScore: newOpponentScore,
       currentRound: roundIndex + 2,
       rounds: newRounds,
-      targetWins: 2,
+      targetWins: BO3_TARGET_WINS,
       isMatchOver: decided,
     });
 
@@ -825,10 +826,10 @@ function isWalletCancel(msg: string): boolean {
       // Audit HIGH-5: read the CURRENT wallet, not the first render's.
       const myFull = (walletRef.current.fullAddress || walletRef.current.address || '').toLowerCase();
       const iWon = result.winner.toLowerCase() === myFull;
-      // Audit #6 P3: derive from ECONOMY.winnerShareBps (single source of
+      // Audit #6 P3 + 8.20: derive from `prizeForStake` (single source of
       // truth mirroring the contract's PLATFORM_FEE_BPS) instead of 0.98.
       const prize = iWon
-        ? Math.round(((currentStakeRef.current * 2 * ECONOMY.winnerShareBps) / 10_000) * 100) / 100
+        ? Math.round(prizeForStake(currentStakeRef.current) * 100) / 100
         : 0;
 
       // The oracle-signed proof is the SAME for both players. Build it once so
@@ -1075,9 +1076,9 @@ function isWalletCancel(msg: string): boolean {
           const newUserScore = bo3State.userScore;
           const newOpponentScore = bo3State.opponentScore + 1;
           const newRounds = [...bo3State.rounds, newRoundResult];
-          const decided = newUserScore >= 2 || newOpponentScore >= 2;
+          const decided = bo3Decided(newUserScore, newOpponentScore);
           setLastRoundResult(newRoundResult);
-          setBo3State({ userScore: newUserScore, opponentScore: newOpponentScore, currentRound: roundIndex + 2, rounds: newRounds, targetWins: 2, isMatchOver: decided });
+          setBo3State({ userScore: newUserScore, opponentScore: newOpponentScore, currentRound: roundIndex + 2, rounds: newRounds, targetWins: BO3_TARGET_WINS, isMatchOver: decided });
           if (decided) {
             void finishServerMatch(newRounds, newUserScore, newOpponentScore, userTime, oppTime ?? 0);
           } else {
@@ -1181,7 +1182,7 @@ function isWalletCancel(msg: string): boolean {
     const newOpponentScore = bo3State.opponentScore + (roundWinner === 'opponent' ? 1 : 0);
     const newRounds = [...bo3State.rounds, newRoundResult];
 
-    const isMatchDecided = newUserScore >= 2 || newOpponentScore >= 2;
+    const isMatchDecided = bo3Decided(newUserScore, newOpponentScore);
 
     setLastRoundResult(newRoundResult);
     setBo3State({
@@ -1189,7 +1190,7 @@ function isWalletCancel(msg: string): boolean {
       opponentScore: newOpponentScore,
       currentRound: currentRoundNum + 1,
       rounds: newRounds,
-      targetWins: 2,
+      targetWins: BO3_TARGET_WINS,
       isMatchOver: isMatchDecided,
     });
 
@@ -1280,7 +1281,7 @@ function isWalletCancel(msg: string): boolean {
       opponentScore: 0,
       currentRound: 1,
       rounds: [],
-      targetWins: 2,
+      targetWins: BO3_TARGET_WINS,
       isMatchOver: false,
     });
     // Audit M5: clear the SETTLEMENT state too. It used to survive, so a later
@@ -1446,7 +1447,7 @@ function isWalletCancel(msg: string): boolean {
         </div>
         <div className="text-emerald-400 font-mono font-bold text-xs">
           {isServerMode
-            ? t('prizeLabel', { prize: ((currentStake * 2 * ECONOMY.winnerShareBps) / 10_000).toFixed(2) })
+            ? t('prizeLabel', { prize: prizeForStake(currentStake).toFixed(2) })
             : t('prizeLabel', { prize: AntiCheat.calculatePrize(currentStake).toFixed(2) })}
         </div>
       </div>
@@ -2113,7 +2114,7 @@ function isWalletCancel(msg: string): boolean {
             game: 'reaction',
             result: matchResult.outcome === 'win' ? 'win' : 'loss',
             entryFee: currentStake,
-            prize: matchResult.outcome === 'win' ? matchResult.prize || ((currentStake * 2 * ECONOMY.winnerShareBps) / 10_000) : 0,
+            prize: matchResult.outcome === 'win' ? matchResult.prize || prizeForStake(currentStake) : 0,
             yourTime: matchResult.yourTime,
             opponentTime: matchResult.opponentTime,
             timestamp: Date.now(),

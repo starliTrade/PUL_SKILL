@@ -1,5 +1,5 @@
 import { MouseTrajectoryPoint, MatchResolution, BiometricTelemetry, TargetVectorDirection } from '../types';
-import { ECONOMY } from './chain';
+import { prizeForStake } from './chain';
 
 export const BOT_NAMES = [
   'ShadowStrike',
@@ -223,10 +223,9 @@ class AntiCheatEngine {
 
   public calculatePrize(stake: number = 10): number {
     // Audit #6 P3: prize math must derive from ONE source of truth —
-    // ECONOMY.winnerShareBps (mirrors contract PLATFORM_FEE_BPS), not a
-    // hardcoded 0.98 that drifts when the rake changes.
-    const prize = (stake * 2 * ECONOMY.winnerShareBps) / 10_000;
-    return parseFloat(prize.toFixed(2));
+    // `prizeForStake` (mirrors contract PLATFORM_FEE_BPS), not a hardcoded
+    // 0.98 that drifts when the rake changes.
+    return parseFloat(prizeForStake(stake).toFixed(2));
   }
 
   public resolveMatch(

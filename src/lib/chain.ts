@@ -99,6 +99,17 @@ export const ESCROW_TIMING = {
 export const REFUND_OPENS_AFTER_MINUTES =
   (ESCROW_TIMING.matchTimeoutSeconds + ESCROW_TIMING.refundGraceSeconds) / 60;
 
+/**
+ * The winner's prize for a given stake, in USDT.
+ *
+ * Audit 8.20: this formula was copy-pasted into EIGHT places across four files,
+ * each with its own rounding. One source of truth: the pool is twice the stake
+ * and the platform rake comes off the top, mirroring the contract's integer
+ * arithmetic (`PLATFORM_FEE_BPS`). Callers format the result as they need.
+ */
+export const prizeForStake = (stake: number): number =>
+  (stake * 2 * ECONOMY.winnerShareBps) / 10_000;
+
 export const ECONOMY = {
   /** Platform rake in basis points — must match contract PLATFORM_FEE_BPS (200 = 2%). */
   platformFeeBps: 200,
