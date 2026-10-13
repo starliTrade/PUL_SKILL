@@ -1727,6 +1727,11 @@ function isWalletCancel(msg: string): boolean {
             {/* PHASE 6: Round Intermission & Best of 3 Transition */}
             {phase === 'round-transition' && lastRoundResult && (
               <motion.div
+                // Audit 10.1: the transition screen had no testid, so an E2E
+                // could only guess at it from text — and "Round 2 of 3" in the
+                // scoreboard matches the same pattern, which made a phase trace
+                // report the wrong state for 60 seconds.
+                data-testid="pulsar-round-transition"
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
                 className="flex flex-col items-center text-center max-w-xs w-full"
