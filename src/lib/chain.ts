@@ -20,7 +20,21 @@ const env = (typeof import.meta !== 'undefined' ? (import.meta as any).env ?? {}
 const configuredChainId = env['VITE_CHAIN_ID']?.trim() ? parseInt(env['VITE_CHAIN_ID']!.trim(), 10) : 80002;
 
 export const CHAIN =
-  configuredChainId === 137
+  // Audit 2026-10-13 (found while wiring the phase-10 E2E): the config knew only
+  // mainnet and Amoy, so `VITE_CHAIN_ID=31337` silently fell back to Amoy and
+  // the app read balances from PUBLIC Amoy RPCs while the escrow it was talking
+  // to lived on a local anvil. The local stack that README and DEPLOYMENT
+  // describe could not be pointed at. The local chain is a first-class option.
+  configuredChainId === 31337
+    ? ({
+        chainId: 31337,
+        chainHex: '0x7a69',
+        name: 'Local Anvil',
+        currency: 'POL',
+        rpcUrls: [env['VITE_LOCAL_RPC_URL']?.trim() || 'http://127.0.0.1:8545'],
+        explorerUrl: '',
+      } as const)
+    : configuredChainId === 137
     ? ({
         chainId: 137,
         chainHex: '0x89',
