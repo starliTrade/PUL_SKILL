@@ -26,7 +26,6 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
 }) => {
   const { bestReactionMs } = usePulsarStore();
   const { t } = useLanguage();
-  const [livePing, setLivePing] = useState<number>(14);
 
   // Interactive reflex test state
   const [testState, setTestState] = useState<'idle' | 'waiting' | 'ready' | 'result'>('idle');
@@ -38,12 +37,12 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
   // Background Canvas Ref for Cosmic Twinkling Stars & Pulsar Star
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setLivePing(12 + Math.floor(Math.random() * 5));
-    }, 4000);
-    return () => clearInterval(interval);
-  }, []);
+  // Audit 9.3 (M32): this ran `setLivePing(12 + random * 5)` every four seconds
+  // and rendered it as "{n}ms Global Sync" — a random number presented as a live
+  // network measurement, on the hero, with no session and no round trip behind
+  // it. Removed rather than faked: a real reading needs a server session, and
+  // this surface has none. (`measureServerRttMs` measures the real value at
+  // queue time, where it is actually used.)
 
   // Canvas animation effect for cosmic twinkling stars & pulsating pulsar star
   useEffect(() => {
@@ -269,13 +268,18 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
               </span>
             </div>
 
-            <div
-              className="flex items-center gap-1.5 text-[9px] font-mono text-zinc-300 bg-white/[0.04] px-2 py-0.5 rounded-full border border-white/[0.06]"
-              style={{ direction: 'ltr' }}
-            >
-              <Activity className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
-              <span>{livePing}ms Global Sync</span>
-            </div>
+            {/* Audit 9.3: the fabricated "Global Sync" ping lived here. The
+                badge now shows the player's OWN best measured reflex, which is
+                real data from the store. */}
+            {bestReactionMs > 0 ? (
+              <div
+                className="flex items-center gap-1.5 text-[9px] font-mono text-zinc-300 bg-white/[0.04] px-2 py-0.5 rounded-full border border-white/[0.06]"
+                style={{ direction: 'ltr' }}
+              >
+                <Activity className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+                <span>{bestReactionMs}ms {t('personalBest')}</span>
+              </div>
+            ) : null}
           </div>
 
           {/* Center Display: Interactive Reflex Benchmark Screen */}

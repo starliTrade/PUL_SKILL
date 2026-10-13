@@ -604,7 +604,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                           {player.name || player.playerId || player.shortAddress}
                         </div>
                         <div className="text-[9.5px] text-zinc-400 font-mono">
-                          {player.bestReactionMs || player.reactionTime || 0}ms
+                          {/* Audit (phase-9 audit, finding 16): `|| 0` printed a
+                              physically impossible "0ms" for a row with no
+                              measurement. */}
+                          {player.bestReactionMs || player.reactionTime
+                            ? `${player.bestReactionMs || player.reactionTime}ms`
+                            : '—'}
                         </div>
                         <div className="text-[9px] text-emerald-400 font-mono mt-1 font-semibold">
                           {/* Audit 2026-10-13: the reader used to invent a

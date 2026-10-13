@@ -36,6 +36,8 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
   // Practice/local results are clearly labeled as such — never dressed as on-chain.
   const isOnChain = Boolean(match.hash && /^0x[0-9a-fA-F]{64}$/.test(match.hash));
   const txHash = isOnChain ? (match.hash as string) : null;
+  // Audit 9.6: the server's signature over the settled result.
+  const oracleSignature = (match.oracleSignature as string) || null;
   const displayTx = txHash ? `${txHash.slice(0, 10)}...${txHash.slice(-8)}` : null;
   const reactionMs = match.yourTime || 0;
   const oppMs = match.opponentTime || 0;
@@ -57,7 +59,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
         : `⚡ Completed an on-chain skill duel on PULSAR Arena!\n🎯 Reaction Speed: ${reactionMs}ms\n🛡️ Settlement tx: ${displayTx}`
       : isWin
         ? `⚡ Just WON a ${reactionMs}ms reflex duel on PULSAR Arena (practice mode)!\n🎯 Reaction Speed: ${reactionMs}ms\n\nChallenge me at https://pulsar.app`
-        : `⚡ Just completed a ${reactionMs}ms neural reflex duel on PULSAR Arena (practice mode)!`;
+        : `⚡ Just completed a ${reactionMs}ms reaction duel on PULSAR Arena (practice mode)!`;
 
     if (navigator.share) {
       try {
@@ -120,7 +122,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
               <div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs font-mono font-bold uppercase tracking-wider text-sky-400">
-                    PULSAR PROTOCOL™
+                    PULSAR PROTOCOL
                   </span>
                   {isOnChain ? (
                     <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
@@ -141,7 +143,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
             {/* Duel Outcome Card */}
             <div className="p-3.5 rounded-xl bg-zinc-900/60 border border-white/5 space-y-2.5">
               <div className="flex items-center justify-between">
-                <span className="text-xs text-zinc-400">Outcome</span>
+                <span className="text-xs text-zinc-400">{t('certOutcome')}</span>
                 <span
                   className={cn(
                     'text-xs font-mono font-bold px-2 py-0.5 rounded-md uppercase',
@@ -165,7 +167,12 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                   </div>
                 </div>
                 <div>
-                  <div className="text-[10.5px] text-zinc-500">{t('certOpponentSpeed')}</div>
+                  <div className="text-[10.5px] text-zinc-500">
+                    {t('certOpponentSpeed')}
+                    {/* Audit (phase-9 audit, finding 17): in practice mode this
+                        number is a Gaussian simulation, not a measurement. */}
+                    {!isOnChain ? ` (${t('simulatedOpponent')})` : ''}
+                  </div>
                   <div className="text-sm font-bold text-zinc-300 flex items-center gap-1">
                     <Clock className="w-3.5 h-3.5 text-zinc-500" />
                     <span>{oppMs} ms</span>
@@ -175,11 +182,11 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
 
               <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/5 font-mono">
                 <div>
-                  <div className="text-[10.5px] text-zinc-500">Stake</div>
-                  <div className="text-xs font-semibold text-zinc-300">{stakeAmount > 0 ? `$${stakeAmount} USDT` : 'Free practice'}</div>
+                  <div className="text-[10.5px] text-zinc-500">{t('stakeLabel')}</div>
+                  <div className="text-xs font-semibold text-zinc-300">{stakeAmount > 0 ? `$${stakeAmount} USDT` : t('certFreePractice')}</div>
                 </div>
                 <div>
-                  <div className="text-[10.5px] text-zinc-500">{isOnChain ? 'Net Prize Paid' : 'Prize (local tally)'}</div>
+                  <div className="text-[10.5px] text-zinc-500">{isOnChain ? t('certNetPrizePaid') : t('certPrizeLocal')}</div>
                   <div className={cn('text-xs font-bold', isWin && prizeAmount > 0 ? 'text-emerald-400' : 'text-zinc-500')}>
                     {isWin && prizeAmount > 0 ? `+$${prizeAmount.toFixed(2)} USDT` : '$0.00'}
                   </div>
@@ -191,7 +198,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
             <div className="space-y-2 text-[11px] font-mono">
               <div className="flex items-center justify-between p-2.5 rounded-lg bg-black/40 border border-white/5">
                 <div className="space-y-0.5 min-w-0 pr-2">
-                  <div className="text-[10px] text-zinc-500">Duel ID</div>
+                  <div className="text-[10px] text-zinc-500">{t('certDuelId')}</div>
                   <div className="text-zinc-300 truncate">{duelId}</div>
                 </div>
                 <button
@@ -202,6 +209,31 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                   {copiedKey === 'duelId' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                 </button>
               </div>
+
+              {/* Audit 9.6 (M39): the oracle signature is the proof that the
+                  server signed THIS result — the certificate is the surface
+                  that is supposed to show it, and it showed only the tx hash. */}
+              {oracleSignature ? (
+                <div className="flex items-center justify-between p-2.5 rounded-lg bg-black/40 border border-white/5">
+                  <div className="space-y-0.5 min-w-0 pr-2">
+                    <div className="text-[10px] text-zinc-500">{t('certOracleSignature')}</div>
+                    <div className="text-sky-300 truncate font-mono">
+                      {`${oracleSignature.slice(0, 10)}...${oracleSignature.slice(-8)}`}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleCopy(oracleSignature, 'oracleSig')}
+                    aria-label={t('certCopySignature')}
+                    className="p-1 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white shrink-0"
+                  >
+                    {copiedKey === 'oracleSig' ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                </div>
+              ) : null}
 
               {isOnChain && txHash ? (
                 <div className="flex items-center justify-between p-2.5 rounded-lg bg-black/40 border border-white/5">

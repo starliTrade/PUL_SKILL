@@ -10,6 +10,7 @@ import { getRandomOpponent } from '../lib/antiCheat';
 import { CHAIN, prizeForStake } from '../lib/chain';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
+import { XPSystem } from '../lib/xpSystem';
 import { realWeb3Manager, MatchRecord } from '../lib/realWeb3';
 import { escrowStatus } from '../lib/escrowFlow';
 import { cn } from '../lib/utils';
@@ -45,6 +46,12 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
 }) => {
   const { t } = useLanguage();
   const { wallet, stats, refreshBalance } = usePulsarStore();
+
+  // Audit 9.2: the practice panel advertised a hardcoded "+50 XP". The real
+  // award comes from the engine — base victory XP plus the speed bonus for a
+  // representative 250ms win (the panel says "potential", so it is an estimate,
+  // but an estimate the engine actually produces).
+  const practiceWinXP = XPSystem.calculateMatchXP('win', 0, 250, stats.xp ?? 0).totalAwardedXP;
   const [gameMode, setGameMode] = useState<'real' | 'practice'>('real');
   const [selectedStake, setSelectedStake] = useState<number>(1);
   const [isMatchmaking, setIsMatchmaking] = useState(false);
@@ -374,8 +381,11 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                   <span className="text-zinc-300 font-medium text-[10.5px]">{t('adaptiveSentinelAi')}</span>
                 </div>
+                {/* Audit 9.2 (M32): this was the bare literal "180ms – 260ms"
+                    beside a pulsing dot, which reads as a live reading. It is a
+                    REFERENCE band, so it is labelled as one. */}
                 <span className="text-[9px] font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                  180ms – 260ms
+                  {t('humanReactionBand')}
                 </span>
               </div>
 
@@ -386,7 +396,13 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                 </div>
                 <div className="px-1">
                   <div className="text-[8.5px] uppercase tracking-wider text-emerald-400/80 font-mono">{t('potentialPrize')}</div>
-                  <div className="text-[11.5px] font-bold text-emerald-400 font-mono mt-0.5">+50 XP</div>
+                  {/* Audit 9.2 (M32): this was the literal "+50 XP" — a number
+                      with nothing behind it, and the engine's base victory
+                      award is 120. Computed from the same engine the settlement
+                      uses, for a representative 250ms win. */}
+                  <div className="text-[11.5px] font-bold text-emerald-400 font-mono mt-0.5">
+                    +{practiceWinXP} XP
+                  </div>
                 </div>
                 <div className="px-1">
                   <div className="text-[8.5px] uppercase tracking-wider text-sky-400/80 font-mono">{t('settlement')}</div>
@@ -526,11 +542,17 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
               return matchesToDisplay.slice(0, 5).map((match: any) => {
                 const isWin = match.result === 'win';
                 const opp = match.opponentName || match.opponent || 'Arena Duelist';
-                const reactionMs = match.yourTime || match.reactionTime || match.opponentTime || 185;
-                const stakeVal = Number(match.entryFee ?? match.stake ?? 1);
-                const prizeVal = Number(
-                  match.prize || prizeForStake(stakeVal),
-                );
+                // Audit 9.2 (M32): this fell back to the literal `185` when a
+                // match carried no recorded time, so the feed displayed a
+                // reaction time that was never measured. A missing measurement
+                // is a fact; show nothing rather than a plausible number.
+                const reactionMs =
+                  match.yourTime || match.reactionTime || match.opponentTime || null;
+                // Audit (phase-9 audit, finding 5): `match.prize || prizeForStake(...)`
+                // invented a payout for a row that carried none, and rendered it
+                // as money the player earned. A missing prize is a fact.
+                const stakeVal = Number(match.entryFee ?? match.stake ?? 0);
+                const prizeVal = Number(match.prize ?? 0);
 
                 const timeAgo = match.timestamp
                   ? (() => {
@@ -558,9 +580,11 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                       <div>
                         <div className="font-semibold text-white tracking-tight flex items-center gap-1">
                           <span className="truncate max-w-[120px]">{opp}</span>
-                          <span className="text-[10px] text-zinc-400 font-mono font-normal">
-                            ({reactionMs}ms)
-                          </span>
+                          {reactionMs ? (
+                            <span className="text-[10px] text-zinc-400 font-mono font-normal">
+                              ({reactionMs}ms)
+                            </span>
+                          ) : null}
                         </div>
                         <div className="text-[10px] text-zinc-500 font-mono">
                           {timeAgo} · ${stakeVal} USDT

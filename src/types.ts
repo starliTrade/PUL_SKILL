@@ -43,6 +43,10 @@ export interface MatchHistoryItem {
    *  without it every certificate claimed "NOT ON-CHAIN" even for settled
    *  duels. Absent for practice/local results. */
   hash?: string;
+  /** Audit 9.6: the oracle's signature over the settled result — the
+   *  cryptographic proof the certificate is supposed to show. Set only for a
+   *  duel the server settled. */
+  oracleSignature?: string;
   /** Audit M31: true for a duel the SERVER settled (ranked). Only then is the
    *  ledger's progression authoritative for this match; practice results have
    *  no settlement behind them and must not be reconciled against it. */

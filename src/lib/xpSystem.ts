@@ -105,7 +105,7 @@ export class XPSystem {
         badge: 'Tier IV',
         minLevel: 50,
         maxLevel: 999,
-        description: 'Elite reflex master with 2.0x maximum $PULSAR mining power and grandmaster tournament access.',
+        description: 'Elite reflex master with grandmaster tournament access.',
       };
     }
     if (level >= 26) {
@@ -119,7 +119,7 @@ export class XPSystem {
         badge: 'Tier III',
         minLevel: 26,
         maxLevel: 49,
-        description: 'Master duelist with 1.5x $PULSAR boost and access to high-roller arenas.',
+        description: 'Master duelist with access to high-roller arenas.',
       };
     }
     if (level >= 11) {
@@ -133,7 +133,7 @@ export class XPSystem {
         badge: 'Tier II',
         minLevel: 11,
         maxLevel: 25,
-        description: 'Experienced fighter with 1.25x boosted token generation.',
+        description: 'Experienced fighter with a hardened reaction curve.',
       };
     }
     return {
@@ -146,7 +146,7 @@ export class XPSystem {
       badge: 'Tier I',
       minLevel: 1,
       maxLevel: 10,
-      description: 'Standard 1.0x token mining rate for emerging players.',
+      description: 'The starting tier for emerging players.',
     };
   }
 

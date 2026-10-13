@@ -108,6 +108,11 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   const currentStakeRef = useRef(currentStake);
   currentStakeRef.current = currentStake;
   const [settlementTxHash, setSettlementTxHash] = useState<string>('');
+  // Audit 9.6 (found by the phase-9 audit): the certificate's oracle-signature
+  // row was gated on `match.oracleSignature`, which NO caller ever set — the row
+  // could never render, so the "fix" was a no-op. The signature is in scope at
+  // settlement (`result.signature`); it is carried here now.
+  const [settlementSignature, setSettlementSignature] = useState<string>('');
   // P0-fix: keep the last server-signed proof + action feedback so a failed
   // settleDuel can be retried and a timed-out duel can be refunded from the UI.
   // Previously refundTimeoutMatch had zero call-sites and a failed claim left
@@ -853,6 +858,8 @@ function isWalletCancel(msg: string): boolean {
           setLastProof(proof);
           txHash = await settleDuelOnChain(proof);
           setSettlementTxHash(txHash);
+      setSettlementSignature(result.signature || '');
+          setSettlementSignature(result.signature || '');
           try {
             const claim = await claimMatch(session, result.matchId, txHash);
             if (!claim.onChainProof) {
@@ -914,6 +921,9 @@ function isWalletCancel(msg: string): boolean {
             setLastProof(proof);
             txHash = await settleDuelOnChain(proof);
             setSettlementTxHash(txHash);
+      setSettlementSignature(result.signature || '');
+            setSettlementSignature(result.signature || '');
+          setSettlementSignature(result.signature || '');
             setOnchainAction(`Pot released to the winner: ${txHash.slice(0, 10)}…${txHash.slice(-8)}`);
           }
         } catch (releaseError) {
@@ -968,6 +978,8 @@ function isWalletCancel(msg: string): boolean {
     try {
       const txHash = await settleDuelOnChain(lastProof);
       setSettlementTxHash(txHash);
+      // `lastProof` is the stored server proof — the same signature.
+      setSettlementSignature(lastProof.signature || '');
       if (serverSession && serverMatch) {
         try {
           const claim = await claimMatch(serverSession, serverMatch.matchId, txHash);
@@ -1289,6 +1301,7 @@ function isWalletCancel(msg: string): boolean {
     // explorer link, its "prize claimed on-chain" line and its retry/refund
     // buttons — all pointing at a transaction from another duel.
     setSettlementTxHash('');
+    setSettlementSignature('');
     setLastProof(null);
     setOnchainAction('');
     setServerMatch(null);
@@ -2124,6 +2137,7 @@ function isWalletCancel(msg: string): boolean {
             // hash. Omitting it made a settled duel's certificate claim
             // "LOCAL RESULT · NOT ON-CHAIN" while the tx link sat right below.
             hash: settlementTxHash || undefined,
+            oracleSignature: settlementSignature || undefined,
           }}
           playerTag={wallet.playerId}
           walletAddress={wallet.address || undefined}
