@@ -40,6 +40,11 @@ vi.mock('../lib/escrowFlow', () => ({
 
 vi.mock('../lib/gameServerClient', () => ({
   gameServerConfigured: () => true,
+  // Audit M27 closure: the Lobby also polls for pending challenges. Without
+  // these exports the import fails and the test reports an unhandled error
+  // (it still passed, which is exactly why a stale mock is dangerous).
+  loadServerSession: () => null,
+  fetchPendingChallenges: async () => ({ available: true, challenges: [] }),
 }));
 
 vi.mock('../lib/sound', () => ({

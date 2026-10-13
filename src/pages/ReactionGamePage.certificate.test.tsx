@@ -58,6 +58,17 @@ vi.mock('../store/usePulsarStore', () => ({
       balanceUSDT: 100,
       balanceUnknown: false,
     },
+    stats: {
+      balance: 100,
+      balanceUnknown: false,
+      wins: 0,
+      losses: 0,
+      voids: 0,
+      totalMatches: 0,
+      xp: 0,
+      level: 1,
+      winStreak: 0,
+    },
     recordMatch: (...a: unknown[]) => recordMatch(...(a as [])),
   }),
 }));
@@ -93,6 +104,7 @@ vi.mock('../lib/escrowFlow', () => ({
   createDuel: vi.fn(),
   joinDuel: vi.fn(),
   getDuelState: vi.fn(),
+  findSettlementTx: vi.fn(async () => ''),
   getPendingWithdrawal: vi.fn(async () => '0'),
   withdrawPending: vi.fn(),
 }));

@@ -36,6 +36,7 @@ const settleMatch = vi.fn(async () => ({
 const getMatch = vi.fn();
 const claimMatch = vi.fn(async () => ({ ok: true, onChainProof: true }));
 const settleDuel = vi.fn(async () => '0x' + 'cd'.repeat(32));
+const findSettlementTx = vi.fn(async () => '');
 const getDuelState = vi.fn(async () => ({
   status: 2, // Active — the winner has NOT settled yet.
   player1: ME,
@@ -68,6 +69,17 @@ vi.mock('../store/usePulsarStore', () => ({
       connected: true,
       balanceUSDT: 100,
       balanceUnknown: false,
+    },
+    stats: {
+      balance: 100,
+      balanceUnknown: false,
+      wins: 0,
+      losses: 0,
+      voids: 0,
+      totalMatches: 0,
+      xp: 0,
+      level: 1,
+      winStreak: 0,
     },
     recordMatch: vi.fn(),
   }),
@@ -103,6 +115,7 @@ vi.mock('../lib/escrowFlow', () => ({
   createDuel: vi.fn(),
   joinDuel: vi.fn(),
   getDuelState: (...a: unknown[]) => getDuelState(...(a as [])),
+  findSettlementTx: (...a: unknown[]) => findSettlementTx(...(a as [])),
   getPendingWithdrawal: vi.fn(async () => '0'),
   withdrawPending: vi.fn(),
 }));
@@ -231,6 +244,45 @@ describe('loser-side settlement (audit M37)', () => {
       expect(getDuelState).toHaveBeenCalled();
     }, { timeout: 3000 });
 
+    expect(settleDuel).not.toHaveBeenCalled();
+  });
+
+  it('reads the settlement tx back from the chain when the winner settled first', async () => {
+    // The loser submitted nothing, so it has no tx hash of its own — and its
+    // certificate used to claim "NOT ON-CHAIN" for a duel that IS settled.
+    getDuelState.mockResolvedValue({
+      status: 3,
+      player1: ME,
+      player2: OPPONENT,
+      stakeAmount: 0n,
+      totalPool: 0n,
+      winner: OPPONENT,
+    });
+    const settledTx = '0x' + 'ee'.repeat(32);
+    findSettlementTx.mockResolvedValue(settledTx);
+
+    render(<ReactionGamePage onNavigate={vi.fn()} stakeAmount={1} />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    localStorage.setItem('pulsar_active_ranked_match', JSON.stringify({ matchId: MATCH_ID, stake: 1 }));
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pulsar-verify-node'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => {
+      expect(findSettlementTx).toHaveBeenCalled();
+    }, { timeout: 3000 });
+
+    // The certificate's proof comes from the chain, not from a local guess.
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('pulsar-game-root').getAttribute('data-settlement-tx')).toBe(settledTx);
+    }, { timeout: 3000 });
     expect(settleDuel).not.toHaveBeenCalled();
   });
 });

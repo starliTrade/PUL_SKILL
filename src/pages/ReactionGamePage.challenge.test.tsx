@@ -32,6 +32,17 @@ vi.mock('../lib/gameServerClient', () => ({
 vi.mock('../store/usePulsarStore', () => ({
   usePulsarStore: () => ({
     wallet: { address: ME, fullAddress: ME, connected: true, balanceUSDT: 100, balanceUnknown: false },
+    stats: {
+      balance: 100,
+      balanceUnknown: false,
+      wins: 0,
+      losses: 0,
+      voids: 0,
+      totalMatches: 0,
+      xp: 0,
+      level: 1,
+      winStreak: 0,
+    },
     recordMatch: vi.fn(),
   }),
 }));
