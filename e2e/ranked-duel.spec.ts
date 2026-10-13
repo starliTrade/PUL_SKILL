@@ -9,11 +9,20 @@
  * server pairs them, and both land in a real staked duel with the escrow
  * configured and the deposit gate armed.
  *
- * The blocker this spec used to document is FIXED: the mock wallet was passing
- * the SIWE message to anvil unencoded, and `personal_sign` takes it as HEX
- * (MetaMask encodes internally; a raw node does not). The app surfaced that
- * wallet error as "Could not reach the duel server", which is why it looked
- * like a server problem. See e2e/wallet.ts.
+ * The SIWE blocker is FIXED (the mock wallet was passing the message to anvil
+ * unencoded; `personal_sign` takes it as HEX). The deposit step is verified:
+ * with a clean stack the server answers 200 on `round/commit` and
+ * `round/target`, where it previously refused with 409.
+ *
+ * STILL OPEN — the app's JOINER path. The creator's page sits on "Waiting for
+ * a ranked opponent" while the joiner lands on the error shell with
+ * `missing revert data (action="estimateGas")`. The CONTRACT flow itself is
+ * proven correct by driving anvil directly with real transactions:
+ * `approve` → allowance becomes 1_000_000; `createDuel` → status Created;
+ * `joinDuel` → succeeds once the allowance exists. So the revert is in the
+ * app's call, not in the escrow — most likely a token/escrow address the app
+ * does not have (a call to a non-contract returns no revert data, which is
+ * exactly this error). That is the next thing to trace.
  */
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { clearEligibilityGate } from './helpers';
