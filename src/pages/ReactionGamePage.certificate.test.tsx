@@ -172,7 +172,7 @@ async function driveToResult() {
   });
 
   await vi.waitFor(() => {
-    expect(screen.getByText('View Cryptographic Certificate & Proof')).toBeTruthy();
+    expect(screen.getByText('viewCertificate')).toBeTruthy();
   }, { timeout: 3000 });
 }
 
@@ -200,7 +200,7 @@ describe('duel certificate proof (audit M39)', () => {
     await driveToResult();
 
     await act(async () => {
-      fireEvent.click(screen.getByText('View Cryptographic Certificate & Proof'));
+      fireEvent.click(screen.getByText('viewCertificate'));
       await Promise.resolve();
     });
 
