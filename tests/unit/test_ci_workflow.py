@@ -126,3 +126,30 @@ def test_chain_tests_run_against_anvil(workflow: dict):
 
 def test_ruff_gate_exists(workflow: dict):
     assert "ruff" in _all_run_scripts(workflow)
+
+
+def test_game_server_install_step_cannot_fail_before_any_test(workflow: dict):
+    """The install step must not install a package that does not exist.
+
+    It used to run `sudo apt-get install -y python3-sqlite3`. That package does
+    not exist on Ubuntu noble, so the step exited 100 and the ENTIRE
+    game-server job — ruff, pytest, the coverage ratchet, the emulator suites —
+    never ran. CI was red for reasons unrelated to the code, and every
+    server-side gate was silently absent.
+
+    sqlite3 ships with the setup-python distribution (it backs the
+    google-cloud-firestore STDLib fallback), so the job must ASSERT it is
+    importable instead of installing a package that is not there.
+    """
+    scripts = "\n".join(
+        step["run"] for step in _steps(workflow["jobs"]["game-server"]) if "run" in step
+    )
+    assert "python3-sqlite3" not in scripts, (
+        "the game-server job installs python3-sqlite3, which does not exist on "
+        "Ubuntu noble — the install step fails before any test runs"
+    )
+    assert "import sqlite3" in scripts, (
+        "the game-server job must verify sqlite3 is importable — the Firestore "
+        "STDLib fallback depends on it, and a silent fallback to the memory "
+        "store is the blind spot that hid C1/H3/H4"
+    )
