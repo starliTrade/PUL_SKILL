@@ -66,6 +66,10 @@ from store import create_store, install_persistence
 # fallback for memory mode. Applied only to expensive/abusable endpoints.
 _rl_lock = threading.Lock()
 _rl_window: dict[str, list[float]] = {}
+# Audit M16: the in-process fallback window is keyed by bucket+address and was
+# never pruned, so it grew by one entry per IP/address ever seen. Past this cap
+# the quiet windows are dropped (see `_rl_check`).
+_RL_WINDOW_MAX_KEYS = 10_000
 RL_WINDOW_SECONDS = 60.0
 RL_QUEUE_MAX = 40        # queue calls per minute per address (audit #6 C3:
                          # the client's 2.5s poll = 24/min; 20/min kicked
@@ -224,6 +228,18 @@ def _rl_check(bucket: str, address: str, limit: int) -> None:
         hits = [t for t in _rl_window.get(key, []) if now - t < RL_WINDOW_SECONDS]
         hits.append(now)
         _rl_window[key] = hits
+        # Audit M16: a key was never removed, so the map grew by one entry per
+        # IP/address ever seen. Past the cap, drop the quiet windows first (a
+        # key whose newest hit is older than the window is indistinguishable
+        # from absent), then the oldest ones — a hard bound, because an
+        # unbounded fallback map is a leak an attacker can drive.
+        if len(_rl_window) > _RL_WINDOW_MAX_KEYS:
+            for stale in [k for k, v in _rl_window.items() if not v or now - v[-1] >= RL_WINDOW_SECONDS]:
+                _rl_window.pop(stale, None)
+            overflow = len(_rl_window) - _RL_WINDOW_MAX_KEYS
+            if overflow > 0:
+                for oldest, _ in sorted(_rl_window.items(), key=lambda kv: kv[1][-1])[:overflow]:
+                    _rl_window.pop(oldest, None)
         if len(hits) > limit:
             raise _rate_limited(RL_WINDOW_SECONDS - (now - hits[0]))
 

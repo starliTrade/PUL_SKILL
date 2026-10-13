@@ -72,6 +72,27 @@ def _rpc_chain_id() -> int | None:
 
 _cache: dict[str, tuple[Any, ...]] = {}  # key -> (status|None, expiry, info)
 
+# Audit M15: the cache was never evicted — only expiry-CHECKED on read — so it
+# grew by one entry per match id ever queried. On a long-running server that is
+# an unbounded leak. Entries are now dropped once the map passes this size,
+# expired ones first.
+_CACHE_MAX_ENTRIES = 2048
+
+
+def _cache_store(key: str, entry: tuple[Any, ...]) -> None:
+    """Insert into the on-chain read cache, keeping it bounded (audit M15)."""
+    _cache[key] = entry
+    if len(_cache) <= _CACHE_MAX_ENTRIES:
+        return
+    now = timebase.now()
+    for stale in [k for k, v in _cache.items() if v[1] <= now]:
+        _cache.pop(stale, None)
+    overflow = len(_cache) - _CACHE_MAX_ENTRIES
+    if overflow > 0:
+        # Everything left is still fresh: drop the soonest-to-expire entries.
+        for oldest, _ in sorted(_cache.items(), key=lambda kv: kv[1][1])[:overflow]:
+            _cache.pop(oldest, None)
+
 # Audit #8 F-03: payment-token decimals, cached once (None = unreadable → the
 # stake comparison fails closed instead of guessing 6 decimals and silently
 # comparing 10^k-scaled numbers).
@@ -291,7 +312,7 @@ def duel_info(match_id: str, *, use_cache: bool = True) -> dict[str, Any] | None
         status = info.get("status") if info else None
         verified = status == STATUS_ACTIVE
         ttl = _POSITIVE_TTL if verified else _NEGATIVE_TTL
-        _cache[key] = (status, timebase.now() + ttl, info)
+        _cache_store(key, (status, timebase.now() + ttl, info))
     return info
 
 

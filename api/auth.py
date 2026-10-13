@@ -32,6 +32,7 @@ import json
 import os
 import secrets
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import UTC
 from typing import Any
@@ -52,6 +53,15 @@ EXPECTED_CHAIN_ID = int(os.environ.get("ORACLE_CHAIN_ID", "80002"))
 
 # Audit-#3 fix: nonce single-use replay protection. Each nonce burns exactly
 # once, on first successful verification.
+#
+# Audit M17: FastAPI runs sync endpoints in a THREADPOOL, so these sets are
+# mutated concurrently. A bare `set.add` happens to be atomic under CPython's
+# GIL, but the check-then-act sequences here (membership test + add + order-list
+# append + count-map update) are not — two threads could interleave and leave
+# the count map disagreeing with the order list, which corrupts eviction.
+# Every mutation now runs under this lock.
+_AUTH_LOCK = threading.Lock()
+
 _used_nonces: set[str] = set()
 # Audit M4: how many times each nonce appears in _used_nonces_order, so eviction
 # is O(1) instead of scanning the order list.
@@ -288,19 +298,20 @@ def _remember_used(nonce: str) -> None:
     path. Past the cap that is ~4096 comparisons per verification. A count map
     makes it O(1).
     """
-    if nonce in _used_nonces:
-        return
-    _used_nonces.add(nonce)
-    _used_nonces_order.append(nonce)
-    _used_nonce_counts[nonce] = _used_nonce_counts.get(nonce, 0) + 1
-    while len(_used_nonces_order) > _USED_NONCE_MAX:
-        evicted = _used_nonces_order.pop(0)
-        remaining = _used_nonce_counts.get(evicted, 0) - 1
-        if remaining > 0:
-            _used_nonce_counts[evicted] = remaining
-        else:
-            _used_nonce_counts.pop(evicted, None)
-            _used_nonces.discard(evicted)
+    with _AUTH_LOCK:
+        if nonce in _used_nonces:
+            return
+        _used_nonces.add(nonce)
+        _used_nonces_order.append(nonce)
+        _used_nonce_counts[nonce] = _used_nonce_counts.get(nonce, 0) + 1
+        while len(_used_nonces_order) > _USED_NONCE_MAX:
+            evicted = _used_nonces_order.pop(0)
+            remaining = _used_nonce_counts.get(evicted, 0) - 1
+            if remaining > 0:
+                _used_nonce_counts[evicted] = remaining
+            else:
+                _used_nonce_counts.pop(evicted, None)
+                _used_nonces.discard(evicted)
 
 
 def revoke_session(jti: str) -> None:
@@ -316,10 +327,12 @@ def revoke_session(jti: str) -> None:
         except Exception:
             pass  # already revoked
         return
-    _revoked_jtis.add(jti)
-    _revoked_jtis_order.append(jti)
-    while len(_revoked_jtis_order) > _REVOKED_JTI_MAX:
-        _revoked_jtis.discard(_revoked_jtis_order.pop(0))
+    # Audit M17: same threadpool hazard as `_remember_used`.
+    with _AUTH_LOCK:
+        _revoked_jtis.add(jti)
+        _revoked_jtis_order.append(jti)
+        while len(_revoked_jtis_order) > _REVOKED_JTI_MAX:
+            _revoked_jtis.discard(_revoked_jtis_order.pop(0))
 
 
 def _jti_is_revoked(jti: str) -> bool:
