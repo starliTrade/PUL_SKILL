@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useId, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   ShieldCheck,
@@ -21,6 +21,7 @@ import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
 import { explorerTxUrl } from '../lib/chain';
+import { modalDialogProps, useModalA11y } from '../lib/useModalA11y';
 
 interface DuelCertificateModalProps {
   isOpen: boolean;
@@ -39,6 +40,10 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
 }) => {
   const { t } = useLanguage();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  // Audit 8.4: role/aria-modal/focus-trap/Escape + focus restore.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useModalA11y(isOpen, onClose, dialogRef);
 
   if (!isOpen || !match) return null;
 
@@ -89,6 +94,8 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
     <AnimatePresence>
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
         <motion.div
+          ref={dialogRef}
+          {...modalDialogProps(titleId)}
           initial={{ opacity: 0, scale: 0.94, y: 12 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.94, y: 12 }}
@@ -143,8 +150,8 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                     </span>
                   )}
                 </div>
-                <h3 className="text-base font-bold text-white tracking-tight">
-                  {isWin ? 'Victory Certificate' : 'Duel Receipt'}
+                <h3 id={titleId} className="text-base font-bold text-white tracking-tight">
+                  {isWin ? t('certificateTitleWin') : t('certificateTitleLoss')}
                 </h3>
               </div>
             </div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useId, useRef, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Search,
@@ -22,6 +22,7 @@ import { usePulsarStore } from '../store/usePulsarStore';
 import { cn } from '../lib/utils';
 import { PulsarDynamicAvatar } from './PulsarDynamicAvatar';
 import { useLanguage } from '../i18n/LanguageContext';
+import { modalDialogProps, useModalA11y } from '../lib/useModalA11y';
 
 interface FriendChallengeModalProps {
   isOpen: boolean;
@@ -139,6 +140,11 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
     setTimeout(() => setCopiedAddr(null), 2000);
   };
 
+  // Audit 8.4: role/aria-modal/focus-trap/Escape + focus restore.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useModalA11y(isOpen, onClose, dialogRef);
+
   if (!isOpen) return null;
 
   return (
@@ -154,6 +160,8 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
 
       {/* Modal Box */}
       <motion.div
+        ref={dialogRef}
+        {...modalDialogProps(titleId)}
         initial={{ scale: 0.95, opacity: 0, y: 10 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
         exit={{ scale: 0.95, opacity: 0, y: 10 }}
@@ -166,7 +174,7 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
               <Users className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-white tracking-tight">{t('friendModalTitle')}</h3>
+              <h3 id={titleId} className="text-sm font-bold text-white tracking-tight">{t('friendModalTitle')}</h3>
               <p className="text-[10px] text-zinc-400">{t('friendModalSub')}</p>
             </div>
           </div>

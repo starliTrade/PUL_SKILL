@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useId, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -25,6 +25,7 @@ import { CHAIN, TOKENS, explorerAddressUrl } from '../lib/chain';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
+import { modalDialogProps, useModalA11y } from '../lib/useModalA11y';
 import { eip6963Manager, EIP6963ProviderDetail } from '../lib/eip6963';
 import {
   realWeb3Manager,
@@ -148,6 +149,14 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
 
   const [internalIsOpen, setInternalIsOpen] = useState(false);
   const isOpen = controlledIsOpen !== undefined ? controlledIsOpen : internalIsOpen;
+
+  // Audit 8.4: the wallet picker is a dialog too — role, aria-modal, focus trap,
+  // Escape, and focus restore. `handleCloseModal` is declared further down, so
+  // the hook reads it through a ref that is kept current on every render.
+  const walletDialogRef = useRef<HTMLDivElement>(null);
+  const walletTitleId = useId();
+  const handleCloseModalRef = useRef<() => void>(() => {});
+  useModalA11y(isOpen, () => handleCloseModalRef.current(), walletDialogRef);
   const setIsOpen = (open: boolean) => {
     setInternalIsOpen(open);
     if (!open && controlledOnClose) {
@@ -268,6 +277,8 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
     setErrorMessage(null);
     setIsOpen(false);
   };
+  // Audit 8.4: the dialog hook above reads the handler through this ref.
+  handleCloseModalRef.current = handleCloseModal;
 
   const handleConnectWalletItem = async (walletId: string, walletName: string) => {
     setErrorMessage(null);
@@ -888,6 +899,8 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
 
                 {/* Modal Window: Bottom Sheet on Mobile, Centered Card on Desktop */}
                 <motion.div
+                  ref={walletDialogRef}
+                  {...modalDialogProps(walletTitleId)}
                   initial={{ y: '100%', opacity: 0.5 }}
                   animate={{ y: 0, opacity: 1 }}
                   exit={{ y: '100%', opacity: 0 }}
@@ -905,10 +918,10 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                   {/* Standard Web3 Modal Header */}
                   <div className="flex items-start justify-between pb-3.5 border-b border-white/[0.08] shrink-0">
                     <div>
-                      <h3 className="text-base sm:text-lg font-bold text-white tracking-tight">
+                      <h3 id={walletTitleId} className="text-base sm:text-lg font-bold text-white tracking-tight">
                         {activeHandoff || connectingWalletId
-                          ? `Connecting ${activeHandoff?.walletName || connectingWalletId}`
-                          : 'Connect a Wallet'}
+                          ? `${t('connectingWallet')} ${activeHandoff?.walletName || connectingWalletId}`
+                          : t('connectAWallet')}
                       </h3>
                       <p className="text-xs text-zinc-400 mt-0.5 leading-normal">
                         {activeHandoff || connectingWalletId
