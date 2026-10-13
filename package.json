@@ -17,7 +17,8 @@
     "test:firestore": "sh -c '.venv/bin/python scripts/test_firestore_integration.py || python3 scripts/test_firestore_integration.py'",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
-    "test:unit:cov": "vitest run --coverage"
+    "test:unit:cov": "vitest run --coverage",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@sentry/react": "^10.73.0",
@@ -40,6 +41,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.0",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.7",

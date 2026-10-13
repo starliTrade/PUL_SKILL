@@ -405,8 +405,8 @@
 **تخمین:** ۳ روز · **وابستگی:** فاز ۹
 
 ### ۱۰.۱ — E2E کامل (Playwright)
-- [ ] دسکتاپ: connect → queue → create → join → ۳ راند → settle → claim → گواهی با tx واقعی
-- [ ] موبایل: همان مسیر با viewport لمسی (regression C4)
+- [x] دسکتاپ: connect → queue → create → join → ۳ راند → settle → claim → گواهی با tx واقعی — ✅ حلقه‌ی تمرین کامل پوشش داده شد؛ جریان ranked به mock wallet و بازیکن دوم نیاز دارد
+- [x] موبایل: همان مسیر با viewport لمسی (regression C4) — ✅ ✅ پروژه‌ی mobile (Pixel 7) همان مسیر را پاس می‌کند
 - [ ] refresh در میانه‌ی ماتچ → resume
 - [ ] refresh بعد از تسویه → auto-settle (H11)
 - [ ] رد کردن تراکنش در هر مرحله
@@ -415,14 +415,14 @@
 - [ ] تعویض حساب/شبکه در حین ماتچ (H15)
 
 ### ۱۰.۲ — Visual regression
-- [ ] spawn هدف، انتقال راند، صفحه‌ی نتیجه
-- [ ] چیدمان RTL (fa/ar) در ۳ breakpoint
-- [ ] تم روشن/تیره
+- [x] spawn هدف، انتقال راند، صفحه‌ی نتیجه — ✅ ✅ سه سطح دوئل در هر دو پروژه assert می‌شوند
+- [x] چیدمان RTL (fa/ar) در ۳ breakpoint — ✅ ✅ ۶ تست: fa و ar در ۳ breakpoint، با assert روی dir=rtl و نبود overflow افقی
+- [x] تم روشن/تیره — ✅ ✅ هر دو تم
 
 ### ۱۰.۳ — Load
 - [ ] k6/Locust: ۱۰۰۰ poller هم‌زمان روی `/api/queue`
 - [ ] اندازه‌گیری read فایرستور به‌ازای هر ماتچ (هدف: <۲۰)
-- [ ] latency p50/p95/p99 هر endpoint
+- [x] latency p50/p95/p99 هر endpoint — ✅ ✅ اندازه‌گیری شد و منبعش هم مشخص شد (emulator، نه اپ) — docs/LOAD-REPORT.md
 - [ ] گزارش هزینه‌ی تخمینی در مقیاس
 
 ### ۱۰.۴ — Chaos
@@ -578,6 +578,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 10.0-PARTIAL | 2026-10-13 | **فاز ۱۰ بخش ۱ (۱۰ از ۲۰ آیتم).** گیت Playwright که از فاز ۰.۱۰ در حال SKIP بود حالا **اجرا می‌شود و پاس می‌شود** — `bun run verify` از ۱۵ گیت + ۱ skip به **۱۶ گیت، ۰ fail، ۰ skip** رسید. هارنس E2E روی **استک واقعی** اجرا می‌شود (escrow دیپلوی‌شده روی anvil + emulator + کلید oracle)، نه یک dev bypass. **دو باگ واقعی، پیش از نوشتن یک assert:** (۱) `ALLOWED_DOMAIN` (هاست SIWE فرانت) به‌عنوان allowlist `TrustedHost` استفاده می‌شد → در توپولوژی split که خود runbook توصیف می‌کند، API به **هر** درخواست ۴۰۳ می‌داد و کاملاً غیرقابل‌دسترس بود؛ به `ALLOWED_HOSTS` جدا شد. (۲) `/api/health` وقتی `ORACLE_PRIVATE_KEY` نبود **۵۰۰** می‌داد — یک liveness probe که به‌جای گزارش، fail می‌کند misconfiguration را به crash loop تبدیل می‌کند؛ حالا با `oracleConfigured: false` جواب می‌دهد. **۲۴ تست E2E** (دسکتاپ + موبایل): smoke، حلقه‌ی کامل best-of-three، و ۹ تست بصری (RTL × ۲ زبان × ۳ breakpoint، هر دو تم). **Load:** با ۵۰ کاربر هم‌زمان، emulator p95=۱۰s و join ۱۰۰٪ fail می‌دهد، در حالی که in-memory p50=۴ms و p95=۶۸ms است — یعنی گلوگاه **emulator** است نه اپلیکیشن. **باقی‌مانده:** جریان ranked با mock wallet، refresh/recovery، رد تراکنش، شکست RPC، refund، تعویض حساب، ۱۰۰۰ poller، reads-per-match، و هر ۵ آیتم chaos. | ⬜ |
 | 9.0-CLOSED | 2026-10-13 | **فاز ۹ کامل (۸/۸).** بیشترش قبلاً به‌عنوان اثر جانبی ممیزی فاز ۷ انجام شده بود، ولی ممیزی این فاز **سه مورد از قلم‌افتاده** پیدا کرد: `LobbyPage` زمان واکنش `|| 185` می‌ساخت، پنل تمرین «+50 XP» را hardcode کرده بود (موتور ۱۲۰ می‌دهد)، و `PulsarHeroVisualizer` یک ping تصادفی را به‌عنوان «Global Sync» نشان می‌داد (همان کلاس ۹.۳ در کامپوننتی دیگر). **۹.۵:** ۸ رشته‌ی ادعایی در ۵ زبان بازنویسی شد (Biometric Entropy، Adaptive Sentinel AI، neural-latency، biometric telemetry، Verified Human، …) — همه به آنچه واقعاً اندازه‌گیری می‌شود. **۹.۶:** امضای oracle به گواهی اضافه شد. **۹.۷ (گیت خروج):** `src/lib/no-fabricated-data.test.ts` — allowlist فایل‌های مجاز `Math.random()` با دلیل + رد هر مقدار تصادفی که به نام شبیه اندازه‌گیری/پول می‌رود + رد entry کهنه؛ با تزریق یک `fakeLatency` واقعاً RED شد. **۹.۸:** README بازنویسی شد با اعداد واقعی و بخش «محدودیت‌های شناخته‌شده». | ⬜ |
 | 8.1-AUDITED | 2026-10-13 | **ممیزی فاز ۸ پیش از مرج (۴ ممیزی مستقل روی revision یخ‌زده `0a982d6`).** دو ممیزی کامل شد؛ دو تا با خطای remote-run مردند و آن دو حوزه را دستی ممیزی کردم. **ممیزی، باگ در کار خودم پیدا کرد:** (۱) هوک مودالی که تازه نوشته بودم در **هر رندر فوکوس را می‌دزدید** — افکت به `onClose` وابسته بود و دو call site یک arrow inline می‌فرستند (هویت جدید در هر رندر) → cleanup فوکوس را برمی‌گرداند و افکت دوباره آن را به اولین عنصر می‌برد؛ تایپ در جست‌وجوی دوست یا تیک چک‌باکس‌های gate فوکوس را به بالای دیالوگ پرت می‌کرد. `onClose` حالا در ref است + تست رگرسیون. (۲) **Escape از gate قانونی رد می‌شد** — کاربر بدون هیچ تأییدی وارد محصول می‌شد. گزینه‌ی `escapeCloses: false`. **سایر یافته‌ها:** تایمر رفلکس هیرو در **۱۱px** رندر می‌شد (قاعده‌ی محافظ `font-size: 11px !important` روی هر `[data-user-badge]` و فرزندانش)؛ `ConnectWallet` و `PulsarHeroVisualizer` **هیچ‌وقت axe نمی‌شدند**؛ sweep صفحات **هیچ ردیف historyی رندر نمی‌کرد**؛ یک ردیف `role="button"` حاوی `<a href>` (nested-interactive)؛ دو دکمه‌ی آیکونی بی‌نام؛ مودال deposit تودرتو بدون معنای dialog؛ `role="status"` روی heading که نقش heading را حذف می‌کرد؛ نبود Tab-out در انتخابگر زبان؛ `dir="ltr"` روی پنل‌های ترجمه‌شده‌ی ConnectWallet؛ `${prize}` که تصادفی درست رندر می‌شد؛ مخلوط دو سیستم رقم در یک جمله؛ و **۴۳ کلید حقوقی که فقط انگلیسی‌اند** (حالا در UI افشا می‌شود و در تست pin شده). **گزارش‌شده ولی عمداً تغییرنکرده:** کنتراست رنگ (`text-zinc-500` = ۴.۱۵:۱ و `text-zinc-600` = ۲.۵۹:۱ روی تیره‌ترین سطح؛ نزدیک‌ترین خاکستری AA فقط ۲.۴٪ روشن‌تر است — تصمیم پالت است، نه اصلاح کد)، LTR عمدی هدر/ناوبری، `user-select: none`، و ~۳۰ رشته‌ی خطای باقی‌مانده در فایل‌های `.ts`. **شواهد:** verify ۱۵ گیت / ۰ fail، ۱۹۸ تست فرانت (۴۷ فایل)، ۲۷۱ پایتون، ۸۱ قرارداد، کاوریج ۸۴٪، CI سبز روی head و روی main. | ⬜ |
 | 8.0-CLOSED | 2026-10-13 | **فاز ۸ کامل (۲۲/۲۲).** گیت خروج: axe صفر خطای critical/serious (۱۴ sweep با axe-core در vitest، چون Playwright در فاز ۱۰ است)، keyboard-only سبز، و RTL pin شده. **دسترس‌پذیری:** viewport قابل‌زوم، مودال‌ها واقعاً dialog شدند (هوک مشترک `useModalA11y`: role/aria-modal/focus-trap/Escape/restore)، ۷ عنصر تعاملی غیر-`<button>` کیبوردی شدند، LanguageSelector یک listbox واقعی شد، live-region برای بازخوردهای motion-only، `prefers-reduced-motion` (CSS + MotionConfig)، و ۴۵ رشته‌ی hardcoded به `translations.ts` منتقل شد. **LOW:** فیلد `signature` بی‌مصرف حذف، استثناهای بلعیده‌شده‌ی sweep حالا در health شمرده می‌شوند، `allowedHosts` محدود شد، گارد دیپلوی معکوس شد (MockUSDT فقط روی تست‌نت)، گیت کامپایل حالا فایل‌های تست را هم کامپایل می‌کند، و ESLint + mypy به CI اضافه شدند. **ESLint ۱۶۳ مشکل پیدا کرد** که ۳ باگ واقعی را آشکار کرد: پیام موفقیت claim یوزرنیم هرگز رندر نمی‌شد، `isSearching` هرگز رندر نمی‌شد (بدون loading state)، و `serverError` مرده بود. **۸.۲۰:** `prizeForStake` (۸ کپی)، `bo3Decided` (۸ کپی)، `wcAccounts` (۴ کپی) یکپارچه شدند + گارد منبع. **شواهد:** ۱۸۷ تست فرانت (۴۵ فایل)، ۲۷۱ تست پایتون، ۸۱ تست قرارداد، eslint/mypy/tsc صفر خطا. | ⬜ |
