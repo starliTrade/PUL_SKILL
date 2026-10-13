@@ -154,6 +154,46 @@ def test_a_player_cannot_challenge_themselves(client):
     assert r.status_code == 400, r.text
 
 
+# --- the challenged player must be able to find out ---------------------------
+#
+# A reservation nobody can discover is not a challenge — the target only found
+# out by queueing for something else. This is the same cross-layer class as
+# H15b/H22b: the mechanism existed in one layer with no consumer in another.
+
+
+def test_the_target_can_see_the_challenge_waiting_for_them(client):
+    alice, bob, carol = Account.create(), Account.create(), Account.create()
+    ha, hb, hc = _session(client, alice), _session(client, bob), _session(client, carol)
+    a_addr, b_addr = alice.address.lower(), bob.address.lower()
+
+    r = client.post("/api/queue", json={"stake": 1.0, "opponent": b_addr}, headers=ha)
+    assert r.status_code == 200, r.text
+    reserved = r.json()["matchId"]
+
+    # Bob can see it.
+    r = client.get("/api/challenges", headers=hb)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["available"] is True
+    assert [c["address"] for c in body["challenges"]] == [a_addr]
+    assert body["challenges"][0]["matchId"] == reserved
+    assert body["challenges"][0]["stake"] == 1.0
+
+    # Carol cannot — it is not her challenge.
+    r = client.get("/api/challenges", headers=hc)
+    assert r.json()["challenges"] == []
+
+    # Once Bob accepts, it is no longer pending.
+    client.post("/api/queue", json={"stake": 1.0, "opponent": a_addr}, headers=hb)
+    r = client.get("/api/challenges", headers=hb)
+    assert r.json()["challenges"] == []
+
+
+def test_challenges_require_a_session(client):
+    r = client.get("/api/challenges")
+    assert r.status_code == 401
+
+
 # --- the durable (Firestore) queue must agree with the memory one -------------
 #
 # The memory store is what the unit tests exercise; the DURABLE store is what
