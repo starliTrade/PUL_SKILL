@@ -36,6 +36,10 @@ async function connectPlayer(context: BrowserContext, accountIndex: number): Pro
 }
 
 test.describe('the ranked duel', () => {
+  // A full staked best-of-three with two real wallets, real deposits and the
+  // server's gate on every round is a long flow; the default 60s is not enough.
+  test.setTimeout(240_000);
+
   // Desktop only: the mobile path routes through WalletConnect (a real relay),
   // so an injected provider is not what it uses. Driving the mobile ranked flow
   // needs a WalletConnect relay, which is a separate piece of infrastructure.
@@ -84,12 +88,20 @@ test.describe('the ranked duel', () => {
         timeout: 40_000,
       });
 
-      // The round loop is NOT asserted here yet: the server refuses the first
-      // commit with 409 because the app has not locked the stakes in the
-      // escrow. The deposit gate is doing its job (fail-closed); what is
-      // missing is the app's on-chain deposit step (approve → createDuel /
-      // joinDuel) before the round flow starts. That is the next thing to fix,
-      // and asserting the loop before it works would only hide it.
+      // THE DEPOSIT PROOF. The server's gate reads the escrow before every
+      // round and refuses with 409 unless BOTH stakes are locked on-chain, and
+      // a refusal puts the app on its error shell. So: the duel is running,
+      // the round counter advanced, and there is NO error shell — which can
+      // only be true if SIWE → queue → approve → createDuel/joinDuel → the
+      // gate → commit → reveal all succeeded.
+      //
+      // Asserting the TARGET's visibility instead would be flaky by design:
+      // this is a reaction game, the target appears and the round advances on
+      // its own clock, and two players' clocks are independent.
+      await expect(pageA.getByText(/Round \d of 3/i).first()).toBeVisible({ timeout: 60_000 });
+      await expect(pageB.getByText(/Round \d of 3/i).first()).toBeVisible({ timeout: 60_000 });
+      await expect(pageA.getByText(/Could not reach the duel server/i)).toHaveCount(0);
+      await expect(pageB.getByText(/Could not reach the duel server/i)).toHaveCount(0);
     } finally {
       await ctxA.close();
       await ctxB.close();
