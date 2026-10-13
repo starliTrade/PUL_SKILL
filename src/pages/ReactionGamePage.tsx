@@ -1,51 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import {
-  ArrowLeft,
-  RotateCcw,
-  Trophy,
-  XCircle,
-  ShieldAlert,
-  LoaderCircle,
-  Zap,
-  Fingerprint,
-  ShieldCheck,
-  ArrowUp,
-  ArrowDown,
-  ArrowLeft as ArrowLeftIcon,
-  ArrowRight as ArrowRightIcon,
-  Crosshair,
-  Activity,
-  Cpu,
-  Sparkles,
-  Coins,
-  Wallet,
-  CheckCircle2,
-  Flame,
-  Swords,
-} from 'lucide-react';
+import { motion } from 'motion/react';
+import { ArrowLeft, RotateCcw, Trophy, XCircle, ShieldAlert, LoaderCircle, Zap, Fingerprint, ShieldCheck, ArrowUp, ArrowDown, ArrowLeft as ArrowLeftIcon, ArrowRight as ArrowRightIcon, Crosshair, Cpu, Sparkles, Coins, Wallet, Flame, Swords } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { GamePhase, MouseTrajectoryPoint, MatchResolution, TargetVectorDirection, RoundResult, BestOfThreeState } from '../types';
 import { AntiCheat, getRandomOpponent, TargetSpawnConfig } from '../lib/antiCheat';
 import { usePulsarStore } from '../store/usePulsarStore';
-import { XPSystem, XPSummary } from '../lib/xpSystem';
-import {
-  gameServerConfigured,
-  ensureSession,
-  measureServerRttMs,
-  queueForMatch,
-  commitRound,
-  revealRoundTarget,
-  submitRoundResult,
-  settleMatch,
-  claimMatch,
-  getMatch,
-  matchIdToBytes32,
-  type ServerSession,
-  type MatchView,
-} from '../lib/gameServerClient';
-import { settleDuel as settleDuelOnChain, refundTimeoutMatch, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState, getTokenDecimals, findSettlementTx } from '../lib/escrowFlow';
-import { isEscrowConfigured, CHAIN, TOKENS, ECONOMY, REFUND_OPENS_AFTER_MINUTES } from '../lib/chain';
+import { XPSummary } from '../lib/xpSystem';
+import { gameServerConfigured, ensureSession, measureServerRttMs, queueForMatch, commitRound, revealRoundTarget, submitRoundResult, settleMatch, claimMatch, getMatch, matchIdToBytes32, type ServerSession, type MatchView } from '../lib/gameServerClient';
+import { settleDuel as settleDuelOnChain, refundTimeoutMatch, approveUsdt, createDuel, joinDuel, getDuelState, getTokenDecimals, findSettlementTx } from '../lib/escrowFlow';
+import { isEscrowConfigured, CHAIN, ECONOMY, REFUND_OPENS_AFTER_MINUTES } from '../lib/chain';
 import { ethers } from 'ethers';
 import { realWeb3Manager, ACTIVE_RANKED_MATCH_KEY } from '../lib/realWeb3';
 import { reportError } from '../lib/monitoring';
@@ -143,7 +106,6 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   walletRef.current = wallet;
   const currentStakeRef = useRef(currentStake);
   currentStakeRef.current = currentStake;
-  const [serverError, setServerError] = useState<string>('');
   const [settlementTxHash, setSettlementTxHash] = useState<string>('');
   // P0-fix: keep the last server-signed proof + action feedback so a failed
   // settleDuel can be retried and a timed-out duel can be refunded from the UI.
@@ -184,7 +146,6 @@ function isWalletCancel(msg: string): boolean {
   const [verifyTarget, setVerifyTarget] = useState<{ x: number; y: number }>({ x: 50, y: 50 });
   const [verifyProgress, setVerifyProgress] = useState<number>(0);
   const [earlyClickWarning, setEarlyClickWarning] = useState<boolean>(false);
-  const [showTelemetryModal, setShowTelemetryModal] = useState<boolean>(false);
   const [xpSummary, setXpSummary] = useState<XPSummary | null>(null);
 
   const startTimeRef = useRef<number>(0);
@@ -293,6 +254,9 @@ function isWalletCancel(msg: string): boolean {
     return () => {
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
     };
+  // Keyed on `phase` alone by design: adding `startWaitingPhase` would
+  // restart the countdown on every render of that callback.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
   // Clear timers on unmount
@@ -311,7 +275,6 @@ function isWalletCancel(msg: string): boolean {
   // P2.2 — Server-authoritative matchmaking for staked matches. Practice mode
   // (stake 0) never queues and never touches the server.
   const startServerMatch = useCallback(async () => {
-    setServerError('');
     setPhase('matchmaking');
     try {
       // If the provider object is gone (page reload wipes the in-memory WC
@@ -320,7 +283,7 @@ function isWalletCancel(msg: string): boolean {
       // shown and the screen would spin forever. Clear the stale state so
       // the header honestly shows disconnected, and tell the user to tap
       // Connect (which has the full pairing UI) before retrying.
-      let provider = realWeb3Manager.getActiveEip1193Provider();
+      const provider = realWeb3Manager.getActiveEip1193Provider();
       if (!provider) {
         try {
           realWeb3Manager.disconnect();
@@ -436,10 +399,12 @@ function isWalletCancel(msg: string): boolean {
       const reason = isWalletCancel(msg)
         ? `Wallet action cancelled — no funds moved. ${msg}`
         : msg;
-      setServerError(reason);
       setMatchResult({ outcome: 'void', yourTime: 0, opponentTime: 0, prize: 0, reason });
       setPhase('bot-detected'); // honest error shell; reason is rendered
     }
+  // Audit H11: the wallet is read through a REF, not this closure — adding
+  // `wallet.fullAddress` would re-create the callback mid-match.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isServerMode, wallet.address, currentStake, challengeOpponent]);
 
   // Audit-#5 refresh recovery: on reload, resume the persisted ranked match
@@ -447,7 +412,7 @@ function isWalletCancel(msg: string): boolean {
   // and the deposit flow entirely — the escrow already holds both stakes.
   const recoverServerMatch = useCallback(async () => {
     if (!isServerMode || !wallet.address) return false;
-    let saved: { matchId?: string; stake?: number } | null = null;
+    let saved: { matchId?: string; stake?: number } | null;
     try {
       const raw = localStorage.getItem(ACTIVE_MATCH_KEY);
       saved = raw ? JSON.parse(raw) : null;
@@ -455,7 +420,6 @@ function isWalletCancel(msg: string): boolean {
       return false;
     }
     if (!saved?.matchId) return false;
-    setServerError('');
     setPhase('matchmaking');
     try {
       // Same headless-pairing guard as startServerMatch (see above).
@@ -525,6 +489,8 @@ function isWalletCancel(msg: string): boolean {
       }
       return false;
     }
+  // Audit H11: same ref-based reads as above — deliberately not dependencies.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isServerMode, wallet.address, currentStake, challengeOpponent]);
 
   // Audit-#5 refresh recovery: persist the live ranked match so a full page
@@ -545,6 +511,8 @@ function isWalletCancel(msg: string): boolean {
     } catch {
       // storage unavailable — recovery simply won't engage
     }
+  // Runs ONCE on mount; the wallet arrives later and is read through a ref.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /**
@@ -607,6 +575,8 @@ function isWalletCancel(msg: string): boolean {
       }
       return { userScore, opponentScore, currentRound };
     },
+  // A stable identity for the scoreboard; re-creating it would remount it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
 
@@ -680,7 +650,7 @@ function isWalletCancel(msg: string): boolean {
   };
 
   // Early click in waiting phase
-  const handleEarlyClick = (e: React.MouseEvent) => {
+  const handleEarlyClick = () => {
     if (phase === 'waiting') {
       if (waitTimeoutRef.current) clearTimeout(waitTimeoutRef.current);
       sounds.playLoss();
@@ -1322,7 +1292,6 @@ function isWalletCancel(msg: string): boolean {
     setOnchainAction('');
     setServerMatch(null);
     setServerSession(null);
-    setServerError('');
     setPhase('human-verify');
     randomizeCalibrationTarget();
   };
@@ -1637,7 +1606,7 @@ function isWalletCancel(msg: string): boolean {
                 // Audit 8.3 + 8.11: the same rules must apply to both input
                 // methods — a keyboard player who jumps the gun false-starts
                 // exactly like a pointer player, and can reach this area at all.
-                {...clickableDivProps(() => handleEarlyClick({} as React.MouseEvent))}
+                {...clickableDivProps(() => handleEarlyClick())}
                 className="w-full flex-1 flex flex-col items-center justify-center cursor-pointer p-4 select-none min-h-[320px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500/60"
               >
                 {earlyClickWarning ? (

@@ -1,21 +1,6 @@
 import React, { useId, useRef, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import {
-  Search,
-  UserPlus,
-  UserCheck,
-  Swords,
-  X,
-  Zap,
-  Shield,
-  Sparkles,
-  ExternalLink,
-  Users,
-  Copy,
-  Check,
-  Clock,
-  Trophy,
-} from 'lucide-react';
+import { Search, UserPlus, UserCheck, Swords, X, Shield, Users, Copy, Check } from 'lucide-react';
 import { realWeb3Manager, FriendProfile } from '../lib/realWeb3';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
@@ -43,13 +28,15 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
   onStartDuel,
 }) => {
   const { t } = useLanguage();
-  const { wallet, stats } = usePulsarStore();
+  const { wallet } = usePulsarStore();
+  // Audit 8.19: this state existed but was never rendered — the search had no
+  // loading indicator. It is rendered now, so it is a real state again.
+  const [isSearching, setIsSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'search' | 'saved'>('search');
   const [searchResults, setSearchResults] = useState<FriendProfile[]>([]);
   const [savedFriends, setSavedFriends] = useState<FriendProfile[]>([]);
   const [savedAddresses, setSavedAddresses] = useState<string[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
   const [copiedAddr, setCopiedAddr] = useState<string | null>(null);
 
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'info' | 'success' | 'warn' } | null>(null);
@@ -304,6 +291,17 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
                 {t('searchPlaceholder')}
               </p>
               <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-3" aria-hidden="true" />
+              {/* Audit 8.19: `isSearching` was set but never rendered, so the
+                  search had no loading state at all. */}
+              {isSearching && (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="absolute right-3 top-3 text-[10px] font-mono text-zinc-500"
+                >
+                  {t('searching')}
+                </span>
+              )}
               {searchQuery && (
                 <button
                   onClick={() => setSearchQuery('')}

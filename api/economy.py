@@ -63,7 +63,7 @@ def _firestore_module() -> Any:
     Client, which has no `transactional` — the same trap audit C1 hit.
     """
     try:
-        from google.cloud import firestore as _fs  # noqa: PLC0415
+        from google.cloud import firestore as _fs  # type: ignore[attr-defined]  # noqa: PLC0415
 
         return _fs
     except Exception:  # pragma: no cover - SDK absent
@@ -446,6 +446,7 @@ def _progression_fields(
             best = t
 
     avg_before = float(before.get("avgReactionMs", 0) or 0)
+    avg: float = avg_before
     if real_times:
         avg = round((avg_before * matches_before + sample) / (matches_before + 1))
     else:

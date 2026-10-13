@@ -46,7 +46,7 @@ import economy
 import onchain
 
 try:  # optional dependency — absent until Firestore credentials exist
-    from google.cloud import firestore as _gcf
+    from google.cloud import firestore as _gcf  # type: ignore[attr-defined]
 except Exception:  # pragma: no cover - local dev without the SDK
     _gcf = None  # type: ignore[assignment]
 

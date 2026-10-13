@@ -127,7 +127,7 @@ export const authenticate = async (address: string, signMessage: SignMessageFn):
     body: JSON.stringify({ address }),
   });
   if (!nonceRes.ok) throw new Error(`Nonce request failed (${nonceRes.status})`);
-  const { nonce, message } = (await nonceRes.json()) as { nonce: string; message: string };
+  const { message } = (await nonceRes.json()) as { nonce: string; message: string };
 
   // 2. the wallet signs the SERVER's message (not a locally-built one) so the
   //    domain binding is always the server's canonical form.

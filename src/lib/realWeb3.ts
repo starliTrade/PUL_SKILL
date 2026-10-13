@@ -3,29 +3,13 @@
  * Zero mock accounts, zero fake duels. Pure real-time on-chain & cloud persistence.
  */
 
-import {
-  doc,
-  getDoc,
-  setDoc,
-  deleteDoc,
-  collection,
-  query,
-  where,
-  orderBy,
-  limit,
-  getDocs,
-  onSnapshot,
-} from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, collection, query, where, orderBy, limit, getDocs, onSnapshot } from 'firebase/firestore';
 import { getDb } from './firebase';
 import { checkUsername, ensureSession, logoutServerSession } from './gameServerClient';
 import { CHAIN, TOKENS } from './chain';
 
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
-import { isMobileDevice,  isWalletInAppBrowser,
-  getWalletConnectDeepLink,
-  getNativeSchemeUri,
-  openWalletConnectInNativeApp,
-} from './web3DeepLinks';
+import { isMobileDevice, isWalletInAppBrowser, getWalletConnectDeepLink, getNativeSchemeUri, openWalletConnectInNativeApp } from './web3DeepLinks';
 
 export const getWalletConnectProjectId = (): string => {
   if (typeof window !== 'undefined') {
@@ -377,8 +361,8 @@ class RealWeb3Manager {
       /* ignore */
     }
 
-    provider.on('connect', (info: any) => {
-      let accounts = provider.accounts || [];
+    provider.on('connect', () => {
+      const accounts = provider.accounts || [];
       if (!accounts || accounts.length === 0) {
         const session = provider.session || provider?.signer?.session;
         if (session?.namespaces) {
@@ -439,7 +423,7 @@ class RealWeb3Manager {
 
         try {
           // Extract accounts directly or from active UniversalProvider sessions
-          let accounts: string[] = this.wcProvider?.accounts || [];
+          const accounts: string[] = this.wcProvider?.accounts || [];
           if (!accounts || accounts.length === 0) {
             const activeSessions = this.wcProvider?.client?.session?.getAll?.() || [];
             if (activeSessions.length > 0) {
@@ -627,7 +611,7 @@ class RealWeb3Manager {
     if (isWc) {
       try {
         const provider = await this.ensureWcProvider();
-        let accounts = provider?.accounts || [];
+        const accounts = provider?.accounts || [];
         if (!accounts || accounts.length === 0) {
           const activeSessions = provider?.client?.session?.getAll?.() || [];
           if (activeSessions.length > 0) {
@@ -870,9 +854,9 @@ class RealWeb3Manager {
     }
 
     let eth = (window as any).ethereum;
-    let phantomEth = (window as any).phantom?.ethereum;
-    let coinbaseEth = (window as any).coinbaseWalletExtension;
-    let trustEth = (window as any).trustwallet;
+    const phantomEth = (window as any).phantom?.ethereum;
+    const coinbaseEth = (window as any).coinbaseWalletExtension;
+    const trustEth = (window as any).trustwallet;
 
     if (!eth && !phantomEth && !coinbaseEth && !trustEth) {
       try {
@@ -965,18 +949,22 @@ class RealWeb3Manager {
       }
     } catch (err: any) {
       if (err?.code === 4001 || err?.message?.includes('User rejected') || err?.message?.includes('cancelled')) {
-        throw new Error('Connection request was cancelled in your wallet.');
+        throw new Error('Connection request was cancelled in your wallet.', { cause: err });
       }
       if (err?.code === -32002) {
-        throw new Error('Wallet is already waiting for your confirmation. Please check your wallet extension or app.');
+        throw new Error(
+          'Wallet is already waiting for your confirmation. Please check your wallet extension or app.',
+          { cause: err },
+        );
       }
       const inIframe = typeof window !== 'undefined' && window.self !== window.top;
       if (inIframe) {
         throw new Error(
-          `Could not connect to ${providerDetail.info.name} inside the preview iframe. Please use WalletConnect QR, Instant Guest Duelist, or open in a new tab.`
+          `Could not connect to ${providerDetail.info.name} inside the preview iframe. Please use WalletConnect QR, Instant Guest Duelist, or open in a new tab.`,
+          { cause: err },
         );
       }
-      throw new Error(err?.message || `Failed to connect to ${providerDetail.info.name}`);
+      throw new Error(err?.message || `Failed to connect to ${providerDetail.info.name}`, { cause: err });
     }
   }
 
@@ -1070,7 +1058,7 @@ class RealWeb3Manager {
                 });
                 chainId = CHAIN.chainId;
               } else {
-                throw new Error('Please approve the Polygon network switch in your wallet.');
+                throw new Error('Please approve the Polygon network switch in your wallet.', { cause: switchError });
               }
             }
           }
@@ -1082,10 +1070,10 @@ class RealWeb3Manager {
         throw new Error('No wallet account was selected.');
       } catch (err: any) {
         if (err?.code === 4001 || err?.message?.includes('User rejected') || err?.message?.includes('cancelled')) {
-          throw new Error('Connection request was cancelled in your wallet.');
+          throw new Error('Connection request was cancelled in your wallet.', { cause: err });
         }
         if (err?.code === -32002) {
-          throw new Error('Wallet is waiting for your confirmation. Please check your wallet app.');
+          throw new Error('Wallet is waiting for your confirmation. Please check your wallet app.', { cause: err });
         }
         const inIframe = typeof window !== 'undefined' && window.self !== window.top;
         if (inIframe) {
@@ -1095,7 +1083,7 @@ class RealWeb3Manager {
           return await this.connectWalletConnectTargeted(provider, onUri);
         }
         if (err instanceof Error) throw err;
-        throw new Error('The wallet did not complete the connection request.');
+        throw new Error('The wallet did not complete the connection request.', { cause: err });
       }
     }
 
@@ -1135,7 +1123,7 @@ class RealWeb3Manager {
       // its internal namespace is gone — every request then throws
       // "undefined is not an object (evaluating 'this.namespace...')".
       // A zombie must NOT shadow the healthy injected provider.
-      let alive = false;
+      let alive: boolean;
       try {
         const accts: string[] = Array.isArray(wc.accounts) ? wc.accounts : [];
         alive = !!(wc.session && (accts.length > 0 || this.activeSessionAccounts(wc).length > 0));
@@ -1292,7 +1280,7 @@ class RealWeb3Manager {
     } catch {}
 
     // Load clean real data from Cloud Firestore with local cache
-    const userData = await this.loadUserDataAsync(formatted);
+    await this.loadUserDataAsync(formatted);
 
     this.currentAccount = {
       address: formatted,
@@ -1324,7 +1312,6 @@ class RealWeb3Manager {
 
   public static getPlayerTagForAddress(address: string): string {
     const clean = address.toLowerCase();
-    const short = clean.slice(2, 6).toUpperCase();
     const adjectives = ['Quantum', 'Apex', 'Cyber', 'Vortex', 'Hyper', 'Neon', 'Solar', 'Pulse', 'Shadow', 'Titan', 'Aero', 'Chrono'];
     const titles = ['Striker', 'Phantom', 'Runner', 'Sniper', 'Rider', 'Specter', 'Knight', 'Glitch', 'Blade', 'Viper', 'Ghost', 'Nova'];
     

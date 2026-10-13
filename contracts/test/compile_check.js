@@ -14,7 +14,6 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-const SOL = require.resolve('solc');
 
 const targets = [
   { file: path.join(here, '..', 'PulsarEscrow.sol'), key: 'contracts/PulsarEscrow.sol' },

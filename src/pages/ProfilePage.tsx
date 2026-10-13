@@ -1,42 +1,14 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import {
-  Wallet,
-  Shield,
-  ShieldCheck,
-  Activity,
-  Award,
-  Zap,
-  TrendingUp,
-  Flame,
-  Clock,
-  ChevronRight,
-  ExternalLink,
-  Sparkles,
-  Lock,
-  Layers,
-  Copy,
-  Check,
-  Cpu,
-  Radio,
-  Sliders,
-  Trophy,
-  Edit2,
-  X,
-  Loader2,
-} from 'lucide-react';
+import { motion } from 'motion/react';
+import { Shield, ShieldCheck, Award, Zap, Flame, Sparkles, Copy, Check, Cpu, Radio, Sliders, Trophy, Edit2, X, Loader2 } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
 import { PendingPayoutCard } from '../components/PendingPayoutCard';
-import { ConnectWallet } from '../components/ConnectWallet';
+
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
-import {
-  PulsarDynamicAvatar,
-  getAvatarTier,
-  AVATAR_STAGES,
-} from '../components/PulsarDynamicAvatar';
+import { PulsarDynamicAvatar, getAvatarTier, AVATAR_STAGES } from '../components/PulsarDynamicAvatar';
 import { DuelCertificateModal } from '../components/DuelCertificateModal';
 import { usePulsarStore } from '../store/usePulsarStore';
-import { XPSystem, TierInfo } from '../lib/xpSystem';
+import { XPSystem } from '../lib/xpSystem';
 import { MatchRecord } from '../lib/realWeb3';
 import { ECONOMY } from '../lib/chain';
 import { sounds } from '../lib/sound';
@@ -76,11 +48,6 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
   const tierInfo = XPSystem.getTier(stats.level);
   const progressPercent = XPSystem.getLevelProgress(stats.xp);
   const { inLevel, span } = XPSystem.getXPToNextLevel(stats.xp);
-
-  // Financial calculations
-  const totalWinnings = history
-    .filter((m) => m.result === 'win')
-    .reduce((acc, m) => acc + (m.prize - m.entryFee), 0);
 
   const handleCopyAddress = () => {
     if (wallet.address) {
@@ -278,8 +245,15 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                         <X className="w-3 h-3" />
                       </button>
                     </form>
+                    {/* Audit 8.19: `depositMsg` was set on a successful claim
+                        and never rendered, so claiming a username showed the
+                        user nothing at all. */}
                     {tagError ? (
                       <span className="text-[9.5px] text-rose-400 block mt-0.5 font-medium">{tagError}</span>
+                    ) : depositMsg ? (
+                      <span role="status" aria-live="polite" className="text-[9.5px] text-emerald-400 block mt-0.5 font-medium">
+                        {depositMsg}
+                      </span>
                     ) : (
                       <span className="text-[9px] text-zinc-500 block mt-0.5">3-20 characters • Letters, numbers & (_)</span>
                     )}

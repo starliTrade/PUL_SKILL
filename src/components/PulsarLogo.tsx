@@ -185,7 +185,6 @@ export const PulsarLogo: React.FC<PulsarLogoProps> = ({
   showLanguageSelector = false,
   onClick,
 }) => {
-  const cfg = sizeConfig[size];
 
   return (
     <div

@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useState, useEffect } from 'react';
+import React, { lazy, Suspense } from 'react';
 import { PulsarStarIcon } from './PulsarLogo';
 import { LanguageSelector } from './LanguageSelector';
 import { cn } from '../lib/utils';

@@ -76,7 +76,7 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const t = (key: keyof typeof translations.en, params?: Record<string, string | number>): string => {
     const langDict = translations[currentLanguage] || translations.en;
-    let text = (langDict as Record<string, string>)[key] || (translations.en as Record<string, string>)[key] || key;
+    const text = (langDict as Record<string, string>)[key] || (translations.en as Record<string, string>)[key] || key;
 
     // Audit M43: the old inline version built a RegExp from the KEY and passed
     // the VALUE as a replacement string, so a key with a metacharacter broke the

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ShieldCheck, Activity, Play, RotateCcw, Zap, AlertTriangle, Swords, Sparkles } from 'lucide-react';
+import { ShieldCheck, Activity, Play, RotateCcw, Zap, AlertTriangle, Swords } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
@@ -25,7 +25,7 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
   onStartBattle,
 }) => {
   const { bestReactionMs } = usePulsarStore();
-  const { t, isRTL } = useLanguage();
+  const { t } = useLanguage();
   const [livePing, setLivePing] = useState<number>(14);
 
   // Interactive reflex test state

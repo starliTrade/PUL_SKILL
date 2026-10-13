@@ -1,27 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'motion/react';
-import {
-  Zap,
-  ShieldCheck,
-  Search,
-  ChevronRight,
-  Users,
-  X,
-  Swords,
-  Radio,
-  Wallet,
-  Coins,
-  AlertCircle,
-  UserPlus,
-  Sparkles,
-  ArrowRight,
-} from 'lucide-react';
+import { motion } from 'motion/react';
+import { Zap, ShieldCheck, Search, Users, X, Swords, Coins, AlertCircle, UserPlus, ArrowRight } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
 import { ConnectWallet } from '../components/ConnectWallet';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { FriendChallengeModal } from '../components/FriendChallengeModal';
-import { AntiCheat, getRandomOpponent } from '../lib/antiCheat';
+import { getRandomOpponent } from '../lib/antiCheat';
 import { ECONOMY, CHAIN } from '../lib/chain';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
@@ -29,12 +14,7 @@ import { realWeb3Manager, MatchRecord } from '../lib/realWeb3';
 import { escrowStatus } from '../lib/escrowFlow';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
-import {
-  fetchPendingChallenges,
-  gameServerConfigured,
-  loadServerSession,
-  type PendingChallenge,
-} from '../lib/gameServerClient';
+import { fetchPendingChallenges, gameServerConfigured, loadServerSession, type PendingChallenge } from '../lib/gameServerClient';
 
 interface LobbyPageProps {
   onNavigate: (
@@ -64,7 +44,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
   onStartDuelWithOpponent,
 }) => {
   const { t } = useLanguage();
-  const { wallet, stats, refreshBalance, history } = usePulsarStore();
+  const { wallet, stats, refreshBalance } = usePulsarStore();
   const [gameMode, setGameMode] = useState<'real' | 'practice'>('real');
   const [selectedStake, setSelectedStake] = useState<number>(1);
   const [isMatchmaking, setIsMatchmaking] = useState(false);

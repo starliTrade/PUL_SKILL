@@ -1,36 +1,13 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import {
-  Trophy,
-  Zap,
-  TrendingUp,
-  Flame,
-  Coins,
-  ShieldCheck,
-  Award,
-  ArrowUpRight,
-  Clock,
-  ChevronRight,
-  Sparkles,
-  ExternalLink,
-  Target,
-  BarChart3,
-  Activity,
-  History,
-  Medal,
-  Crown,
-  Users,
-  Layers,
-  ArrowDownRight,
-  Info,
-} from 'lucide-react';
+import { motion } from 'motion/react';
+import { Trophy, Zap, TrendingUp, Flame, Coins, Award, Clock, Sparkles, ExternalLink, Target, Activity, History, Crown } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
 import { CHAIN, ECONOMY } from '../lib/chain';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { PulsarDynamicAvatar, getAvatarTier } from '../components/PulsarDynamicAvatar';
 import { usePulsarStore } from '../store/usePulsarStore';
-import { XPSystem, TierInfo } from '../lib/xpSystem';
-import { LeaderboardPlayer } from '../lib/realWeb3';
+import { XPSystem } from '../lib/xpSystem';
+
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
@@ -52,7 +29,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
   } = usePulsarStore();
 
   const [activeTab, setActiveTab] = useState<'my_stats' | 'leaderboard'>('my_stats');
-  const [showInspector, setShowInspector] = useState(false);
   const [selectedHistoryItem, setSelectedHistoryItem] = useState<string | null>(null);
 
   const winRate =
@@ -578,7 +554,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                   {podiumOrder.map(({ player, rank }) => {
                     const isFirst = rank === 1;
                     const isSecond = rank === 2;
-                    const isThird = rank === 3;
 
                     const borderColor = isFirst
                       ? 'border-amber-400/50 bg-gradient-to-b from-amber-400/[0.08] to-amber-500/[0.02] shadow-[0_8px_25px_rgba(245,158,11,0.12)]'

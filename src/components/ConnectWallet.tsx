@@ -168,7 +168,6 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [copiedAddr, setCopiedAddr] = useState(false);
   const [showDepositModal, setShowDepositModal] = useState(false);
-  const [depositAmountInput, setDepositAmountInput] = useState('10');
   const [depositStatusMsg, setDepositStatusMsg] = useState<string | null>(null);
   const [connectingWalletId, setConnectingWalletId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -232,6 +231,8 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
       setErrorMessage(null);
       setIsOpen(false);
     }
+  // `setIsOpen` is a stable state setter; the effect is keyed on `isOpen`.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wallet.connected, isOpen]);
 
   // Close dropdown on outside click

@@ -29,6 +29,11 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun tsc --noEmit
+
+      - name: Lint (eslint) — plan item 8.21
+        # `tsc` sees types; it cannot see an unused import, a missing hook
+        # dependency, or a dead assignment. That is this gate.
+        run: bunx eslint . --max-warnings 0
       - name: Frontend unit tests (vitest) — plan item 0.9
         run: bun run test:unit
 
@@ -57,6 +62,11 @@ jobs:
           python3 -c "import sqlite3; print('sqlite3', sqlite3.sqlite_version)"
       - name: Lint (ruff) — plan item 0.4
         run: python3 -m ruff check api scripts tests
+
+      - name: Types (mypy) — plan item 8.21
+        # `verify.sh` had this gate all along, but mypy.ini did not exist, so it
+        # always skipped. The config is committed now, so the gate is real.
+        run: python3 -m mypy
       - name: Start the Firestore emulator — plan item 0.7
         # Without this, test_firestore_integration.py SKIPS and every Firestore
         # bug ships unseen (audit C1/H3/H4 all live on this path). The runner

@@ -1,21 +1,6 @@
 import React, { useId, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import {
-  ShieldCheck,
-  Award,
-  ExternalLink,
-  Copy,
-  Check,
-  Share2,
-  X,
-  Zap,
-  Clock,
-  Coins,
-  Cpu,
-  Fingerprint,
-  Radio,
-  Info,
-} from 'lucide-react';
+import { ShieldCheck, Award, ExternalLink, Copy, Check, Share2, X, Zap, Clock, Info } from 'lucide-react';
 import { MatchRecord } from '../lib/realWeb3';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
@@ -35,8 +20,6 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
   isOpen,
   onClose,
   match,
-  playerTag = 'PULSAR_DUELIST',
-  walletAddress,
 }) => {
   const { t } = useLanguage();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -54,7 +37,6 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
   const isOnChain = Boolean(match.hash && /^0x[0-9a-fA-F]{64}$/.test(match.hash));
   const txHash = isOnChain ? (match.hash as string) : null;
   const displayTx = txHash ? `${txHash.slice(0, 10)}...${txHash.slice(-8)}` : null;
-  const matchDate = new Date(match.timestamp || Date.now()).toLocaleString();
   const reactionMs = match.yourTime || 0;
   const oppMs = match.opponentTime || 0;
   const stakeAmount = match.entryFee || 0;

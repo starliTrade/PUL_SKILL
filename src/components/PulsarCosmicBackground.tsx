@@ -60,7 +60,7 @@ export const PulsarCosmicBackground: React.FC<{ className?: string }> = ({ class
     handleResize();
     window.addEventListener('resize', handleResize);
 
-    let startTime = performance.now();
+    const startTime = performance.now();
 
     const render = (currentTime: number) => {
       const elapsed = currentTime - startTime;

@@ -91,9 +91,10 @@ async function ensureCorrectChain(): Promise<void> {
     if (code === 4902) {
       throw new Error(
         `This network (chain ${CHAIN.chainId}) is not added to your wallet yet. Add it and retry.`,
+        { cause: err },
       );
     }
-    throw new Error('Wrong network — switch your wallet to the app network and retry.');
+    throw new Error('Wrong network — switch your wallet to the app network and retry.', { cause: err });
   }
 }
 

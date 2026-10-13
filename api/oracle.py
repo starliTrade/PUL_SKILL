@@ -87,7 +87,8 @@ def _load_signer() -> Account:
 
 
 def oracle_address() -> str:
-    return load_signer().address
+    # eth_account's stub omits `.address`; the runtime object always has it.
+    return str(load_signer().address)  # type: ignore[attr-defined]
 
 
 # secp256k1 group order — needed for low-s (EIP-2) normalization, which the
@@ -291,7 +292,7 @@ def sign_settlement(
         "loserTimeMs": record["loserTimeMs"],
         "serverNonce": server_nonce,
         "deadline": deadline,
-        "oracleAddress": _load_signer().address,
+        "oracleAddress": str(_load_signer().address),  # type: ignore[attr-defined]
         "signature": signature,
         "validatedTimes": record.get("validatedTimes", {}),
         # Audit 2026-10-13: the engine declares forfeits in its result
