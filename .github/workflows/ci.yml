@@ -40,14 +40,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install server deps (INCLUDING google-cloud-firestore + sqlite3)
+      - name: Install server deps (INCLUDING google-cloud-firestore)
         # sqlite3 is the Firestore STDLib fallback (google-cloud-firestore uses
         # it for local emulation); without it the fallback import fails and CI
         # silently exercises the memory store — the exact blind spot that let
         # the NameError/@firestore.transactional crash ship unnoticed.
+        #
+        # This step used to also run `apt-get install -y python3-sqlite3`, which
+        # does not exist on Ubuntu noble: the step exited 100 and the WHOLE
+        # game-server job (ruff, pytest, the coverage ratchet, the emulator
+        # suites) never ran. sqlite3 ships with the setup-python distribution,
+        # so assert it is importable rather than installing a package that is
+        # not there.
         run: |
           pip install -r api/requirements-dev.txt
-          sudo apt-get update -y && sudo apt-get install -y python3-sqlite3
+          python3 -c "import sqlite3; print('sqlite3', sqlite3.sqlite_version)"
       - name: Lint (ruff) — plan item 0.4
         run: python3 -m ruff check api scripts tests
       - name: Start the Firestore emulator — plan item 0.7
