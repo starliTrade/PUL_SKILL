@@ -106,6 +106,32 @@ describe('no fabricated data (plan item 9.7)', () => {
     expect(offenders, `a random value is feeding a measurement/money name:\n${offenders.join('\n')}`).toEqual([]);
   });
 
+  it('no bare measurement literal is rendered as a reading', () => {
+    // The gate's blind spot: a HARDCODED number needs no randomness, so the
+    // two checks above cannot see it — and a hardcoded number is the most
+    // common shape of this bug ("180ms – 260ms" beside a pulsing dot, "+50 XP",
+    // "185ms"). A bare measurement in a JSX text node must be a documented
+    // constant, not a value that reads as a live measurement.
+    //
+    // `0 USDT` (practice stakes nothing) is the one legitimate case.
+    const ALLOWED_LITERALS = new Set(['0 USDT']);
+    const offenders: string[] = [];
+    for (const rel of sourceFiles()) {
+      if (!rel.endsWith('.tsx')) continue;
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      for (const m of src.matchAll(/>\s*([0-9]+(?:\.[0-9]+)?\s*(?:ms|%|USDT|XP))\s*</g)) {
+        const value = m[1];
+        if (ALLOWED_LITERALS.has(value)) continue;
+        offenders.push(`${rel}:${src.slice(0, m.index).split('\n').length} "${value}"`);
+      }
+    }
+    expect(
+      offenders,
+      `a hardcoded measurement is rendered as a reading:\n${offenders.join('\n')}\n` +
+        'If it is a genuine constant, label it as one (a translated string that says what it is).'
+    ).toEqual([]);
+  });
+
   it('the allowlist has no stale entries', () => {
     // A file that no longer calls Math.random() should leave the list, so the
     // list keeps meaning "these are the places, today".

@@ -381,8 +381,11 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                   <span className="text-zinc-300 font-medium text-[10.5px]">{t('adaptiveSentinelAi')}</span>
                 </div>
+                {/* Audit 9.2 (M32): this was the bare literal "180ms – 260ms"
+                    beside a pulsing dot, which reads as a live reading. It is a
+                    REFERENCE band, so it is labelled as one. */}
                 <span className="text-[9px] font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                  180ms – 260ms
+                  {t('humanReactionBand')}
                 </span>
               </div>
 
