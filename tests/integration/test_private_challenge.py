@@ -152,3 +152,54 @@ def test_a_player_cannot_challenge_themselves(client):
         headers=ha,
     )
     assert r.status_code == 400, r.text
+
+
+# --- the durable (Firestore) queue must agree with the memory one -------------
+#
+# The memory store is what the unit tests exercise; the DURABLE store is what
+# production runs. A reservation that only works in memory is not a feature —
+# and the queue document changed shape (one `waitingMatchId` → a list of
+# `{matchId, target}` slots), so the durable path needs its own proof.
+
+
+@pytest.mark.emulator
+def test_the_firestore_queue_reserves_a_challenge_for_its_target():
+    firestore = pytest.importorskip("google.cloud.firestore")
+    host = os.environ.get("FIRESTORE_EMULATOR_HOST")
+    if not host:
+        pytest.skip("FIRESTORE_EMULATOR_HOST not set — run scripts/start_emulator.sh --bg")
+    try:
+        db = firestore.Client(project="demo-pulsar")
+        db.collection("_probe").document("ping").set({"ok": True})
+    except Exception as exc:  # pragma: no cover - environment problem
+        pytest.skip(f"Firestore emulator unreachable at {host}: {exc}")
+
+    from store import FirestoreStore
+
+    # The queue documents are shared state: clear them so a match left waiting
+    # by another test cannot pair with these players.
+    for doc in db.collection("pulsar_queue").stream():
+        doc.reference.delete()
+
+    store = FirestoreStore(db)
+    alice, bob, carol = Account.create(), Account.create(), Account.create()
+    a_addr, b_addr, c_addr = (
+        alice.address.lower(),
+        bob.address.lower(),
+        carol.address.lower(),
+    )
+
+    reserved = store.enqueue(a_addr, 1.0, None, b_addr)
+    assert reserved.status == "waiting"
+    assert reserved.target == b_addr
+
+    # Carol queues openly: the reserved slot is not hers.
+    other = store.enqueue(c_addr, 1.0, None, None)
+    assert other.match_id != reserved.match_id, (
+        "the durable queue handed a reserved match to a stranger (audit M27)"
+    )
+
+    # Bob accepts by naming Alice.
+    joined = store.enqueue(b_addr, 1.0, None, a_addr)
+    assert joined.match_id == reserved.match_id
+    assert joined.status == "active"
