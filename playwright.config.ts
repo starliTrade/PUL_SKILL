@@ -71,6 +71,14 @@ export default defineConfig({
     {
       command: 'bun run dev',
       url: BASE_URL,
+      // FOOTGUN, hit twice while building this suite: `reuseExistingServer`
+      // adopts a `vite` left over from an earlier run **with its old env**. The
+      // app then silently lacks VITE_ESCROW_ADDRESS (or points at a stale
+      // escrow from a previous anvil deploy), and the symptoms look like app
+      // bugs — "the escrow is not deployed yet", or `createDuel` reverting with
+      // no data. Kill vite (and re-run scripts/start_anvil.sh --bg, which
+      // redeploys and rewrites the manifest) whenever the env or the chain
+      // changes.
       reuseExistingServer: true,
       timeout: 120_000,
       env: {
