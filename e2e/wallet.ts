@@ -90,9 +90,17 @@ export async function installMockWallet(page: Page, options: MockWalletOptions =
               // by shape rather than assuming.
               const msg = args.find((a) => typeof a === 'string' && !/^0x[0-9a-fA-F]{40}$/.test(a));
               const signer = args.find((a) => typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a));
-              const signed = await proxy('personal_sign', [msg, signer ?? account.address]);
+              // `personal_sign` takes the message as a HEX string. MetaMask
+              // hex-encodes it internally; a raw RPC node (anvil) does not, and
+              // answers `invalid value: string "…" expected a valid hex string`
+              // for a plain message. Passing it through unchanged made the app
+              // surface a WALLET error as "Could not reach the duel server".
+              const hexMessage = msg.startsWith('0x') ? msg : `0x${toHex(msg)}`;
+              const signed = await proxy('personal_sign', [hexMessage, signer ?? account.address]);
               if (typeof signed !== 'string' || !signed.startsWith('0x')) {
-                throw new Error(`the mock wallet did not get a signature back: ${String(signed).slice(0, 60)}`);
+                throw new Error(
+                  `the mock wallet did not get a signature back: ${String(signed).slice(0, 60)}`
+                );
               }
               return signed;
             }
@@ -124,6 +132,12 @@ export async function installMockWallet(page: Page, options: MockWalletOptions =
             .catch((err) => cb(err, null));
         },
       };
+
+      function toHex(text: string): string {
+        return Array.from(new TextEncoder().encode(text))
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+      }
 
       async function proxy(method: string, params: unknown[]) {
         const res = await fetch(ANVIL_RPC, {
