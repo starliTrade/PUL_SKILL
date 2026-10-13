@@ -180,3 +180,21 @@ def test_the_username_lookup_does_not_leak_the_owner(durable_store):
     body = client.get("/api/username/taken-name", headers=headers_for(owner)).json()
     assert body.get("available") is True and body.get("alreadyOwned") is True, body
     assert "owner" not in body
+
+
+def test_the_firestore_read_metric_is_actually_counted(durable_store):
+    """Audit 2026-10-13: `note_firestore_read` had no caller.
+
+    The "Firestore reads per match" metric (plan item 6.1) therefore reported
+    `None` forever — a dashboard field that could never show a number.
+    """
+    import metrics
+
+    metrics.reset()
+    match = durable_store.enqueue("0x" + "66" * 20, 2.0, 20.0)
+    before = metrics.snapshot()["firestore"]["reads"]
+
+    durable_store.get(match.match_id)
+
+    after = metrics.snapshot()["firestore"]["reads"]
+    assert after > before, "Firestore reads are not counted — readsPerMatch is always None"

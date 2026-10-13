@@ -27,6 +27,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+import metrics
 import timebase
 
 import match_engine as _default_engine  # engine fns for transactional mutations
@@ -642,6 +643,10 @@ class FirestoreStore:
         return match
 
     def get(self, match_id: str) -> Match:
+        # Audit 2026-10-13: `metrics.note_firestore_read` had NO caller, so the
+        # "Firestore reads per match" metric (plan item 6.1) reported `None`
+        # forever. Count the reads that actually happen.
+        metrics.note_firestore_read()
         snap = self._match_ref(match_id).get()
         if not snap.exists:
             raise MatchError("Match not found")
@@ -675,6 +680,7 @@ class FirestoreStore:
         db = self.db
 
         def _txn_body(transaction: Any) -> Any:
+            metrics.note_firestore_read()
             snap = self._match_ref(match_id).get(transaction=transaction)
             if not snap.exists:
                 raise MatchError("Match not found")
