@@ -416,15 +416,20 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                     return (
                       <div
                         key={m.id}
-                        // Audit 8.3: a row with block children cannot be a
-                        // <button>, so it takes the ARIA button pattern.
-                        {...clickableDivProps(() =>
-                          setSelectedHistoryItem(isExpanded ? null : m.id)
-                        )}
-                        aria-expanded={isExpanded}
-                        className="p-3 hover:bg-white/[0.02] transition-colors cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500/60"
+                        className="p-3 hover:bg-white/[0.02] transition-colors"
                       >
-                        <div className="flex items-center justify-between gap-2">
+                        {/* Audit 2026-10-13: the ARIA button pattern belongs on
+                            the SUMMARY line, not on the whole row. The expanded
+                            drawer below contains a real <a href> to the block
+                            explorer, and a `role="button"` containing a link is
+                            axe's `nested-interactive` (serious). */}
+                        <div
+                          {...clickableDivProps(() =>
+                            setSelectedHistoryItem(isExpanded ? null : m.id)
+                          )}
+                          aria-expanded={isExpanded}
+                          className="flex items-center justify-between gap-2 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500/60"
+                        >
                           <div className="flex items-center gap-2.5">
                             {/* Outcome Badge */}
                             <div

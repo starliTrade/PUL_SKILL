@@ -50,7 +50,33 @@ vi.mock('../lib/realWeb3', () => ({
 const store = vi.hoisted(() => ({
   wallet: { connected: false, address: '', balance: 0, playerId: 'Tester#1' },
   stats: { balance: 0, balanceUnknown: true, wins: 0, losses: 0, voids: 0, totalMatches: 0, xp: 0, level: 1 },
-  history: [] as unknown[],
+  // Audit 2026-10-13: an EMPTY history meant the history rows — the ones 8.3
+  // converted and the ones that contain an explorer <a> — never rendered, so
+  // the sweep could not see a nested-interactive violation in them.
+  history: [
+    {
+      id: 'a'.repeat(32),
+      game: 'reaction',
+      result: 'win',
+      entryFee: 1,
+      prize: 1.96,
+      opponentTime: 300,
+      yourTime: 210,
+      timestamp: 1750000000000,
+      hash: '0x' + 'ab'.repeat(32),
+    },
+    {
+      id: 'b'.repeat(32),
+      game: 'reaction',
+      result: 'loss',
+      entryFee: 1,
+      prize: 0,
+      opponentTime: 200,
+      yourTime: 260,
+      timestamp: 1749990000000,
+      hash: '',
+    },
+  ] as unknown[],
   leaderboard: [] as unknown[],
   refreshBalance: vi.fn(async () => undefined),
   updatePlayerTag: vi.fn(),
@@ -97,8 +123,13 @@ describe('axe sweep — pages (plan item 8.13)', () => {
     await expectClean(container, 'LegalPage');
   });
 
-  it('DashboardPage', async () => {
+  it('DashboardPage (with history rows rendered)', async () => {
     const { container } = render(<DashboardPage onNavigate={() => {}} />);
+    // Prove the rows actually rendered — otherwise this sweep is auditing an
+    // empty list and cannot see a defect inside a row. The row's summary is the
+    // ARIA button carrying `aria-expanded`.
+    const rows = container.querySelectorAll('[role="button"][aria-expanded]');
+    expect(rows.length, 'the history rows did not render').toBe(2);
     await expectClean(container, 'DashboardPage');
   });
 
