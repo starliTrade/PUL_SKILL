@@ -20,11 +20,12 @@ os.environ.setdefault("ORACLE_SIGNING_SECRET", "test-secret-not-for-prod")
 os.environ.setdefault("ORACLE_PRIVATE_KEY", "0x" + "11" * 32)
 os.environ.setdefault("ESCROW_ADDRESS", "0x" + "ab" * 20)
 
-import auth  # noqa: E402
 import main as server  # noqa: E402
-import onchain  # noqa: E402
 import timebase  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 
+import auth  # noqa: E402
+import onchain  # noqa: E402
 
 # --- M15: the on-chain read cache ---------------------------------------------
 
@@ -86,7 +87,7 @@ def test_the_rate_limit_window_still_limits_a_live_key(monkeypatch):
     for _ in range(3):
         server._rl_check("queue", "0x" + "aa" * 20, 3)
 
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         server._rl_check("queue", "0x" + "aa" * 20, 3)
 
 
@@ -99,7 +100,7 @@ class _SpyLock:
     def __init__(self) -> None:
         self.acquired = 0
 
-    def __enter__(self) -> "_SpyLock":
+    def __enter__(self) -> _SpyLock:
         self.acquired += 1
         return self
 
