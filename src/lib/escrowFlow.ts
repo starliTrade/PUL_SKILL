@@ -327,3 +327,30 @@ export async function getDuelState(matchIdBytes32: string): Promise<{
     winner: m.winner,
   };
 }
+
+/** How far back to look for a duel's settlement event. A settled duel is
+ *  recent; a bounded window keeps the log query cheap on a busy chain. */
+const SETTLEMENT_LOOKBACK_BLOCKS = 5000;
+
+/**
+ * The transaction that settled this duel on chain (audit M27/M39 closure).
+ *
+ * When the winner settles first, the loser's client never submits anything, so
+ * it has no tx hash of its own — and its certificate then claimed "LOCAL RESULT
+ * · NOT ON-CHAIN" for a duel that IS settled on chain. The contract's
+ * `MatchSettled` event carries the matchId, so the tx can be read back from the
+ * chain instead of guessed. Returns '' when no settlement is found.
+ */
+export async function findSettlementTx(matchIdBytes32: string): Promise<string> {
+  const provider = requireInjected();
+  const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, provider);
+  const latest = await provider.getBlockNumber();
+  const fromBlock = Math.max(0, latest - SETTLEMENT_LOOKBACK_BLOCKS);
+  const logs = await escrow.queryFilter(
+    escrow.filters.MatchSettled(matchIdBytes32),
+    fromBlock,
+    latest
+  );
+  if (!logs.length) return '';
+  return logs[logs.length - 1].transactionHash ?? '';
+}

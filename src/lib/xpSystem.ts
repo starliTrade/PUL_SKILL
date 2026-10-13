@@ -12,15 +12,21 @@
  *    - Level 25: 11,757 XP
  *    - Level 50: 34,300 XP (Apex Predator Tier)
  *
- * 2. Match Reward Matrix:
- *    - Base Victory XP: +100 XP
- *    - Base Loss XP: +30 XP (Encourages active duel participation)
- *    - Stake Weight Multiplier: +round(min(stake * 20, 200)) XP (Logarithmic dampening against whale exploits)
- *    - Reflex Speed Bonus:
- *      * Sub-180ms: +50 XP (Peak Human Reflex)
- *      * Sub-240ms: +30 XP (Elite Reflex)
- *      * Sub-300ms: +15 XP (Fast Reflex)
- *    - Streak Multiplier: +min(winStreak * 12, 60) XP (Rewards consistency)
+ * 2. Match Reward Matrix (audit M31: these are the numbers the code uses —
+ *    `api/xp.py` mirrors them and `tests/fixtures/xp_vectors.json` pins the two
+ *    together. This block used to document a DIFFERENT matrix than the one
+ *    implemented, which is exactly the drift the parity contract exists to
+ *    prevent):
+ *    - Base Victory XP: +120 XP
+ *    - Base Loss XP: +35 XP (Encourages active duel participation)
+ *    - Stake Weight Multiplier: +round(min(stake * 25, 250)) XP on a win,
+ *      +round(min(stake * 10, 250)) XP on a loss
+ *    - Reflex Speed Bonus (wins only):
+ *      * Sub-180ms: +60 XP (Peak Human Reflex)
+ *      * Sub-240ms: +35 XP (Elite Reflex)
+ *      * Sub-300ms: +20 XP (Fast Reflex)
+ *    - Streak Multiplier: +min(winStreak * 15, 75) XP, where `winStreak` is the
+ *      streak INCLUDING this win (so the first win of a streak earns none)
  *
  * 3. Native Token Conversion & Staking Yield:
  *    - Fixed Base Mining Rate: 100 XP = 1 $PULSAR Token (0.01 $PULSAR per XP)
