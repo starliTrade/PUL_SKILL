@@ -152,6 +152,28 @@ be swallowed by a bare `except Exception: pass`, so the sweep silently no-opped
 in production while still paying for the query (audit H9). It is now counted and
 surfaced on `/api/health` under `sweep` — check that field after deploying.
 
+## 3c. Firestore TTL policies (audit 2026-10-13)
+
+Three collections are written by the server and never deleted by it. Without a
+TTL policy they grow without bound — a storage cost that scales with traffic:
+
+| Collection | Written by | TTL field | Suggested policy |
+|---|---|---|---|
+| `rate_limits` | the distributed rate limiter (`api/main.py`) | `expiresAt` | delete 1 hour after `expiresAt` |
+| `auth_nonce_burns` | SIWE nonce replay protection (`api/auth.py`) | `burnedAt` | delete after 24 hours |
+| `auth_revocations` | session revocation (`api/auth.py`) | `revokedAt` | delete after the session TTL (2 hours) + slack |
+
+Configure them in the Firebase console (Firestore → TTL) or with gcloud:
+
+```
+gcloud firestore fields ttls update expiresAt \
+  --collection-group=rate_limits --enable-ttl
+```
+
+**A TTL policy is a deployment step, not a code change** — the server writes the
+field and the platform deletes the row. Verify the policy is active after
+deploying: `rate_limits` should stop growing once traffic is steady.
+
 ## 4. Configure the web client
 
 Set in Freebuff **Settings → Environment** (dev) **and** in

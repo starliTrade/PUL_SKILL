@@ -108,3 +108,27 @@ def test_the_username_registry_can_reach_the_durable_client(durable_store):
         f"the username registry could not reach the durable store: {r.status_code} {r.text}"
     )
     assert r.json().get("available") is True, r.text
+
+
+def test_a_rate_limit_document_carries_a_ttl_stamp(durable_store):
+    """Audit 2026-10-13: nothing ever deleted these rows.
+
+    The distributed limiter writes one document per (bucket, address) and never
+    removed any, so `rate_limits` grew without bound on the hottest path. The
+    document now carries `expiresAt`, the field a Firestore TTL policy deletes
+    on (the policy itself is a deploy step — see docs/DEPLOYMENT.md §3c).
+    """
+    import main as server
+
+    addr = "0x" + "22" * 20
+    server._rl_check("ttl_probe", addr, 1000)
+
+    doc = durable_store._fs_store.db.collection("rate_limits").document(
+        f"rl:ttl_probe:{addr}"
+    ).get()
+    assert doc.exists, "the limiter did not write its document"
+    body = doc.to_dict() or {}
+    assert "expiresAt" in body, (
+        "the rate-limit document has no TTL stamp — the collection grows forever"
+    )
+    assert body["expiresAt"] is not None

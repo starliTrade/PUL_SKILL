@@ -326,7 +326,16 @@ def revoke_session(jti: str) -> None:
         try:
             db.collection("auth_revocations").document(
                 hashlib.sha256(jti.encode("utf-8")).hexdigest()
-            ).create({"revokedAt": int(timebase.now())})
+            ).create(
+                {
+                    "revokedAt": int(timebase.now()),
+                    # Audit 2026-10-13: without a TTL field this collection could
+                    # never be pruned — a revocation row outlives the token it
+                    # revokes by definition. Keep it for the session TTL plus a
+                    # day of slack, then let the platform delete it.
+                    "expiresAt": int(timebase.now()) + SESSION_TTL_SECONDS + 24 * 60 * 60,
+                }
+            )
         except Exception:
             pass  # already revoked
         return

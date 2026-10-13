@@ -85,6 +85,10 @@ RL_CLAIM_MAX = 10        # claim calls per minute per address (audit #10 #7:
 RL_ROUND_MAX = 60        # target reveals + result submissions per minute per
 RL_USERNAME_LOOKUP_MAX = 60  # GET /api/username/{name} per minute per IP
 RL_PLAYER_STATS_MAX = 60     # GET /api/player/{addr}/stats per minute per address
+# Audit 2026-10-13: how long a rate-limit document may live. The window is 60s;
+# an hour of slack means a TTL policy can never delete a row that is still being
+# counted, while keeping the collection bounded.
+RL_DOC_TTL_SECONDS = 3600
 RL_CHALLENGES_MAX = 60       # GET /api/challenges per minute per address
                          # (audit #11 H3: without this the registry is
                          # enumerable — every possible name probed for free)
@@ -163,6 +167,22 @@ def _rl_note_fallback(exc: BaseException) -> None:
     )
 
 
+def _rl_expiry(now_ms: int) -> Any:
+    """The TTL stamp for a rate-limit document (audit 2026-10-13).
+
+    Returns a `datetime` (what Firestore's TTL policy requires) when the SDK is
+    available, and a plain epoch second otherwise so the field is still written
+    and testable without the SDK.
+    """
+    expires_at = (now_ms // 1000) + RL_DOC_TTL_SECONDS
+    try:
+        from datetime import UTC, datetime
+
+        return datetime.fromtimestamp(expires_at, tz=UTC)
+    except Exception:  # pragma: no cover - datetime is stdlib
+        return expires_at
+
+
 def _rl_check(bucket: str, address: str, limit: int) -> None:
     """Count one hit for (bucket, address) and refuse when over `limit`.
 
@@ -190,6 +210,12 @@ def _rl_check(bucket: str, address: str, limit: int) -> None:
                     d = {"count": 1, "reset_at": now_ms + window_ms}
                 else:
                     d = {"count": int(d.get("count", 0)) + 1, "reset_at": int(d["reset_at"])}
+                # Audit 2026-10-13: nothing ever deleted these documents, so the
+                # collection grew by one row per (bucket, address) FOREVER — an
+                # unbounded storage cost on the hottest path. `expiresAt` is the
+                # field a Firestore TTL policy deletes on; the policy itself is a
+                # console/deploy step (see docs/DEPLOYMENT.md §3c).
+                d["expiresAt"] = _rl_expiry(now_ms)
                 txn.set(doc, d)
                 return {"count": int(d["count"]), "reset_at": int(d["reset_at"])}
 
