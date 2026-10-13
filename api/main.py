@@ -905,6 +905,11 @@ def _request_domain(request: Request) -> str:
     return request.headers.get("host", "localhost")
 
 
+def _is_address(value: str) -> bool:
+    """A full lowercase-or-mixed-case EVM address (audit M27)."""
+    return bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", value or ""))
+
+
 def _auth(request: Request) -> str:
     header = request.headers.get("authorization", "")
     if not header.startswith("Bearer "):
@@ -930,6 +935,10 @@ class QueueRequest(BaseModel):
     # sent with the round result, so the cap was unreachable from HTTP and the
     # gate existed only in the unit tests.
     rttMs: float | None = Field(default=None, ge=0, le=10_000)
+    # Audit M27: a friend challenge names the address it is reserved for. The
+    # match is not offered to anyone else, and it is satisfied when that
+    # address queues (naming the challenger, or simply queueing).
+    opponent: str | None = Field(default=None, max_length=42)
 
 
 class CommitRequest(BaseModel):
@@ -1027,6 +1036,14 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     _rl_check("queue", address, RL_QUEUE_MAX)
     if body.stake not in ALLOWED_STAKES:
         raise HTTPException(status_code=400, detail="Invalid stake")
+    # Audit M27: a friend challenge is a reservation for one address. Validate
+    # it here so a malformed value cannot create a match nobody can ever join.
+    challenge_target = (body.opponent or "").strip().lower()
+    if challenge_target:
+        if not _is_address(challenge_target):
+            raise HTTPException(status_code=400, detail="Invalid opponent address")
+        if challenge_target == address.lower():
+            raise HTTPException(status_code=400, detail="You cannot challenge yourself")
     # Audit H9: the sweep is maintenance, not part of answering this request —
     # it runs at most once per SWEEP_MIN_INTERVAL_SECONDS instead of on every
     # poll (three whole-collection scans per poll on the hottest endpoint).
@@ -1065,7 +1082,7 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
                 f"Finish or leave it before queueing at {body.stake:g}."
             ),
         )
-    match = store.enqueue(address, body.stake, body.rttMs)
+    match = store.enqueue(address, body.stake, body.rttMs, challenge_target or None)
     return match.public_view(for_address=address)
 
 

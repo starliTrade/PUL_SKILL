@@ -60,12 +60,19 @@ interface ReactionGamePageProps {
   onNavigate: (path: string) => void;
   opponentName?: string;
   stakeAmount?: number;
+  /**
+   * Audit M27: the address of the player this duel was challenged to, when the
+   * page was opened from a friend challenge. Matchmaking reserves the duel for
+   * that address instead of pairing the next stranger.
+   */
+  challengeOpponent?: string;
 }
 
 export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   onNavigate,
   opponentName,
   stakeAmount = 1,
+  challengeOpponent,
 }) => {
   const { t } = useLanguage();
   const { wallet, recordMatch } = usePulsarStore();
@@ -321,7 +328,9 @@ function isWalletCancel(msg: string): boolean {
       // Audit H1: measure the round trip BEFORE queueing, so the ping cap is
       // evaluated at the entry gate rather than after the first round.
       const queueRtt = await measureServerRttMs(session).catch(() => undefined);
-      let view = await queueForMatch(session, currentStake, queueRtt);
+      // Audit M27: a friend challenge reserves the duel for the named address.
+      const challengeTarget = challengeOpponent?.trim() || undefined;
+      let view = await queueForMatch(session, currentStake, queueRtt, challengeTarget);
       // Poll while waiting in the queue (queueForMatch is idempotent: it
       // returns the caller's waiting match or their active match).
       // Audit #6 C3: the fixed 2.5s cadence = 24 req/min exceeded the old
@@ -334,7 +343,7 @@ function isWalletCancel(msg: string): boolean {
       while (view.status === 'waiting' && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, backoffMs));
         backoffMs = Math.min(backoffMs + 2500, 10_000);
-        view = await queueForMatch(session, currentStake, queueRtt);
+        view = await queueForMatch(session, currentStake, queueRtt, challengeTarget);
       }
       if (view.status === 'waiting') throw new Error('No opponent joined within 90 seconds. Try again.');
       applyServerMatch(view);
@@ -410,7 +419,7 @@ function isWalletCancel(msg: string): boolean {
       setMatchResult({ outcome: 'void', yourTime: 0, opponentTime: 0, prize: 0, reason });
       setPhase('bot-detected'); // honest error shell; reason is rendered
     }
-  }, [isServerMode, wallet.address, currentStake]);
+  }, [isServerMode, wallet.address, currentStake, challengeOpponent]);
 
   // Audit-#5 refresh recovery: on reload, resume the persisted ranked match
   // (score, round, role) from the authoritative server view. Skips the queue
@@ -464,7 +473,12 @@ function isWalletCancel(msg: string): boolean {
         // Still unmatched — fall through to the normal queue loop by
         // re-queuing (idempotent) rather than dead-waiting.
         const requeueRtt = await measureServerRttMs(session).catch(() => undefined);
-        const queued = await queueForMatch(session, view.stake || currentStake, requeueRtt);
+        const queued = await queueForMatch(
+          session,
+          view.stake || currentStake,
+          requeueRtt,
+          challengeOpponent?.trim() || undefined
+        );
         if (queued.status === 'waiting') throw new Error('No opponent joined yet — retry in a moment.');
         applyServerMatch(queued);
       }
@@ -490,7 +504,7 @@ function isWalletCancel(msg: string): boolean {
       }
       return false;
     }
-  }, [isServerMode, wallet.address, currentStake]);
+  }, [isServerMode, wallet.address, currentStake, challengeOpponent]);
 
   // Audit-#5 refresh recovery: persist the live ranked match so a full page
   // reload can RESUME it (score, round, role) instead of re-queuing and

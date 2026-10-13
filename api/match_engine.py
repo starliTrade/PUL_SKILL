@@ -225,6 +225,12 @@ class Match:
     # Audit H1: the MINIMUM RTT each player has reported this match. Per match,
     # not per round, so a player cannot "warm up" a good value late.
     min_rtt_ms: dict[str, float] = field(default_factory=dict)
+    # Audit M27: a friend challenge is a waiting match RESERVED for one
+    # address. Empty string = open queueing (the default, and every legacy
+    # document). Pairing requires BOTH sides to agree: the reservation must be
+    # for the arriving player, and the arriving player must not have named
+    # someone else.
+    target: str = ""
 
     def play_started_at(self) -> float:
         """The instant the PLAY clock started (activation, falling back to

@@ -49,6 +49,42 @@ COLLECTION = "pulsar_matches"
 QUEUE_DOC = "pulsar_queue"
 
 
+def _can_pair(waiting: Match, addr: str, target: str) -> bool:
+    """Audit M27 — both sides must agree before a reserved match is paired.
+
+    `waiting` is the queued match, `addr` the arriving player, `target` the
+    address the arriving player named ("" = open queueing).
+
+    A match reserved for someone else is never offered to a stranger, and
+    naming a creator who reserved THEIR match for someone else does not force a
+    duel they never agreed to. Open + open still pairs exactly as before.
+    """
+    reserved_for = waiting.target or ""
+    if reserved_for and reserved_for != addr:
+        return False
+    if target and target != waiting.creator:
+        return False
+    return True
+
+
+def _queue_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """The queue document's waiting slots (audit M27).
+
+    The document used to hold a single `waitingMatchId`, which cannot express
+    two players waiting at the same stake for different people — exactly what
+    friend challenges need. It now holds a list of `{matchId, target}` slots.
+    The legacy single-id shape is still read, so a deployment mid-upgrade keeps
+    matchmaking.
+    """
+    waiting = data.get("waiting")
+    if isinstance(waiting, list):
+        return [e for e in waiting if isinstance(e, dict) and e.get("matchId")]
+    legacy = data.get("waitingMatchId")
+    if legacy:
+        return [{"matchId": str(legacy), "target": ""}]
+    return []
+
+
 def _round_to_doc(r: Round) -> dict[str, Any]:
     return {
         "index": r.index,
@@ -120,6 +156,8 @@ def _match_to_doc(m: Match) -> dict[str, Any]:
         "winner": m.winner,
         "settled_at": m.settled_at,
         "signed_settlement": m.signed_settlement,
+        # Audit M27: the reserved target of a friend challenge ("" = open).
+        "target": m.target,
     }
 
 
@@ -147,6 +185,8 @@ def _match_from_doc(d: dict[str, Any]) -> Match:
     m.winner = d.get("winner", "")
     m.settled_at = float(d.get("settled_at", 0.0))
     m.signed_settlement = d.get("signed_settlement")
+    # Audit M27: legacy documents have no target — they were open queueing.
+    m.target = str(d.get("target") or "")
     return m
 
 
@@ -174,8 +214,16 @@ class InMemoryStore:
         self.ratings[win] = rw + delta
         self.ratings[lose] = rl - delta
 
-    def enqueue(self, address: str, stake: float, rtt_ms: float | None = None) -> Match:
+    def enqueue(
+        self,
+        address: str,
+        stake: float,
+        rtt_ms: float | None = None,
+        target: str | None = None,
+    ) -> Match:
         addr = address.lower()
+        # Audit M27: the address a friend challenge is reserved for ("" = open).
+        reserved_for = (target or "").lower()
         with self._lock:
             live = self.player_match.get(addr)
             if live:
@@ -191,6 +239,10 @@ class InMemoryStore:
                     continue
                 if addr in m.players:
                     bucket.remove(other)
+                    continue
+                # Audit M27: a match reserved for someone else stays in the
+                # queue — it is not offered to a stranger.
+                if not _can_pair(m, addr, reserved_for):
                     continue
                 # Found an opponent: activate the match.
                 m.players[addr] = {"address": addr, "joinedAt": timebase.now()}
@@ -209,6 +261,7 @@ class InMemoryStore:
                 created_at=timebase.now(),
                 players={addr: {"address": addr, "joinedAt": timebase.now()}},
                 creator=addr,
+                target=reserved_for,
             )
             self.matches[match_id] = m
             bucket.append(match_id)
@@ -300,8 +353,16 @@ class FirestoreStore:
 
     # -- public interface (mirrors MatchStore) --------------------------------
 
-    def enqueue(self, address: str, stake: float, rtt_ms: float | None = None) -> Match:
+    def enqueue(
+        self,
+        address: str,
+        stake: float,
+        rtt_ms: float | None = None,
+        target: str | None = None,
+    ) -> Match:
         addr = address.lower()
+        # Audit M27: the address a friend challenge is reserved for ("" = open).
+        reserved_for = (target or "").lower()
         live = self.player_match.get(addr)
         if live:
             m = self.local.matches.get(live)
@@ -312,29 +373,42 @@ class FirestoreStore:
 
         def _txn_body(transaction: Any) -> Match | None:
             snap = queue_ref.get(transaction=transaction)
-            waiting_id = (snap.to_dict() or {}).get("waitingMatchId") if snap.exists else None
-            if waiting_id:
-                mref = self._match_ref(str(waiting_id))
-                msnap = mref.get(transaction=transaction)
-                if msnap.exists:
-                    m = _match_from_doc(msnap.to_dict())
-                    if m.status == "waiting" and addr not in m.players:
-                        m.players[addr] = {"address": addr, "joinedAt": timebase.now()}
-                        m.status = "active"
-                        m.joiner = addr
-                        # Audit #8 F-05: activation instant — the play/grace
-                        # clock starts at pairing, not queue entry.
-                        m.activated_at = timebase.now()
-                        transaction.set(mref, _match_to_doc(m))
-                        transaction.set(queue_ref, {"waitingMatchId": None})
-                        return m
-                    if addr in m.players:
-                        # Idempotent re-poll: the caller IS this waiting match's
-                        # creator. Without this branch the queue slot was stolen
-                        # from under them and every poll minted an orphan match.
-                        transaction.set(queue_ref, {"waitingMatchId": waiting_id})
-                        return m
-            # No opponent: create a fresh waiting match and claim the queue slot.
+            data = (snap.to_dict() or {}) if snap.exists else {}
+            # Load every live waiting slot (dangling/paired slots are dropped).
+            loaded: list[tuple[dict[str, Any], Match]] = []
+            for entry in _queue_entries(data):
+                msnap = self._match_ref(str(entry["matchId"])).get(transaction=transaction)
+                if not msnap.exists:
+                    continue
+                m = _match_from_doc(msnap.to_dict())
+                if m.status != "waiting":
+                    continue
+                loaded.append((entry, m))
+
+            # Idempotent re-poll: the caller already owns a waiting slot. Without
+            # this branch the slot was stolen from under them and every poll
+            # minted an orphan match.
+            for _entry, m in loaded:
+                if addr in m.players:
+                    transaction.set(queue_ref, {"waiting": [e for e, _ in loaded]})
+                    return m
+
+            # Audit M27: only a slot this player is allowed to take is paired.
+            for _entry, m in loaded:
+                if not _can_pair(m, addr, reserved_for):
+                    continue
+                m.players[addr] = {"address": addr, "joinedAt": timebase.now()}
+                m.status = "active"
+                m.joiner = addr
+                # Audit #8 F-05: activation instant — the play/grace clock
+                # starts at pairing, not queue entry.
+                m.activated_at = timebase.now()
+                transaction.set(self._match_ref(m.match_id), _match_to_doc(m))
+                transaction.set(queue_ref, {"waiting": [e for e, mm in loaded if mm is not m]})
+                return m
+
+            # No compatible opponent: create a fresh waiting match and append a
+            # slot for it.
             match_id = secrets.token_hex(16)
             m = Match(
                 match_id=match_id,
@@ -342,9 +416,13 @@ class FirestoreStore:
                 created_at=timebase.now(),
                 players={addr: {"address": addr, "joinedAt": timebase.now()}},
                 creator=addr,
+                target=reserved_for,
             )
             transaction.set(self._match_ref(match_id), _match_to_doc(m))
-            transaction.set(queue_ref, {"waitingMatchId": match_id})
+            transaction.set(
+                queue_ref,
+                {"waiting": [e for e, _ in loaded] + [{"matchId": match_id, "target": reserved_for}]},
+            )
             return m
 
         # P0-fix: the decorator MUST come from the imported module (aliased
@@ -414,21 +492,30 @@ class FirestoreStore:
         seen_match_ids: set[str] = set()
         for qd in queue_docs:
             data = qd.to_dict() or {}
-            waiting_id = data.get("waitingMatchId")
-            if not waiting_id:
+            entries = _queue_entries(data)
+            if not entries:
                 continue
-            snap = self._match_ref(str(waiting_id)).get()
-            if not snap.exists:
-                qd.reference.set({"waitingMatchId": None})
-                continue
-            m = _match_from_doc(snap.to_dict())
-            seen_match_ids.add(m.match_id)
-            if m.status == "waiting" and now - m.created_at > QUEUE_EXPIRY_SECONDS:
-                m.status = "void"
-                self._match_ref(m.match_id).set(_match_to_doc(m))
-                qd.reference.set({"waitingMatchId": None})
-            elif m.status == "active" and now - m.play_started_at() > MATCH_EXPIRY_SECONDS:
-                due.append(m)  # settle it, do not void it (audit H8)
+            # Audit M27: the queue document holds a LIST of waiting slots now.
+            # Prune dangling/paired/expired ones and write the survivors back.
+            kept: list[dict[str, Any]] = []
+            for entry in entries:
+                snap = self._match_ref(str(entry["matchId"])).get()
+                if not snap.exists:
+                    continue
+                m = _match_from_doc(snap.to_dict())
+                seen_match_ids.add(m.match_id)
+                if m.status == "waiting" and now - m.created_at > QUEUE_EXPIRY_SECONDS:
+                    m.status = "void"
+                    self._match_ref(m.match_id).set(_match_to_doc(m))
+                    continue
+                if m.status == "active" and now - m.play_started_at() > MATCH_EXPIRY_SECONDS:
+                    due.append(m)  # settle it, do not void it (audit H8)
+                    continue
+                # A slot for a match that is no longer waiting is stale: the
+                # slot is cleared at pairing, so this is leftover state.
+                if m.status == "waiting":
+                    kept.append(entry)
+            qd.reference.set({"waiting": kept})
 
         # Active matches are not always reachable through a queue slot (the
         # slot is cleared on pairing). Scan active-looking docs directly so
@@ -558,16 +645,24 @@ class DurableMatchStore:
     def durable(self) -> bool:
         return self.backend_name == "firestore"
 
-    def enqueue(self, address: str, stake: float, rtt_ms: float | None = None) -> Match:
+    def enqueue(
+        self,
+        address: str,
+        stake: float,
+        rtt_ms: float | None = None,
+        target: str | None = None,
+    ) -> Match:
         # Audit H1: `rtt_ms` must be forwarded. It was missing here, so the ping
         # cap and the RTT record were silently bypassed on the DURABLE store —
         # i.e. in production, while the in-memory store (used by unit tests)
         # enforced them. A gate that only exists in tests is not a gate.
+        # Audit M27: `target` is forwarded for the same reason — a friend
+        # challenge that only works on the memory backend is not a feature.
         if self._fs_store is not None:
-            match = self._fs_store.enqueue(address, stake, rtt_ms)
+            match = self._fs_store.enqueue(address, stake, rtt_ms, target)
             self._mirror(match)
             return match
-        return self.memory.enqueue(address, stake, rtt_ms)
+        return self.memory.enqueue(address, stake, rtt_ms, target)
 
     def record_dispute(self, match_id: str, report: dict) -> None:
         """Attach a player's dispute report to a match (phase 6.4).

@@ -27,7 +27,12 @@ interface FriendChallengeModalProps {
   isOpen: boolean;
   onClose: () => void;
   selectedStake: number;
-  onStartDuel: (opponentName: string, stake: number) => void;
+  /**
+   * Audit M27: the challenged player's ADDRESS travels with the name — the
+   * server reserves the duel for that address, so a challenge is a duel with
+   * the person named rather than the next stranger in the queue.
+   */
+  onStartDuel: (opponentName: string, stake: number, opponentAddress: string) => void;
 }
 
 export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
@@ -124,7 +129,7 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
   const handleChallenge = (player: FriendProfile) => {
     sounds.playGo();
     onClose();
-    onStartDuel(player.playerId || player.shortAddress, selectedStake);
+    onStartDuel(player.playerId || player.shortAddress, selectedStake, player.address);
   };
 
   const handleCopy = (address: string) => {

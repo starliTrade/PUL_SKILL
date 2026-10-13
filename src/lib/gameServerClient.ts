@@ -255,14 +255,21 @@ export interface MatchView {
   }[];
 }
 
-/** Enter the matchmaking queue for a stake. Resolves when paired (server side). */
+/**
+ * Enter the matchmaking queue for a stake. Resolves when paired (server side).
+ *
+ * Audit M27: `opponent` is the address a friend challenge is reserved for. The
+ * server will not offer that match to anyone else, and it is satisfied when the
+ * named address queues. Omit it for ordinary matchmaking.
+ */
 export const queueForMatch = (
   session: ServerSession,
   stake: number,
-  rttMs?: number
+  rttMs?: number,
+  opponent?: string
 ): Promise<MatchView> =>
   // Audit H1: the ping cap is evaluated at queue time.
-  request<MatchView>("/api/queue", { stake, rttMs }, session);
+  request<MatchView>("/api/queue", { stake, rttMs, opponent }, session);
 
 export const getMatch = (session: ServerSession, matchId: string): Promise<MatchView> =>
   request<MatchView>(`/api/match/${encodeURIComponent(matchId)}`, undefined, session, "GET");

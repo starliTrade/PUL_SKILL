@@ -32,8 +32,19 @@ import { useLanguage } from '../i18n/LanguageContext';
 import { gameServerConfigured } from '../lib/gameServerClient';
 
 interface LobbyPageProps {
-  onNavigate: (path: string, opponent?: string, stake?: number) => void;
-  onStartDuelWithOpponent?: (opponentName: string, stake?: number) => void;
+  onNavigate: (
+    path: string,
+    opponent?: string,
+    stake?: number,
+    legalTab?: unknown,
+    opponentAddress?: string
+  ) => void;
+  /** Audit M27: the address is what makes the challenge a reservation. */
+  onStartDuelWithOpponent?: (
+    opponentName: string,
+    stake?: number,
+    opponentAddress?: string
+  ) => void;
 }
 
 const STAKE_TIERS = [
@@ -653,12 +664,12 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
           isOpen={showFriendModal}
           selectedStake={selectedStake}
           onClose={() => setShowFriendModal(false)}
-          onStartDuel={(oppName, stake) => {
+          onStartDuel={(oppName, stake, oppAddress) => {
             setShowFriendModal(false);
             if (onStartDuelWithOpponent) {
-              onStartDuelWithOpponent(oppName, stake);
+              onStartDuelWithOpponent(oppName, stake, oppAddress);
             }
-            onNavigate('/game/reaction', oppName, stake);
+            onNavigate('/game/reaction', oppName, stake, undefined, oppAddress);
           }}
         />
       )}
