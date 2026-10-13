@@ -122,6 +122,25 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
     serverSessionRef.current = session;
     setServerSession(session);
   }, []);
+  /**
+   * Audit HIGH-5 — the wallet and the stake, readable from any closure.
+   *
+   * `restoreBo3FromServer` is a `useCallback(..., [])`, so it holds the FIRST
+   * render's `finishServerMatch`. On a reload the store's account is empty on
+   * that render (`restoreSession()` is async), so `wallet.fullAddress` was `''`
+   * and `iWon` was false for everyone: a reloaded WINNER was recorded and shown
+   * as a loser. H11 moved `serverSession`/`serverMatch` to refs and left these
+   * two captured.
+   *
+   * Assigned DURING render, not in an effect: by the time the player taps, the
+   * page has re-rendered with the loaded wallet, and a render-time assignment is
+   * already visible to the closure. (An effect-based sync is one commit late —
+   * the same trap H11 documented.)
+   */
+  const walletRef = useRef(wallet);
+  walletRef.current = wallet;
+  const currentStakeRef = useRef(currentStake);
+  currentStakeRef.current = currentStake;
   const [serverError, setServerError] = useState<string>('');
   const [settlementTxHash, setSettlementTxHash] = useState<string>('');
   // P0-fix: keep the last server-signed proof + action feedback so a failed
@@ -526,7 +545,23 @@ function isWalletCancel(msg: string): boolean {
     }
   }, []);
 
+  /**
+   * Audit HIGH-4 — do NOT clear the persisted match on the first render.
+   *
+   * On a real reload `serverMatch` is null on the first render, so this effect
+   * called `persistActiveMatch(null)`, which REMOVES the key — before
+   * `recoverServerMatch()` (which runs when the player taps) could read it. The
+   * refresh-recovery feature was therefore dead in production, and the reload
+   * re-queued and re-attempted the escrow deposit. The old test seeded
+   * localStorage AFTER mount, an ordering that never happens on a reload.
+   *
+   * The effect now acts only once a match has actually been established in this
+   * page — after which a null really does mean "the duel is over, clear it".
+   */
+  const hasEstablishedMatchRef = useRef(false);
   useEffect(() => {
+    if (!hasEstablishedMatchRef.current && serverMatch === null) return;
+    hasEstablishedMatchRef.current = true;
     persistActiveMatch(serverMatch);
   }, [serverMatch, persistActiveMatch]);
 
@@ -815,12 +850,13 @@ function isWalletCancel(msg: string): boolean {
       }
       // P0-fix (audit #2): compare against the FULL wallet identity — the
       // truncated display address can never equal the settlement's winner.
-      const myFull = (wallet.fullAddress || wallet.address || '').toLowerCase();
+      // Audit HIGH-5: read the CURRENT wallet, not the first render's.
+      const myFull = (walletRef.current.fullAddress || walletRef.current.address || '').toLowerCase();
       const iWon = result.winner.toLowerCase() === myFull;
       // Audit #6 P3: derive from ECONOMY.winnerShareBps (single source of
       // truth mirroring the contract's PLATFORM_FEE_BPS) instead of 0.98.
       const prize = iWon
-        ? Math.round(((currentStake * 2 * ECONOMY.winnerShareBps) / 10_000) * 100) / 100
+        ? Math.round(((currentStakeRef.current * 2 * ECONOMY.winnerShareBps) / 10_000) * 100) / 100
         : 0;
 
       // The oracle-signed proof is the SAME for both players. Build it once so
@@ -929,7 +965,7 @@ function isWalletCancel(msg: string): boolean {
         id: result.matchId,
         game: 'Reaction Duel (Ranked · Bo3)',
         result: iWon ? 'win' : 'loss',
-        entryFee: currentStake,
+        entryFee: currentStakeRef.current,
         prize,
         opponentTime: avgOpp,
         yourTime: avgUser,
