@@ -620,9 +620,20 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                 </div>
                 <div className="flex items-baseline justify-between mt-1.5" style={{ direction: 'ltr' }}>
                   <div>
+                    {/* Audit 2026-10-13 — HONESTY: `balanceUnknown` means the
+                        chain read has not succeeded, so `balance` is 0 by
+                        default, not a fact. The two gates respected this flag
+                        and the display did not: a funded player whose RPC was
+                        slow saw "$0.00 USDT" stated as truth. */}
                     <div className="text-xl font-bold font-mono text-emerald-300 tracking-tight" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
-                      ${wallet.balance.toFixed(2)}{' '}
-                      <span className="text-xs font-sans text-emerald-400 font-semibold">USDT</span>
+                      {wallet.balanceUnknown ? (
+                        <span className="text-zinc-400">—</span>
+                      ) : (
+                        <>
+                          ${wallet.balance.toFixed(2)}{' '}
+                          <span className="text-xs font-sans text-emerald-400 font-semibold">USDT</span>
+                        </>
+                      )}
                     </div>
                     <div className="text-[10px] font-medium text-zinc-400 mt-0.5 flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_4px_#34d399]"></span>

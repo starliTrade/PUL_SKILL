@@ -510,7 +510,12 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
 
           <div className="linear-card divide-y divide-white/[0.04] overflow-hidden">
             {(() => {
-              const allSource = liveCloudMatches.length > 0 ? liveCloudMatches : history;
+              // Audit 2026-10-13 — HONESTY: this fell back to the player's OWN
+              // history when the global feed was empty, and rendered it under
+              // "LIVE ARENA FEED" with a pulsing dot. The player's past duels
+              // are not a live arena feed, and an empty feed is a fact (the M42
+              // fix made the server say so). Show nothing instead.
+              const allSource = liveCloudMatches;
               // STRICTLY SUPPORT & DISPLAY ONLY REAL USDT STAKED BATTLES (stake > 0)
               const matchesToDisplay = allSource.filter((m: any) => {
                 const fee = Number(m.entryFee ?? m.stake ?? 0);

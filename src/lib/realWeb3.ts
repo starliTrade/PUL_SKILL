@@ -1539,12 +1539,28 @@ class RealWeb3Manager {
       const results: LeaderboardPlayer[] = [];
       querySnapshot.forEach((d) => {
         const val = d.data();
-        const earned = typeof val.totalEarnedUSDT === 'number' ? val.totalEarnedUSDT : Math.round((val.wins || 0) * 1.96 * 100) / 100;
-        const tag = val.playerId || val.name || (val.address ? RealWeb3Manager.getPlayerTagForAddress(val.address) : 'Arena Player');
-        const bestReaction = val.bestReactionMs || val.reactionTime || 185;
+        // Audit 2026-10-13 — HONESTY: this read `totalEarnedUSDT`, which the
+        // settlement server NEVER writes (it writes `earnedUSDT`), so every
+        // podium row fell back to a computed guess — `wins * 1.96` — and
+        // presented it as USDT earned. A reaction time was invented the same way
+        // (`|| 185`), and a missing address became a RANDOM hex string. Three
+        // fabricated numbers on the money surface of a product whose pitch is
+        // cryptographic proof.
+        //
+        // The server now writes `earnedUSDT` and `bestReactionMs`; a row that
+        // lacks them reports 0 / no time rather than a plausible-looking guess.
+        if (!val.address) return; // no identity → not a player row
+        const earned =
+          typeof val.earnedUSDT === 'number'
+            ? val.earnedUSDT
+            : typeof val.totalEarnedUSDT === 'number'
+              ? val.totalEarnedUSDT
+              : 0;
+        const tag = val.playerId || val.name || RealWeb3Manager.getPlayerTagForAddress(val.address);
+        const bestReaction = typeof val.bestReactionMs === 'number' ? val.bestReactionMs : 0;
         results.push({
-          address: val.address || `0x${Math.random().toString(16).slice(2, 10)}`,
-          shortAddress: val.shortAddress || (val.address ? `${val.address.slice(0, 6)}...${val.address.slice(-4)}` : '0x...'),
+          address: val.address,
+          shortAddress: val.shortAddress || `${val.address.slice(0, 6)}...${val.address.slice(-4)}`,
           name: tag,
           playerId: tag,
           wins: val.wins || 0,

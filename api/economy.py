@@ -390,6 +390,11 @@ def record_settlement(match: Any) -> None:
                         # progression the profile does.
                         "xp": progression[winner]["xp"],
                         "level": progression[winner]["level"],
+                        # Audit 2026-10-13: the client read `totalEarnedUSDT` and
+                        # a reaction time that were NEVER written here, so every
+                        # podium row showed a computed guess (`wins * 1.96`) and
+                        # a hardcoded 185ms. Write the real fields.
+                        "bestReactionMs": progression[winner]["bestReactionMs"],
                         "updatedAt": settled_at,
                     },
                     merge=True,
