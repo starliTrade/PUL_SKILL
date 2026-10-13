@@ -34,6 +34,7 @@ import { LeaderboardPlayer } from '../lib/realWeb3';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
+import { clickableDivProps } from '../lib/a11y';
 
 interface DashboardPageProps {
   onNavigate: (path: string) => void;
@@ -103,9 +104,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
         {/* Navigation Breadcrumbs & Top Bar */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 font-medium tracking-tight">
-            <span className="hover:text-zinc-300 cursor-pointer" onClick={() => onNavigate('/')}>
+            {/* Audit 8.3: a clickable element must be reachable by keyboard. */}
+            <button
+              type="button"
+              className="hover:text-zinc-300 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500/60 rounded"
+              onClick={() => onNavigate('/')}
+            >
               {t('navHome')}
-            </span>
+            </button>
             <span className="text-zinc-700">/</span>
             <span className="text-zinc-300">{t('navDashboard')}</span>
           </div>
@@ -434,10 +440,13 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                     return (
                       <div
                         key={m.id}
-                        onClick={() =>
+                        // Audit 8.3: a row with block children cannot be a
+                        // <button>, so it takes the ARIA button pattern.
+                        {...clickableDivProps(() =>
                           setSelectedHistoryItem(isExpanded ? null : m.id)
-                        }
-                        className="p-3 hover:bg-white/[0.02] transition-colors cursor-pointer"
+                        )}
+                        aria-expanded={isExpanded}
+                        className="p-3 hover:bg-white/[0.02] transition-colors cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500/60"
                       >
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2.5">

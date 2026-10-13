@@ -1,5 +1,6 @@
 import React from 'react';
 import { cn } from '../lib/utils';
+import { clickableDivProps } from '../lib/a11y';
 
 export type PulsarAvatarTier = 'novice' | 'veteran' | 'master' | 'apex' | 'grandmaster';
 
@@ -187,7 +188,8 @@ export const PulsarDynamicAvatar: React.FC<PulsarAvatarProps> = ({
 
   return (
     <div
-      onClick={onClick}
+      // Audit 8.3: interactive avatars must be reachable by keyboard.
+      {...(interactive && onClick ? clickableDivProps(onClick) : {})}
       className={cn(
         'relative inline-flex items-center justify-center select-none shrink-0',
         interactive && 'cursor-pointer hover:scale-105 transition-transform',

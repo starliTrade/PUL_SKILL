@@ -4,6 +4,7 @@ import { cn } from '../lib/utils';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { useLanguage } from '../i18n/LanguageContext';
+import { clickableDivProps } from '../lib/a11y';
 
 interface Star {
   x: number;
@@ -279,7 +280,10 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
 
           {/* Center Display: Interactive Reflex Benchmark Screen */}
           <div
-            onClick={testState === 'waiting' || testState === 'ready' ? handleTestClick : undefined}
+            // Audit 8.3: the benchmark target must be reachable by keyboard.
+            {...(testState === 'waiting' || testState === 'ready'
+              ? clickableDivProps(() => handleTestClick({} as React.MouseEvent))
+              : {})}
             className={cn(
               'py-2.5 px-3 text-center transition-all duration-200 rounded-xl my-2 border select-none',
               testState === 'waiting' && 'bg-amber-950/30 border-amber-500/30 cursor-pointer shadow-[inset_0_0_20px_rgba(245,158,11,0.1)]',

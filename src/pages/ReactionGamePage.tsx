@@ -55,6 +55,7 @@ import { DuelCertificateModal } from '../components/DuelCertificateModal';
 import { DisputeReportButton } from '../components/DisputeReportButton';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
+import { clickableDivProps } from '../lib/a11y';
 import { useLanguage } from '../i18n/LanguageContext';
 
 interface ReactionGamePageProps {
@@ -1625,8 +1626,11 @@ function isWalletCancel(msg: string): boolean {
             {phase === 'waiting' && (
               <div
                 data-testid="pulsar-waiting"
-                onClick={handleEarlyClick}
-                className="w-full flex-1 flex flex-col items-center justify-center cursor-pointer p-4 select-none min-h-[320px]"
+                // Audit 8.3 + 8.11: the same rules must apply to both input
+                // methods — a keyboard player who jumps the gun false-starts
+                // exactly like a pointer player, and can reach this area at all.
+                {...clickableDivProps(() => handleEarlyClick({} as React.MouseEvent))}
+                className="w-full flex-1 flex flex-col items-center justify-center cursor-pointer p-4 select-none min-h-[320px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500/60"
               >
                 {earlyClickWarning ? (
                   <motion.div

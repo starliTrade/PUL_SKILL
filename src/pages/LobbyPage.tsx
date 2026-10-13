@@ -215,7 +215,14 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
       <main className="relative z-10 px-4 pt-4 pb-28 max-w-md mx-auto">
         <div className="mb-4">
           <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 font-medium tracking-tight mb-1">
-            <span className="cursor-pointer hover:text-zinc-300" onClick={() => onNavigate('/')}>{t('navHome')}</span>
+            {/* Audit 8.3: a clickable element must be reachable by keyboard. */}
+            <button
+              type="button"
+              className="cursor-pointer hover:text-zinc-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500/60 rounded"
+              onClick={() => onNavigate('/')}
+            >
+              {t('navHome')}
+            </button>
             <span className="text-zinc-700">/</span>
             <span className="text-zinc-200">{t('navArena')}</span>
           </div>

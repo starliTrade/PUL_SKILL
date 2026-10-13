@@ -1,5 +1,6 @@
 import React from 'react';
 import { cn } from '../lib/utils';
+import { clickableDivProps } from '../lib/a11y';
 import { LanguageSelector } from './LanguageSelector';
 
 interface PulsarLogoProps {
@@ -188,7 +189,9 @@ export const PulsarLogo: React.FC<PulsarLogoProps> = ({
 
   return (
     <div
-      onClick={onClick}
+      // Audit 8.3: the logo is clickable when it has a handler; make that
+      // reachable by keyboard too.
+      {...(onClick ? clickableDivProps(onClick) : {})}
       dir="ltr"
       style={{ direction: 'ltr' }}
       className={cn(
