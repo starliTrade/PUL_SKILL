@@ -307,124 +307,6 @@ class Match:
         return view
 
 
-class MatchStore:
-    """
-    In-memory store with explicit in-memory markers so horizontal scaling
-    fails loudly instead of silently splitting matches across replicas.
-    """
-
-    def __init__(self) -> None:
-        self.matches: dict[str, Match] = {}
-        self.queue: dict[float, list[str]] = {}
-        # address -> live (waiting|active) match id. Makes enqueue IDEMPOTENT:
-        # re-polling the queue returns the caller's existing match instead of
-        # minting orphan waiting matches every poll (the deadlock that left
-        # the first player forever in matchmaking while P2 played alone).
-        self.player_match: dict[str, str] = {}
-        # Audit H23: address -> ELO rating. Absent means "new player", so the
-        # default is applied at read time rather than seeded here.
-        self.ratings: dict[str, float] = {}
-
-    def rating_for(self, address: str) -> float:
-        """The player's current rating (audit H23). Default for a new player."""
-        return self.ratings.get(address.lower(), DEFAULT_RATING)
-
-    def apply_rating_result(self, winner: str, loser: str) -> None:
-        """ELO update from a settled match (audit H23).
-
-        Zero-sum by construction: the winner gains exactly what the loser drops,
-        so the pool cannot inflate and the band keeps its meaning.
-        """
-        win = winner.lower()
-        lose = loser.lower()
-        rw = self.rating_for(win)
-        rl = self.rating_for(lose)
-        expected_w = 1.0 / (1.0 + 10 ** ((rl - rw) / 400.0))
-        delta = K_FACTOR * (1.0 - expected_w)
-        self.ratings[win] = rw + delta
-        self.ratings[lose] = rl - delta
-
-    def _rating_band(self, waited_seconds: float) -> float:
-        """The pairing window after waiting this long (audit H23)."""
-        widened = RATING_BAND + (waited_seconds / RATING_BAND_WIDEN_SECONDS) * RATING_BAND
-        return min(widened, MAX_RATING_BAND)
-
-    def enqueue(self, address: str, stake: float, rtt_ms: float | None = None) -> Match:
-        """Queue a player. `rtt_ms` is the client's measured round trip.
-
-        Audit H1: the ping cap is an ENTRY GATE with a clear message, not a
-        silent loss. Above MAX_QUEUE_RTT_MS the compensation cannot make the
-        match fair, so the player is told rather than quietly losing.
-        """
-        if rtt_ms is not None and rtt_ms > MAX_QUEUE_RTT_MS:
-            raise MatchError(
-                f"Ping too high to play fairly: {rtt_ms:.0f}ms round trip, "
-                f"the limit is {MAX_QUEUE_RTT_MS:.0f}ms. Try a better connection."
-            )
-        addr = address.lower()
-        live = self.player_match.get(addr)
-        if live:
-            m = self.matches.get(live)
-            if m and m.status in ("waiting", "active"):
-                return m
-            self.player_match.pop(addr, None)
-        bucket = self.queue.setdefault(stake, [])
-        for other in list(bucket):
-            m = self.matches.get(other)
-            if m is None or m.status != "waiting":
-                bucket.remove(other)
-                continue
-            if addr in m.players:
-                bucket.remove(other)
-                continue
-            # Audit H23: pair within a rating band, widened by how long the
-            # WAITING player has been in the queue. A queue that never matches
-            # is its own failure, so the band is not a hard filter.
-            other_addr = next(iter(m.players), "")
-            waited = timebase.now() - float(m.players.get(other_addr, {}).get("joinedAt", 0.0))
-            band = self._rating_band(max(waited, 0.0))
-            if abs(self.rating_for(addr) - self.rating_for(other_addr)) > band:
-                continue
-            # Found an opponent: activate the match.
-            m.players[addr] = {"address": addr, "joinedAt": timebase.now()}
-            m.status = "active"
-            m.joiner = addr
-            bucket.remove(other)
-            self.player_match[addr] = m.match_id
-            return m
-        # No opponent: create a new waiting match.
-        match_id = secrets.token_hex(16)
-        m = Match(
-            match_id=match_id,
-            stake=stake,
-            created_at=timebase.now(),
-            players={addr: {"address": addr, "joinedAt": timebase.now()}},
-            creator=addr,
-        )
-        self.matches[match_id] = m
-        bucket.append(match_id)
-        self.player_match[addr] = match_id
-        return m
-
-    def get(self, match_id: str) -> Match:
-        m = self.matches.get(match_id)
-        if m is None:
-            raise MatchError("Match not found")
-        return m
-
-    def sweep_expired(self) -> None:
-        now = timebase.now()
-        for mid in list(self.matches):
-            m = self.matches[mid]
-            if m.status in ("waiting", "active") and now - m.created_at > MATCH_EXPIRY_SECONDS:
-                m.status = "void"
-        for stake, bucket in list(self.queue.items()):
-            self.queue[stake] = [
-                mid for mid in bucket
-                if mid in self.matches and self.matches[mid].status == "waiting"
-            ]
-
-
 def _result_proof(
     match_id: str,
     address: str,
@@ -610,27 +492,35 @@ def _ensure_active(match: Match, address: str) -> None:
 
 
 def _rank_time(r: Round | None, min_rtt_ms: float | None = None) -> float | None:
-    """The ranking time for one player's round, latency-compensated.
+    """The ranking time for one player's round: the SERVER-OBSERVED reaction.
 
-    Audit #8 F-01: the server-OBSERVED reaction (elapsed − target_ms) is
+    Audit #8 F-01: the server-observed reaction (elapsed − target_ms) is
     authoritative, because network latency can only ever inflate it. A client
     that fabricates a 105ms claim while really reacting in 450ms cannot outrank
     an honest 220ms player — its observed time is 450ms.
 
-    Audit H1: observed is then compensated by half the player's MINIMUM round
-    trip, so the ranking reflects the reaction rather than the network distance.
-    The compensation is capped at MAX_COMPENSATION_MS so a wild report cannot
-    make a player look faster than they were. Falls back to the claim for legacy
-    documents written before observed_ms existed.
+    Audit H1 (REVISED — the previous fix was an exploit). This used to subtract
+    half the player's minimum reported round trip. That number is
+    CLIENT-REPORTED: the server never measures the network's share of a round,
+    so the subtraction let a player report a large RTT on every round and be
+    credited up to MAX_COMPENSATION_MS — 150ms, decisive in a game whose whole
+    range is ~150–400ms. The old comment claimed "the minimum cannot be
+    inflated — the true value stays in the set"; there was no server-measured
+    value in the set to begin with, so the claim was false.
+
+    Fairness is now enforced where the server can act without being gameable:
+    the ping cap at queue time (`store.check_ping_cap`) and pairing by closest
+    connection (`store.choose_opponent`), so both players' network conditions are
+    comparable before their reactions are compared.
+
+    `min_rtt_ms` is accepted for call-site compatibility and observability; it no
+    longer affects the ranking.
     """
     if r is None or not r.valid or r.result_ms is None:
         return None
     if r.observed_ms is None:
         return r.result_ms
-    if min_rtt_ms is None:
-        return r.observed_ms
-    compensation = min(max(min_rtt_ms, 0.0) / 2.0, MAX_COMPENSATION_MS)
-    return r.observed_ms - compensation
+    return r.observed_ms
 
 
 def _round_winner(
@@ -775,7 +665,7 @@ def settlement_record_for_resign(match: Match) -> dict[str, Any]:
     return record
 
 
-def apply_settlement_ratings(store: MatchStore, result: dict[str, Any]) -> None:
+def apply_settlement_ratings(store: Any, result: dict[str, Any]) -> None:
     """Update both players' ratings from a settled result (audit H23).
 
     Kept OUT of `settle()` because that function is pure match logic with no

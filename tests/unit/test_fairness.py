@@ -1,6 +1,9 @@
 """
 H1 — the winner must be decided by reaction time, not by network distance.
 
+(Revised 2026-10-13 by audit HIGH-6: the latency compensation was removed. See
+below for what replaced it and why the old safety argument was false.)
+
 `_rank_time` returns `observed_ms`, the reaction the SERVER witnessed
 (`elapsed − target_ms`). But `elapsed` runs from when the server SENT the target
 to when the submission ARRIVED, so:
@@ -15,13 +18,27 @@ the server.
 
 Decision (recorded in the plan): option (b) + a ping cap.
 
-    compensated = observed − min_rtt/2
+    compensated = observed − min_rtt/2      <-- REMOVED, see below
 
-The MINIMUM reported RTT is what makes this safe. A naive `observed − rtt/2` is
-itself an exploit: a larger `rtt` yields a smaller `compensated`, i.e. looking
-faster. The minimum cannot be inflated (the true value stays in the set) and
-cannot be deflated below the network floor — and deflating only REDUCES the
-compensation, so there is no incentive either way.
+Audit HIGH-6 (2026-10-13): the compensation was itself the exploit. `min_rtt`
+came ONLY from the client's reported `rttMs` — the server never measures the
+network's share of a round — so the claim that "the minimum cannot be inflated
+because the true value stays in the set" was false: there was no
+server-measured value in the set. Reporting a large RTT on every round bought up
+to MAX_COMPENSATION_MS (150ms), decisive in a 150–400ms game, i.e. a
+stake-transfer exploit under real money.
+
+The ranking is now the server-observed reaction, and fairness is enforced where
+the server can act without being gameable:
+
+  * the ping cap at queue time (`store.check_ping_cap`) — lying about a HIGH
+    ping only excludes you; lying about a LOW one buys nothing;
+  * pairing by closest connection (`store.choose_opponent`) — both players'
+    network conditions are comparable before their reactions are compared.
+
+Both live in `api/store.py`, which is what production runs. They used to live in
+`match_engine.MatchStore`, a class production never instantiates (audit
+CRITICAL-2), so neither applied to a real duel.
 """
 from __future__ import annotations
 
@@ -53,47 +70,38 @@ def _play(match, address, round_index, measured_ms, rtt_ms):
 
 
 # --- the finding -------------------------------------------------------------
-def test_equal_reaction_different_latency_is_a_tie(active_match, addr, opp_addr):
-    """Two players who reacted identically must tie, whatever their latency.
+def test_the_ranking_is_the_server_observed_reaction(active_match, addr, opp_addr):
+    """The ranking is what the server witnessed — no client number is subtracted.
 
-    `addr` is 10ms from the server, `opp_addr` is 100ms away. Both react in
-    220ms. Today the near player's observed time is ~225ms and the far player's
-    ~270ms, so the near player wins a round they did not earn.
+    This replaces the old "equal reactions tie regardless of latency" assertion.
+    That property was bought with a client-reported RTT, which is the exploit
+    (audit HIGH-6). The server cannot separate the network's share of a round
+    from the reaction, so it must not pretend to: it ranks on what it observed
+    and keeps the network comparable by the ping cap and by pairing.
     """
-    near_rtt, far_rtt = 10.0, 100.0
-    reaction = 220.0
+    _play(active_match, addr, 0, 220.0, 10.0)
+    _play(active_match, opp_addr, 0, 220.0, 100.0)
 
-    # The server witnesses the reaction plus half the round trip (one way).
-    _play(active_match, addr, 0, reaction, near_rtt)
-    _play(active_match, opp_addr, 0, reaction, far_rtt)
+    ra = active_match.rounds[addr][0]
+    rb = active_match.rounds[opp_addr][0]
+    va = engine._rank_time(ra, active_match.min_rtt_ms[addr])
+    vb = engine._rank_time(rb, active_match.min_rtt_ms[opp_addr])
 
-    va = engine._rank_time(active_match.rounds[addr][0], active_match.min_rtt_ms[addr])
-    vb = engine._rank_time(active_match.rounds[opp_addr][0], active_match.min_rtt_ms[opp_addr])
-
-    assert va == pytest.approx(reaction, abs=1.0)
-    assert vb == pytest.approx(reaction, abs=1.0)
-    assert va == pytest.approx(vb, abs=1.0), (
-        "equal reactions must tie regardless of network distance (audit H1)"
-    )
+    assert va == pytest.approx(ra.observed_ms, abs=0.01)
+    assert vb == pytest.approx(rb.observed_ms, abs=0.01)
+    # ...and no reported RTT can move either one.
+    assert engine._rank_time(ra, 10_000.0) == va
+    assert engine._rank_time(rb, 0.0) == vb
 
 
-def test_the_near_player_no_longer_wins_by_default(active_match, addr, opp_addr):
-    """The concrete money case: identical reactions, different distance."""
-    reaction = 220.0
-    _play(active_match, addr, 0, reaction, 10.0)
-    _play(active_match, opp_addr, 0, reaction, 100.0)
-
-    winner = engine._round_winner(
-        active_match.rounds[addr],
-        active_match.rounds[opp_addr],
-        0,
-        active_match.min_rtt_ms[addr],
-        active_match.min_rtt_ms[opp_addr],
-    )
-    # The engine's convention: '' means undecided OR tied — both players are
-    # equally fast, so neither wins the round.
-    assert winner == "", (
-        f"the nearer player won a round neither player was faster in (got {winner!r})"
+def test_a_huge_reported_rtt_cannot_buy_speed(active_match, addr):
+    """The concrete money case: report a wild round trip, gain nothing."""
+    _play(active_match, addr, 0, 220.0, 10_000.0)
+    r = active_match.rounds[addr][0]
+    r.observed_ms = 220.0
+    assert engine._rank_time(r, active_match.min_rtt_ms[addr]) == 220.0, (
+        "a client-reported RTT still buys speed — a stake-transfer exploit "
+        "(audit HIGH-6)"
     )
 
 
@@ -127,14 +135,14 @@ def test_a_negative_rtt_is_rejected(active_match, addr):
         submit_result(active_match, addr, 0, 220.0, proof, rtt_ms=-50.0)
 
 
-def test_compensation_is_capped(active_match, addr):
-    """A huge RTT must not compensate beyond the cap."""
+def test_no_reported_rtt_can_make_a_player_look_faster(active_match, addr):
+    """There is no compensation left to cap — the ranking is the observation."""
     _play(active_match, addr, 0, 220.0, 10_000.0)
 
     r = active_match.rounds[addr][0]
-    r.observed_ms = 220.0 + 5000.0
-    ranked = engine._rank_time(r, active_match.min_rtt_ms[addr])
-    assert ranked >= 220.0, "compensation must never make a player look faster than they were"
+    r.observed_ms = 220.0
+    assert engine._rank_time(r, active_match.min_rtt_ms[addr]) == 220.0
+    assert engine._rank_time(r, 0.0) == 220.0
 
 
 # --- the ping cap ------------------------------------------------------------

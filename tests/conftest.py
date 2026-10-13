@@ -58,8 +58,18 @@ def opp_addr(opponent):
 # --- match fixtures -----------------------------------------------------------
 @pytest.fixture
 def store():
-    """A fresh in-memory match store per test (no cross-test bleed)."""
-    return engine.MatchStore()
+    """A fresh store per test (no cross-test bleed).
+
+    Audit CRITICAL-2: this used to return `engine.MatchStore` — a class
+    PRODUCTION NEVER INSTANTIATES (`main.store` is a DurableMatchStore over
+    InMemoryStore/FirestoreStore). Every test that "guarded" the ping cap, the
+    rating band or the latency compensation therefore exercised a dead class:
+    reverting the production behaviour changed nothing. It now returns the
+    production class, so those tests guard what actually runs.
+    """
+    from store import InMemoryStore
+
+    return InMemoryStore()
 
 
 @pytest.fixture

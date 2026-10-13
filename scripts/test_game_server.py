@@ -66,7 +66,13 @@ forged = "0x" + "22" * 65
 check("SIWE rejects forged signature", auth.verify_siwe(message, forged, domain) is None)
 
 # --- 2. Matchmaking + commit/reveal + plausibility ---------------------------
-store = me.MatchStore()
+# Audit CRITICAL-2: `me.MatchStore` was a SECOND store implementation that
+# production never instantiated and that had diverged (its sweep still
+# voided active matches — the H8 bug). The legacy suite now uses the real
+# class, so it exercises what ships.
+from store import InMemoryStore  # noqa: E402
+
+store = InMemoryStore()
 m1 = store.enqueue(player_addr, 1.0)
 opp = Account.create().address.lower()
 m2 = store.enqueue(opp, 1.0)
@@ -404,7 +410,7 @@ check(
 # Idempotent re-enqueue: the same player polling twice must get the SAME match
 # (no orphan waiting matches, no deadlock where P1 never learns the match began).
 s5a = "a" * 40
-store5 = me.MatchStore()
+store5 = InMemoryStore()
 m5a = store5.enqueue(s5a, 1.0)
 m5a_again = store5.enqueue(s5a, 1.0)
 check(
@@ -487,7 +493,12 @@ for idx in range(me.ROUNDS):
     t6 = me.reveal_target(m6, w6, idx)
     wait_out_target(m6, w6, idx, 220.0)
     me.submit_result(m6, w6, idx, 220.0, t6["resultProof"])
-m6.created_at = time.time() - 10_000  # push past the settle grace window
+# Audit CRITICAL-2: the grace window counts from ACTIVATION (audit #8 F-05),
+# not from creation. This used to rewind only `created_at` and still pass,
+# because the dead `me.MatchStore` never set `activated_at` — the test was
+# modelling a clock origin production does not use.
+m6.created_at = time.time() - 10_000
+m6.activated_at = time.time() - 10_000
 res6 = me.settle(m6)
 check("P0.4-regression: grace-window forfeit settles", res6["status"] == "settled")
 check(

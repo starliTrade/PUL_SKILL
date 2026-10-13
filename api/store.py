@@ -72,6 +72,93 @@ def _can_pair(waiting: Match, addr: str, target: str) -> bool:
     return True
 
 
+def _creator_of(match: Match) -> str:
+    """The waiting match's creator (first player), lowercased."""
+    return (match.creator or next(iter(match.players), "")).lower()
+
+
+def _creator_rtt(match: Match) -> float | None:
+    """The RTT the waiting player reported when they queued, if any."""
+    value = match.min_rtt_ms.get(_creator_of(match))
+    return float(value) if value is not None else None
+
+
+def _rating_band(waited_seconds: float) -> float:
+    """The rating window after waiting this long (audit H23)."""
+    widened = _default_engine.RATING_BAND + (
+        waited_seconds / _default_engine.RATING_BAND_WIDEN_SECONDS
+    ) * _default_engine.RATING_BAND
+    return min(widened, _default_engine.MAX_RATING_BAND)
+
+
+def check_ping_cap(rtt_ms: float | None) -> None:
+    """Audit H1: the ping cap is an ENTRY GATE with a clear message.
+
+    It lives HERE, not in the engine's standalone `MatchStore`, because that
+    class is not what production runs — the cap existed only for the tests
+    (audit CRITICAL-2). Lying about a HIGH ping only excludes you, and lying
+    about a LOW one buys nothing (the ranking uses the server-observed time),
+    so this gate is not gameable in either direction.
+    """
+    if rtt_ms is not None and rtt_ms > _default_engine.MAX_QUEUE_RTT_MS:
+        raise MatchError(
+            f"Ping too high to play fairly: {rtt_ms:.0f}ms round trip, "
+            f"the limit is {_default_engine.MAX_QUEUE_RTT_MS:.0f}ms. "
+            "Try a better connection."
+        )
+
+
+def choose_opponent(
+    candidates: list[Match],
+    *,
+    addr: str,
+    target: str,
+    rtt_ms: float | None,
+    rating_for: Callable[[str], float],
+    now: float,
+) -> Match | None:
+    """THE pairing decision — both backends call this (audit CRITICAL-2).
+
+    The ping cap and the rating band existed only in `match_engine.MatchStore`,
+    which production never instantiates, so neither applied to a real duel. One
+    decision function is the structural fix: the two backends cannot drift if
+    there is only one of them.
+
+    Audit H1: among compatible opponents the closest CONNECTION wins, so the
+    network's contribution to the ranking is comparable on both sides. The
+    server cannot measure the network's share of a round, so it must not
+    subtract a client's claim from the ranking (that is a stake-transfer
+    exploit); pairing is where it can act without being gameable.
+    """
+    compatible: list[Match] = []
+    reserved_for_me: list[Match] = []
+    for m in candidates:
+        if not _can_pair(m, addr, target):
+            continue
+        creator = _creator_of(m)
+        waited = now - float(m.players.get(creator, {}).get("joinedAt", 0.0) or 0.0)
+        if abs(rating_for(addr) - rating_for(creator)) > _rating_band(max(waited, 0.0)):
+            continue
+        compatible.append(m)
+        if (m.target or "") == addr:
+            reserved_for_me.append(m)
+    if not compatible:
+        return None
+
+    # A reservation for THIS player outranks every heuristic: someone asked for
+    # them by name (audit M27), and that request must not be lost to a tiebreak.
+    if reserved_for_me:
+        return reserved_for_me[0]
+
+    def distance(m: Match) -> float:
+        other = _creator_rtt(m)
+        if rtt_ms is None or other is None:
+            return float("inf")  # unknown RTT: deprioritised, never preferred
+        return abs(other - rtt_ms)
+
+    return min(compatible, key=distance)
+
+
 def _queue_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
     """The queue document's waiting slots (audit M27).
 
@@ -163,6 +250,10 @@ def _match_to_doc(m: Match) -> dict[str, Any]:
         "signed_settlement": m.signed_settlement,
         # Audit M27: the reserved target of a friend challenge ("" = open).
         "target": m.target,
+        # Audit CRITICAL-2: the per-match minimum RTT. It was never persisted, so
+        # on the durable backend every re-read lost it and the latency
+        # compensation could never apply in production.
+        "min_rtt_ms": m.min_rtt_ms,
     }
 
 
@@ -192,6 +283,10 @@ def _match_from_doc(d: dict[str, Any]) -> Match:
     m.signed_settlement = d.get("signed_settlement")
     # Audit M27: legacy documents have no target — they were open queueing.
     m.target = str(d.get("target") or "")
+    # Audit CRITICAL-2: restore the per-match RTT record (legacy docs: empty).
+    m.min_rtt_ms = {
+        str(k): float(v) for k, v in (d.get("min_rtt_ms") or {}).items()
+    }
     return m
 
 
@@ -229,6 +324,9 @@ class InMemoryStore:
         addr = address.lower()
         # Audit M27: the address a friend challenge is reserved for ("" = open).
         reserved_for = (target or "").lower()
+        # Audit H1: the ping cap is an entry gate (audit CRITICAL-2 put it here,
+        # where production actually runs).
+        check_ping_cap(rtt_ms)
         with self._lock:
             live = self.player_match.get(addr)
             if live:
@@ -237,6 +335,8 @@ class InMemoryStore:
                     return m
                 self.player_match.pop(addr, None)
             bucket = self.queue.setdefault(stake, [])
+            # Prune stale/self slots, then let the ONE pairing decision choose.
+            candidates: list[Match] = []
             for other in list(bucket):
                 m = self.matches.get(other)
                 if m is None or m.status != "waiting":
@@ -245,20 +345,28 @@ class InMemoryStore:
                 if addr in m.players:
                     bucket.remove(other)
                     continue
-                # Audit M27: a match reserved for someone else stays in the
-                # queue — it is not offered to a stranger.
-                if not _can_pair(m, addr, reserved_for):
-                    continue
+                candidates.append(m)
+            chosen = choose_opponent(
+                candidates,
+                addr=addr,
+                target=reserved_for,
+                rtt_ms=rtt_ms,
+                rating_for=self.rating_for,
+                now=timebase.now(),
+            )
+            if chosen is not None:
                 # Found an opponent: activate the match.
-                m.players[addr] = {"address": addr, "joinedAt": timebase.now()}
-                m.status = "active"
-                m.joiner = addr
+                chosen.players[addr] = {"address": addr, "joinedAt": timebase.now()}
+                chosen.status = "active"
+                chosen.joiner = addr
                 # Audit #8 F-05: the PLAY clock starts when the joiner pairs,
                 # not when the creator queued.
-                m.activated_at = timebase.now()
-                bucket.remove(other)
-                self.player_match[addr] = m.match_id
-                return m
+                chosen.activated_at = timebase.now()
+                if rtt_ms is not None:
+                    chosen.min_rtt_ms[addr] = float(rtt_ms)
+                bucket.remove(chosen.match_id)
+                self.player_match[addr] = chosen.match_id
+                return chosen
             match_id = secrets.token_hex(16)
             m = Match(
                 match_id=match_id,
@@ -268,6 +376,10 @@ class InMemoryStore:
                 creator=addr,
                 target=reserved_for,
             )
+            if rtt_ms is not None:
+                # The waiting player's own RTT, so the next arrival can be paired
+                # by closest connection (audit H1).
+                m.min_rtt_ms[addr] = float(rtt_ms)
             self.matches[match_id] = m
             bucket.append(match_id)
             self.player_match[addr] = match_id
@@ -382,13 +494,25 @@ class FirestoreStore:
     so concurrent enqueues can never double-match or lose a pairing.
     """
 
-    def __init__(self, client: Any) -> None:
+    def __init__(
+        self,
+        client: Any,
+        rating_for: Callable[[str], float] | None = None,
+    ) -> None:
         self.db = client
         self.local = InMemoryStore()  # write-through cache for hot reads
         # Audit H9: the last sweep failure, surfaced through /api/health.
         self.last_sweep_error: str = ""
         # address -> live (waiting|active) match id for idempotent re-polls.
         self.player_match: dict[str, str] = {}
+        # Audit CRITICAL-2: the rating lookup used by the pairing band. Injected
+        # by DurableMatchStore so the durable path applies the SAME band the
+        # memory path does. Ratings are still process-local (a documented
+        # phase-6 limitation): the band therefore holds within a replica, and
+        # across replicas only once ratings are persisted.
+        self._rating_for: Callable[[str], float] = rating_for or (
+            lambda _addr: _default_engine.DEFAULT_RATING
+        )
 
     # -- internal ------------------------------------------------------------
 
@@ -415,6 +539,8 @@ class FirestoreStore:
         addr = address.lower()
         # Audit M27: the address a friend challenge is reserved for ("" = open).
         reserved_for = (target or "").lower()
+        # Audit H1 / CRITICAL-2: the ping cap applies on the durable backend too.
+        check_ping_cap(rtt_ms)
         live = self.player_match.get(addr)
         if live:
             m = self.local.matches.get(live)
@@ -445,19 +571,32 @@ class FirestoreStore:
                     transaction.set(queue_ref, {"waiting": [e for e, _ in loaded]})
                     return m
 
-            # Audit M27: only a slot this player is allowed to take is paired.
-            for _entry, m in loaded:
-                if not _can_pair(m, addr, reserved_for):
-                    continue
-                m.players[addr] = {"address": addr, "joinedAt": timebase.now()}
-                m.status = "active"
-                m.joiner = addr
+            # Audit CRITICAL-2: the SAME pairing decision the memory backend
+            # uses — ping cap, rating band and closest-connection preference all
+            # apply here, because production runs THIS path.
+            chosen = choose_opponent(
+                [m for _e, m in loaded],
+                addr=addr,
+                target=reserved_for,
+                rtt_ms=rtt_ms,
+                rating_for=self._rating_for,
+                now=timebase.now(),
+            )
+            if chosen is not None:
+                chosen.players[addr] = {"address": addr, "joinedAt": timebase.now()}
+                chosen.status = "active"
+                chosen.joiner = addr
                 # Audit #8 F-05: activation instant — the play/grace clock
                 # starts at pairing, not queue entry.
-                m.activated_at = timebase.now()
-                transaction.set(self._match_ref(m.match_id), _match_to_doc(m))
-                transaction.set(queue_ref, {"waiting": [e for e, mm in loaded if mm is not m]})
-                return m
+                chosen.activated_at = timebase.now()
+                if rtt_ms is not None:
+                    chosen.min_rtt_ms[addr] = float(rtt_ms)
+                transaction.set(self._match_ref(chosen.match_id), _match_to_doc(chosen))
+                transaction.set(
+                    queue_ref,
+                    {"waiting": [e for e, mm in loaded if mm is not chosen]},
+                )
+                return chosen
 
             # No compatible opponent: create a fresh waiting match and append a
             # slot for it.
@@ -470,6 +609,8 @@ class FirestoreStore:
                 creator=addr,
                 target=reserved_for,
             )
+            if rtt_ms is not None:
+                m.min_rtt_ms[addr] = float(rtt_ms)
             transaction.set(self._match_ref(match_id), _match_to_doc(m))
             transaction.set(
                 queue_ref,
@@ -702,7 +843,12 @@ class DurableMatchStore:
                 else:
                     # Application Default Credentials (Cloud Run / Freebuff)
                     self._firestore = _firestore.Client(project=project)
-                self._fs_store = FirestoreStore(self._firestore)
+                # Audit CRITICAL-2: hand the durable store the same rating
+                # lookup the memory backend uses, so the pairing band applies on
+                # the path production actually runs.
+                self._fs_store = FirestoreStore(
+                    self._firestore, rating_for=self.memory.rating_for
+                )
                 self.backend_name = "firestore"
             except Exception:
                 self._firestore = None
