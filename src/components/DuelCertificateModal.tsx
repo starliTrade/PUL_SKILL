@@ -1,26 +1,12 @@
-import React, { useState } from 'react';
+import React, { useId, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import {
-  ShieldCheck,
-  Award,
-  ExternalLink,
-  Copy,
-  Check,
-  Share2,
-  X,
-  Zap,
-  Clock,
-  Coins,
-  Cpu,
-  Fingerprint,
-  Radio,
-  Info,
-} from 'lucide-react';
+import { ShieldCheck, Award, ExternalLink, Copy, Check, Share2, X, Zap, Clock, Info } from 'lucide-react';
 import { MatchRecord } from '../lib/realWeb3';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
 import { explorerTxUrl } from '../lib/chain';
+import { modalDialogProps, useModalA11y } from '../lib/useModalA11y';
 
 interface DuelCertificateModalProps {
   isOpen: boolean;
@@ -34,11 +20,13 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
   isOpen,
   onClose,
   match,
-  playerTag = 'PULSAR_DUELIST',
-  walletAddress,
 }) => {
   const { t } = useLanguage();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  // Audit 8.4: role/aria-modal/focus-trap/Escape + focus restore.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useModalA11y(isOpen, onClose, dialogRef);
 
   if (!isOpen || !match) return null;
 
@@ -49,7 +37,6 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
   const isOnChain = Boolean(match.hash && /^0x[0-9a-fA-F]{64}$/.test(match.hash));
   const txHash = isOnChain ? (match.hash as string) : null;
   const displayTx = txHash ? `${txHash.slice(0, 10)}...${txHash.slice(-8)}` : null;
-  const matchDate = new Date(match.timestamp || Date.now()).toLocaleString();
   const reactionMs = match.yourTime || 0;
   const oppMs = match.opponentTime || 0;
   const stakeAmount = match.entryFee || 0;
@@ -89,6 +76,8 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
     <AnimatePresence>
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
         <motion.div
+          ref={dialogRef}
+          {...modalDialogProps(titleId)}
           initial={{ opacity: 0, scale: 0.94, y: 12 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.94, y: 12 }}
@@ -108,6 +97,8 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
               sounds.playClick();
               onClose();
             }}
+            // Audit 8.5: an icon-only button needs an accessible name.
+            aria-label={t('closeModal')}
             className="absolute top-3.5 right-3.5 p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
@@ -133,16 +124,16 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                   </span>
                   {isOnChain ? (
                     <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                      ON-CHAIN SETTLED
+                      {t('certOnChainSettled')}
                     </span>
                   ) : (
                     <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white/10 text-zinc-300">
-                      LOCAL RESULT · NOT ON-CHAIN
+                      {t('certLocalResult')}
                     </span>
                   )}
                 </div>
-                <h3 className="text-base font-bold text-white tracking-tight">
-                  {isWin ? 'Victory Certificate' : 'Duel Receipt'}
+                <h3 id={titleId} className="text-base font-bold text-white tracking-tight">
+                  {isWin ? t('certificateTitleWin') : t('certificateTitleLoss')}
                 </h3>
               </div>
             </div>
@@ -157,20 +148,24 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                     isWin ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
                   )}
                 >
-                  {isWin ? (isOnChain ? '🏆 VICTORY (ESCROW PAYOUT)' : '🏆 VICTORY (PRACTICE)') : 'DEFEAT'}
+                  {isWin
+                      ? isOnChain
+                        ? t('certOutcomeWinEscrow')
+                        : t('certOutcomeWinPractice')
+                      : t('certOutcomeLoss')}
                 </span>
               </div>
 
               <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/5 font-mono">
                 <div>
-                  <div className="text-[10.5px] text-zinc-500">Your Reflex Speed</div>
+                  <div className="text-[10.5px] text-zinc-500">{t('certYourReflex')}</div>
                   <div className="text-sm font-bold text-white flex items-center gap-1">
                     <Zap className="w-3.5 h-3.5 text-sky-400" />
                     <span>{reactionMs} ms</span>
                   </div>
                 </div>
                 <div>
-                  <div className="text-[10.5px] text-zinc-500">Opponent Speed</div>
+                  <div className="text-[10.5px] text-zinc-500">{t('certOpponentSpeed')}</div>
                   <div className="text-sm font-bold text-zinc-300 flex items-center gap-1">
                     <Clock className="w-3.5 h-3.5 text-zinc-500" />
                     <span>{oppMs} ms</span>
@@ -201,6 +196,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                 </div>
                 <button
                   onClick={() => handleCopy(duelId, 'duelId')}
+                  aria-label={t('copyId')}
                   className="p-1 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white shrink-0"
                 >
                   {copiedKey === 'duelId' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -210,11 +206,12 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
               {isOnChain && txHash ? (
                 <div className="flex items-center justify-between p-2.5 rounded-lg bg-black/40 border border-white/5">
                   <div className="space-y-0.5 min-w-0 pr-2">
-                    <div className="text-[10px] text-zinc-500">Settlement Transaction</div>
+                    <div className="text-[10px] text-zinc-500">{t('certSettlementTx')}</div>
                     <div className="text-emerald-300 truncate">{displayTx}</div>
                   </div>
                   <button
                     onClick={() => handleCopy(txHash, 'txHash')}
+                    aria-label={t('copyTxHash')}
                     className="p-1 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white shrink-0"
                   >
                     {copiedKey === 'txHash' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -224,8 +221,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                 <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-500/[0.06] border border-amber-500/20">
                   <Info className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
                   <div className="text-[10.5px] text-amber-200/90 leading-relaxed">
-                    This result was recorded locally and has no on-chain settlement.
-                    Real-stake duels will settle through the Pulsar escrow contract and show a verifiable transaction here.
+                    {t('certLocalOnlyNote')}
                   </div>
                 </div>
               )}
@@ -238,7 +234,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                 className="flex-1 py-2.5 px-4 rounded-xl bg-white hover:bg-zinc-100 text-black font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all shadow-[0_0_20px_rgba(255,255,255,0.15)]"
               >
                 <Share2 className="w-3.5 h-3.5" />
-                <span>{copiedKey === 'share' ? 'Copied to Clipboard!' : 'Share Result'}</span>
+                <span>{copiedKey === 'share' ? t('certCopied') : t('certShare')}</span>
               </button>
 
               {isOnChain && txHash ? (
@@ -249,12 +245,12 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                   className="py-2.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-zinc-300 hover:text-white font-mono text-xs flex items-center justify-center gap-1.5 transition-colors"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
-                  <span>Explorer</span>
+                  <span>{t('certExplorer')}</span>
                 </a>
               ) : (
                 <div className="py-2.5 px-3 rounded-xl bg-white/[0.02] border border-white/5 text-zinc-600 font-mono text-xs flex items-center justify-center gap-1.5">
                   <ExternalLink className="w-3.5 h-3.5" />
-                  <span>Explorer</span>
+                  <span>{t('certExplorer')}</span>
                 </div>
               )}
             </div>

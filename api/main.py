@@ -46,7 +46,7 @@ import economy
 import onchain
 
 try:  # optional dependency — absent until Firestore credentials exist
-    from google.cloud import firestore as _gcf
+    from google.cloud import firestore as _gcf  # type: ignore[attr-defined]
 except Exception:  # pragma: no cover - local dev without the SDK
     _gcf = None  # type: ignore[assignment]
 
@@ -1045,7 +1045,10 @@ class ResultRequest(BaseModel):
 
 class ClaimRequest(BaseModel):
     txHash: str = Field(pattern=r"^0x[0-9a-fA-F]{64}$")
-    signature: str = ""
+    # Audit 8.14: this carried a `signature` field that nothing ever read — the
+    # claim is authenticated by the SIWE session and verified against the chain
+    # receipt, so a second signature proved nothing. A field the server ignores
+    # is worse than no field: it invites a client to believe it matters.
 
 
 @app.post("/api/auth/nonce")
@@ -1396,9 +1399,12 @@ def _finalize_if_due(match: Any) -> None:
     try:
         store.update(match.match_id, _settle_once)
         _ledger_settlement(match.match_id)
-    except MatchError:
+    except MatchError as exc:
         # Audit M9: the settlement body raises only domain errors now.
-        pass
+        # Audit 8.15: it used to be swallowed silently, so a match that could
+        # never settle looked exactly like a quiet period. Count it and surface
+        # it on /api/health.
+        _note_sweep_failure("finalize_if_due", exc)
 
 
 def _resign_stale_settlements() -> None:
@@ -1431,9 +1437,12 @@ def _resign_stale_settlements() -> None:
             try:
                 store.update(mid, _settle_once)
                 _ledger_settlement(mid)
-            except MatchError:
+            except MatchError as exc:
                 # Audit M9: the settlement body raises only domain errors now.
-                pass
+                # Audit 8.15: counted, not swallowed — a re-sign that keeps
+                # failing means a winner's prize stays unspendable, and that must
+                # be visible on /api/health rather than look like a quiet period.
+                _note_sweep_failure("resign_memory", exc)
         for m in store.sweep_stale_settlements():
             deadline = int((m.signed_settlement or {}).get("deadline", 0) or 0)
             if deadline and timebase.now() >= engine.settlement_deadline(m):
@@ -1441,11 +1450,13 @@ def _resign_stale_settlements() -> None:
             try:
                 store.update(m.match_id, _settle_once)
                 _ledger_settlement(m.match_id)
-            except MatchError:
-                # Audit M9: the settlement body raises only domain errors now.
-                pass
-    except Exception:
-        pass  # observability nicety — must never break matchmaking
+            except MatchError as exc:
+                # Audit M9 + 8.15: counted, not swallowed.
+                _note_sweep_failure("resign_durable", exc)
+    except Exception as exc:
+        # Audit 8.15: the outer guard stays (a sweep must never break
+        # matchmaking) but it no longer hides the reason.
+        _note_sweep_failure("resign_sweep", exc)
 
 
 @app.post("/api/match/{match_id}/settle")
@@ -1523,7 +1534,7 @@ def claim_match(match_id: str, body: ClaimRequest, request: Request) -> dict[str
                 "for this match with the winner as claimer. Retry after the tx confirms."
             ),
         }
-    recorded = economy.record_claim(match_id, winner, body.txHash, body.signature)
+    recorded = economy.record_claim(match_id, winner, body.txHash)
     return {"ok": recorded, "onChainProof": recorded}
 
 

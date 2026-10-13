@@ -126,7 +126,7 @@ def token_decimals() -> int | None:
     if not escrow_configured():
         return None
     if _token_decimals != "unread":
-        if _token_decimals is not None:
+        if isinstance(_token_decimals, int):
             return _token_decimals  # immutable once read — cache for the process
         if timebase.now() < _token_decimals_retry_after:
             return None  # a recent failure; do not hammer the RPC

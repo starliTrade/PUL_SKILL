@@ -1,27 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useId, useRef, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import {
-  Search,
-  UserPlus,
-  UserCheck,
-  Swords,
-  X,
-  Zap,
-  Shield,
-  Sparkles,
-  ExternalLink,
-  Users,
-  Copy,
-  Check,
-  Clock,
-  Trophy,
-} from 'lucide-react';
+import { Search, UserPlus, UserCheck, Swords, X, Shield, Users, Copy, Check } from 'lucide-react';
 import { realWeb3Manager, FriendProfile } from '../lib/realWeb3';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { cn } from '../lib/utils';
 import { PulsarDynamicAvatar } from './PulsarDynamicAvatar';
 import { useLanguage } from '../i18n/LanguageContext';
+import { modalDialogProps, useModalA11y } from '../lib/useModalA11y';
 
 interface FriendChallengeModalProps {
   isOpen: boolean;
@@ -42,13 +28,15 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
   onStartDuel,
 }) => {
   const { t } = useLanguage();
-  const { wallet, stats } = usePulsarStore();
+  const { wallet } = usePulsarStore();
+  // Audit 8.19: this state existed but was never rendered — the search had no
+  // loading indicator. It is rendered now, so it is a real state again.
+  const [isSearching, setIsSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'search' | 'saved'>('search');
   const [searchResults, setSearchResults] = useState<FriendProfile[]>([]);
   const [savedFriends, setSavedFriends] = useState<FriendProfile[]>([]);
   const [savedAddresses, setSavedAddresses] = useState<string[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
   const [copiedAddr, setCopiedAddr] = useState<string | null>(null);
 
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'info' | 'success' | 'warn' } | null>(null);
@@ -139,6 +127,11 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
     setTimeout(() => setCopiedAddr(null), 2000);
   };
 
+  // Audit 8.4: role/aria-modal/focus-trap/Escape + focus restore.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useModalA11y(isOpen, onClose, dialogRef);
+
   if (!isOpen) return null;
 
   return (
@@ -154,6 +147,8 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
 
       {/* Modal Box */}
       <motion.div
+        ref={dialogRef}
+        {...modalDialogProps(titleId)}
         initial={{ scale: 0.95, opacity: 0, y: 10 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
         exit={{ scale: 0.95, opacity: 0, y: 10 }}
@@ -166,12 +161,14 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
               <Users className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-white tracking-tight">{t('friendModalTitle')}</h3>
+              <h3 id={titleId} className="text-sm font-bold text-white tracking-tight">{t('friendModalTitle')}</h3>
               <p className="text-[10px] text-zinc-400">{t('friendModalSub')}</p>
             </div>
           </div>
           <button
             onClick={onClose}
+            // Audit 8.5: an icon-only button needs an accessible name.
+            aria-label={t('closeModal')}
             className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800/80 transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
@@ -275,14 +272,36 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
           <div className="space-y-3 flex-1 flex flex-col min-h-0 overflow-hidden">
             {/* Input Box */}
             <div className="relative">
+              {/* Audit 8.7: a placeholder is not a label — it disappears as soon
+                  as the user types, and screen readers do not announce it as one.
+                  The label is visually hidden so the design is unchanged. */}
+              <label htmlFor="friend-search" className="sr-only">
+                {t('searchPlayers')}
+              </label>
               <input
+                id="friend-search"
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={t('searchPlaceholder')}
+                aria-describedby="friend-search-hint"
                 className="w-full bg-zinc-900/90 border border-white/[0.08] focus:border-sky-500/50 focus:ring-1 focus:ring-sky-500/50 rounded-xl py-2.5 px-9 text-xs text-white placeholder-zinc-500 transition-all outline-none"
               />
-              <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
+              <p id="friend-search-hint" className="sr-only">
+                {t('searchPlaceholder')}
+              </p>
+              <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-3" aria-hidden="true" />
+              {/* Audit 8.19: `isSearching` was set but never rendered, so the
+                  search had no loading state at all. */}
+              {isSearching && (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="absolute right-3 top-3 text-[10px] font-mono text-zinc-500"
+                >
+                  {t('searching')}
+                </span>
+              )}
               {searchQuery && (
                 <button
                   onClick={() => setSearchQuery('')}
@@ -298,7 +317,7 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
               {searchResults.length === 0 ? (
                 <div className="p-6 text-center text-xs text-zinc-500 space-y-1">
                   <Search className="w-6 h-6 mx-auto text-zinc-600 mb-1" />
-                  <p className="text-zinc-300 font-medium">No player found</p>
+                  <p className="text-zinc-300 font-medium">{t('noPlayerFound')}</p>
                 </div>
               ) : (
                 searchResults.map((player) => {
@@ -427,7 +446,7 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
                       <button
                         onClick={() => handleToggleSaveFriend(friend)}
                         className="text-zinc-500 hover:text-rose-400 text-[10px] p-1 transition-colors cursor-pointer"
-                        title="Remove Friend"
+                        title={t('titleRemoveFriend')}
                       >
                         <X className="w-3.5 h-3.5" />
                       </button>

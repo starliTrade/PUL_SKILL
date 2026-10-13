@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useLanguage } from '../i18n/LanguageContext';
 import { SUPPORTED_LANGUAGES, SupportedLanguage } from '../i18n/translations';
-import { Globe, Check, ChevronDown } from 'lucide-react';
+import { Check, ChevronDown } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { sounds } from '../lib/sound';
 
@@ -12,7 +12,7 @@ interface LanguageSelectorProps {
 export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
   className,
 }) => {
-  const { currentLanguage, langInfo, setLanguage } = useLanguage();
+  const { t, currentLanguage, langInfo, setLanguage } = useLanguage();
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -29,35 +29,125 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
 
+  // Audit 2026-10-13: closing on focus leaving the control covers every way out
+  // (Tab, Shift+Tab, a click on a focusable sibling) rather than Tab alone.
+  const handleBlur = (event: React.FocusEvent<HTMLDivElement>) => {
+    if (!isOpen) return;
+    if (dropdownRef.current?.contains(event.relatedTarget as Node)) return;
+    setIsOpen(false);
+  };
+
   const handleSelect = (code: SupportedLanguage) => {
     sounds.playClick();
     setLanguage(code);
     setIsOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  /**
+   * Audit 8.6 — keyboard navigation.
+   *
+   * The trigger opened the popup on click only: a keyboard user could not open
+   * it, could not move between languages, and could not close it. The pattern
+   * is a listbox: ArrowDown/ArrowUp open and move, Home/End jump, Enter/Space
+   * select, Escape closes and returns focus to the trigger.
+   */
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const codes = Object.values(SUPPORTED_LANGUAGES).map((l) => l.code);
+  const selectedIndex = Math.max(0, codes.indexOf(currentLanguage));
+
+  const focusOption = (index: number) => {
+    const clamped = (index + codes.length) % codes.length;
+    optionRefs.current[clamped]?.focus();
+  };
+
+  const openWithFocus = () => {
+    setIsOpen(true);
+    // The popup mounts on the next render; focus after it exists.
+    window.setTimeout(() => focusOption(selectedIndex), 0);
+  };
+
+  const onTriggerKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      if (!isOpen) {
+        openWithFocus();
+      } else {
+        setIsOpen(false);
+      }
+    } else if (event.key === 'Escape' && isOpen) {
+      event.preventDefault();
+      setIsOpen(false);
+    }
+  };
+
+  const onListKeyDown = (event: React.KeyboardEvent) => {
+    const activeIndex = optionRefs.current.findIndex((el) => el === document.activeElement);
+    switch (event.key) {
+      case 'ArrowDown':
+        event.preventDefault();
+        focusOption(activeIndex + 1);
+        break;
+      case 'ArrowUp':
+        event.preventDefault();
+        focusOption(activeIndex - 1);
+        break;
+      case 'Home':
+        event.preventDefault();
+        focusOption(0);
+        break;
+      case 'End':
+        event.preventDefault();
+        focusOption(codes.length - 1);
+        break;
+      case 'Escape':
+        event.preventDefault();
+        setIsOpen(false);
+        triggerRef.current?.focus();
+        break;
+      case 'Tab':
+        // Audit 2026-10-13: Tab was unhandled, so a keyboard user left an OPEN
+        // listbox behind with focus elsewhere. Close it and let Tab proceed
+        // (returning focus to the trigger would trap the user).
+        setIsOpen(false);
+        break;
+      default:
+        break;
+    }
   };
 
   return (
     <div
       className={cn('relative inline-flex items-center justify-center text-left h-8 shrink-0', className)}
       ref={dropdownRef}
+      onBlur={handleBlur}
       dir="ltr"
       style={{ direction: 'ltr' }}
     >
       {/* Trigger Button: 2 shades darker, 2 sizes smaller, standard centered on navbar x-axis */}
       <button
+        ref={triggerRef}
         onClick={(e) => {
           e.stopPropagation();
           sounds.playClick();
           setIsOpen(!isOpen);
         }}
+        onKeyDown={onTriggerKeyDown}
         type="button"
         className={cn(
           'inline-flex items-center justify-center gap-1 px-1.5 h-5 min-h-[20px] max-h-[20px] rounded transition-all duration-200 cursor-pointer select-none leading-none shrink-0 self-center',
           'bg-black/90 hover:bg-black border border-white/[0.06] hover:border-white/[0.14]',
           'shadow-[0_2px_6px_rgba(0,0,0,0.5)] text-zinc-300 hover:text-white group/lang focus:outline-none',
+          'focus-visible:ring-2 focus-visible:ring-sky-500/60',
           isOpen && 'border-sky-500/40 ring-1 ring-sky-500/20 bg-black text-white'
         )}
-        aria-label="Select Language"
-        title={`Language: ${langInfo.nativeName} (${langInfo.name})`}
+        // Audit 8.6: a popup trigger must announce its state and type.
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        // Audit 8.9: this was the hardcoded English string "Select Language".
+        aria-label={t('selectLanguageLabel')}
+        title={`${t('selectLanguageLabel')}: ${langInfo.nativeName} (${langInfo.name})`}
       >
         <span className="text-[11px] leading-none select-none inline-flex items-center justify-center shrink-0">
           {langInfo.flag}
@@ -74,6 +164,9 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
       {isOpen && (
         <div
           onClick={(e) => e.stopPropagation()}
+          onKeyDown={onListKeyDown}
+          role="listbox"
+          aria-label={t('selectLanguageLabel')}
           className={cn(
             'absolute left-0 top-full mt-1.5 w-36 rounded-xl py-1 z-[100] overflow-hidden',
             'bg-zinc-950/95 backdrop-blur-2xl border border-white/[0.1] shadow-[0_16px_40px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.06)]',
@@ -81,24 +174,33 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
           )}
         >
           <div className="flex flex-col gap-0.5 px-1 py-0.5">
-            {Object.values(SUPPORTED_LANGUAGES).map((item) => {
+            {Object.values(SUPPORTED_LANGUAGES).map((item, index) => {
               const isSelected = item.code === currentLanguage;
               return (
                 <button
                   key={item.code}
+                  ref={(el) => {
+                    optionRefs.current[index] = el;
+                  }}
+                  role="option"
+                  aria-selected={isSelected}
+                  tabIndex={isSelected ? 0 : -1}
                   onClick={() => handleSelect(item.code)}
                   className={cn(
                     'w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors cursor-pointer text-left',
+                    'focus-visible:ring-2 focus-visible:ring-sky-500/60 focus:outline-none',
                     isSelected
                       ? 'bg-sky-500/15 text-sky-300 font-semibold border border-sky-500/30'
                       : 'text-zinc-300 hover:text-white hover:bg-white/[0.05]'
                   )}
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-base leading-none select-none">{item.flag}</span>
+                    <span className="text-base leading-none select-none" aria-hidden="true">
+                      {item.flag}
+                    </span>
                     <span className="font-medium text-xs tracking-tight">{item.nativeName}</span>
                   </div>
-                  {isSelected && <Check className="w-3.5 h-3.5 text-sky-400 shrink-0" />}
+                  {isSelected && <Check className="w-3.5 h-3.5 text-sky-400 shrink-0" aria-hidden="true" />}
                 </button>
               );
             })}

@@ -1,51 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import {
-  ArrowLeft,
-  RotateCcw,
-  Trophy,
-  XCircle,
-  ShieldAlert,
-  LoaderCircle,
-  Zap,
-  Fingerprint,
-  ShieldCheck,
-  ArrowUp,
-  ArrowDown,
-  ArrowLeft as ArrowLeftIcon,
-  ArrowRight as ArrowRightIcon,
-  Crosshair,
-  Activity,
-  Cpu,
-  Sparkles,
-  Coins,
-  Wallet,
-  CheckCircle2,
-  Flame,
-  Swords,
-} from 'lucide-react';
+import { motion } from 'motion/react';
+import { ArrowLeft, RotateCcw, Trophy, XCircle, ShieldAlert, LoaderCircle, Zap, Fingerprint, ShieldCheck, ArrowUp, ArrowDown, ArrowLeft as ArrowLeftIcon, ArrowRight as ArrowRightIcon, Crosshair, Cpu, Sparkles, Coins, Wallet, Flame, Swords } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { GamePhase, MouseTrajectoryPoint, MatchResolution, TargetVectorDirection, RoundResult, BestOfThreeState } from '../types';
 import { AntiCheat, getRandomOpponent, TargetSpawnConfig } from '../lib/antiCheat';
 import { usePulsarStore } from '../store/usePulsarStore';
-import { XPSystem, XPSummary } from '../lib/xpSystem';
-import {
-  gameServerConfigured,
-  ensureSession,
-  measureServerRttMs,
-  queueForMatch,
-  commitRound,
-  revealRoundTarget,
-  submitRoundResult,
-  settleMatch,
-  claimMatch,
-  getMatch,
-  matchIdToBytes32,
-  type ServerSession,
-  type MatchView,
-} from '../lib/gameServerClient';
-import { settleDuel as settleDuelOnChain, refundTimeoutMatch, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState, getTokenDecimals, findSettlementTx } from '../lib/escrowFlow';
-import { isEscrowConfigured, CHAIN, TOKENS, ECONOMY, REFUND_OPENS_AFTER_MINUTES } from '../lib/chain';
+import { XPSummary } from '../lib/xpSystem';
+import { gameServerConfigured, ensureSession, measureServerRttMs, queueForMatch, commitRound, revealRoundTarget, submitRoundResult, settleMatch, claimMatch, getMatch, matchIdToBytes32, type ServerSession, type MatchView } from '../lib/gameServerClient';
+import { settleDuel as settleDuelOnChain, refundTimeoutMatch, approveUsdt, createDuel, joinDuel, getDuelState, getTokenDecimals, findSettlementTx } from '../lib/escrowFlow';
+import { isEscrowConfigured, CHAIN, REFUND_OPENS_AFTER_MINUTES, prizeForStake } from '../lib/chain';
+import { BO3_TARGET_WINS, bo3Decided } from '../lib/bo3';
 import { ethers } from 'ethers';
 import { realWeb3Manager, ACTIVE_RANKED_MATCH_KEY } from '../lib/realWeb3';
 import { reportError } from '../lib/monitoring';
@@ -55,6 +19,7 @@ import { DuelCertificateModal } from '../components/DuelCertificateModal';
 import { DisputeReportButton } from '../components/DisputeReportButton';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
+import { clickableDivProps } from '../lib/a11y';
 import { useLanguage } from '../i18n/LanguageContext';
 
 interface ReactionGamePageProps {
@@ -142,7 +107,6 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   walletRef.current = wallet;
   const currentStakeRef = useRef(currentStake);
   currentStakeRef.current = currentStake;
-  const [serverError, setServerError] = useState<string>('');
   const [settlementTxHash, setSettlementTxHash] = useState<string>('');
   // P0-fix: keep the last server-signed proof + action feedback so a failed
   // settleDuel can be retried and a timed-out duel can be refunded from the UI.
@@ -171,7 +135,7 @@ function isWalletCancel(msg: string): boolean {
     opponentScore: 0,
     currentRound: 1,
     rounds: [],
-    targetWins: 2,
+    targetWins: BO3_TARGET_WINS,
     isMatchOver: false,
   });
 
@@ -183,7 +147,6 @@ function isWalletCancel(msg: string): boolean {
   const [verifyTarget, setVerifyTarget] = useState<{ x: number; y: number }>({ x: 50, y: 50 });
   const [verifyProgress, setVerifyProgress] = useState<number>(0);
   const [earlyClickWarning, setEarlyClickWarning] = useState<boolean>(false);
-  const [showTelemetryModal, setShowTelemetryModal] = useState<boolean>(false);
   const [xpSummary, setXpSummary] = useState<XPSummary | null>(null);
 
   const startTimeRef = useRef<number>(0);
@@ -292,6 +255,9 @@ function isWalletCancel(msg: string): boolean {
     return () => {
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
     };
+  // Keyed on `phase` alone by design: adding `startWaitingPhase` would
+  // restart the countdown on every render of that callback.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
   // Clear timers on unmount
@@ -310,7 +276,6 @@ function isWalletCancel(msg: string): boolean {
   // P2.2 — Server-authoritative matchmaking for staked matches. Practice mode
   // (stake 0) never queues and never touches the server.
   const startServerMatch = useCallback(async () => {
-    setServerError('');
     setPhase('matchmaking');
     try {
       // If the provider object is gone (page reload wipes the in-memory WC
@@ -319,7 +284,7 @@ function isWalletCancel(msg: string): boolean {
       // shown and the screen would spin forever. Clear the stale state so
       // the header honestly shows disconnected, and tell the user to tap
       // Connect (which has the full pairing UI) before retrying.
-      let provider = realWeb3Manager.getActiveEip1193Provider();
+      const provider = realWeb3Manager.getActiveEip1193Provider();
       if (!provider) {
         try {
           realWeb3Manager.disconnect();
@@ -426,7 +391,7 @@ function isWalletCancel(msg: string): boolean {
       }
 
       sounds.playMatchFound();
-      setBo3State({ userScore: 0, opponentScore: 0, currentRound: 1, rounds: [], targetWins: 2, isMatchOver: false });
+      setBo3State({ userScore: 0, opponentScore: 0, currentRound: 1, rounds: [], targetWins: BO3_TARGET_WINS, isMatchOver: false });
       setPhase('ready');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -435,10 +400,12 @@ function isWalletCancel(msg: string): boolean {
       const reason = isWalletCancel(msg)
         ? `Wallet action cancelled — no funds moved. ${msg}`
         : msg;
-      setServerError(reason);
       setMatchResult({ outcome: 'void', yourTime: 0, opponentTime: 0, prize: 0, reason });
       setPhase('bot-detected'); // honest error shell; reason is rendered
     }
+  // Audit H11: the wallet is read through a REF, not this closure — adding
+  // `wallet.fullAddress` would re-create the callback mid-match.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isServerMode, wallet.address, currentStake, challengeOpponent]);
 
   // Audit-#5 refresh recovery: on reload, resume the persisted ranked match
@@ -446,7 +413,7 @@ function isWalletCancel(msg: string): boolean {
   // and the deposit flow entirely — the escrow already holds both stakes.
   const recoverServerMatch = useCallback(async () => {
     if (!isServerMode || !wallet.address) return false;
-    let saved: { matchId?: string; stake?: number } | null = null;
+    let saved: { matchId?: string; stake?: number } | null;
     try {
       const raw = localStorage.getItem(ACTIVE_MATCH_KEY);
       saved = raw ? JSON.parse(raw) : null;
@@ -454,7 +421,6 @@ function isWalletCancel(msg: string): boolean {
       return false;
     }
     if (!saved?.matchId) return false;
-    setServerError('');
     setPhase('matchmaking');
     try {
       // Same headless-pairing guard as startServerMatch (see above).
@@ -503,13 +469,13 @@ function isWalletCancel(msg: string): boolean {
         applyServerMatch(queued);
       }
       const scores = restoreBo3FromServer(view);
-      if (!(view.status === 'active' && (scores.userScore >= 2 || scores.opponentScore >= 2))) {
+      if (!(view.status === 'active' && bo3Decided(scores.userScore, scores.opponentScore))) {
         setBo3State({
           userScore: scores.userScore,
           opponentScore: scores.opponentScore,
           currentRound: scores.currentRound,
           rounds: [],
-          targetWins: 2,
+          targetWins: BO3_TARGET_WINS,
           isMatchOver: false,
         });
         setPhase('ready');
@@ -524,6 +490,8 @@ function isWalletCancel(msg: string): boolean {
       }
       return false;
     }
+  // Audit H11: same ref-based reads as above — deliberately not dependencies.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isServerMode, wallet.address, currentStake, challengeOpponent]);
 
   // Audit-#5 refresh recovery: persist the live ranked match so a full page
@@ -544,6 +512,8 @@ function isWalletCancel(msg: string): boolean {
     } catch {
       // storage unavailable — recovery simply won't engage
     }
+  // Runs ONCE on mount; the wallet arrives later and is read through a ref.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /**
@@ -592,13 +562,13 @@ function isWalletCancel(msg: string): boolean {
         }
       }
       // Reconciliation safety net: a mutual 2-0/2-1 majority must be terminal.
-      if (userScore >= 2 || opponentScore >= 2) {
+      if (bo3Decided(userScore, opponentScore)) {
         setBo3State({
           userScore,
           opponentScore,
           currentRound: Math.min(currentRound, 3),
           rounds: [],
-          targetWins: 2,
+          targetWins: BO3_TARGET_WINS,
           isMatchOver: true,
         });
         void finishServerMatch([], userScore, opponentScore, 0, 0);
@@ -606,6 +576,8 @@ function isWalletCancel(msg: string): boolean {
       }
       return { userScore, opponentScore, currentRound };
     },
+  // A stable identity for the scoreboard; re-creating it would remount it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
 
@@ -679,7 +651,7 @@ function isWalletCancel(msg: string): boolean {
   };
 
   // Early click in waiting phase
-  const handleEarlyClick = (e: React.MouseEvent) => {
+  const handleEarlyClick = () => {
     if (phase === 'waiting') {
       if (waitTimeoutRef.current) clearTimeout(waitTimeoutRef.current);
       sounds.playLoss();
@@ -767,7 +739,7 @@ function isWalletCancel(msg: string): boolean {
     const newUserScore = bo3State.userScore + (roundWinner === 'user' ? 1 : 0);
     const newOpponentScore = bo3State.opponentScore + (roundWinner === 'opponent' ? 1 : 0);
     const newRounds = [...bo3State.rounds, newRoundResult];
-    const decided = newUserScore >= 2 || newOpponentScore >= 2;
+    const decided = bo3Decided(newUserScore, newOpponentScore);
 
     setLastRoundResult(newRoundResult);
     setBo3State({
@@ -775,7 +747,7 @@ function isWalletCancel(msg: string): boolean {
       opponentScore: newOpponentScore,
       currentRound: roundIndex + 2,
       rounds: newRounds,
-      targetWins: 2,
+      targetWins: BO3_TARGET_WINS,
       isMatchOver: decided,
     });
 
@@ -854,10 +826,10 @@ function isWalletCancel(msg: string): boolean {
       // Audit HIGH-5: read the CURRENT wallet, not the first render's.
       const myFull = (walletRef.current.fullAddress || walletRef.current.address || '').toLowerCase();
       const iWon = result.winner.toLowerCase() === myFull;
-      // Audit #6 P3: derive from ECONOMY.winnerShareBps (single source of
+      // Audit #6 P3 + 8.20: derive from `prizeForStake` (single source of
       // truth mirroring the contract's PLATFORM_FEE_BPS) instead of 0.98.
       const prize = iWon
-        ? Math.round(((currentStakeRef.current * 2 * ECONOMY.winnerShareBps) / 10_000) * 100) / 100
+        ? Math.round(prizeForStake(currentStakeRef.current) * 100) / 100
         : 0;
 
       // The oracle-signed proof is the SAME for both players. Build it once so
@@ -1104,9 +1076,9 @@ function isWalletCancel(msg: string): boolean {
           const newUserScore = bo3State.userScore;
           const newOpponentScore = bo3State.opponentScore + 1;
           const newRounds = [...bo3State.rounds, newRoundResult];
-          const decided = newUserScore >= 2 || newOpponentScore >= 2;
+          const decided = bo3Decided(newUserScore, newOpponentScore);
           setLastRoundResult(newRoundResult);
-          setBo3State({ userScore: newUserScore, opponentScore: newOpponentScore, currentRound: roundIndex + 2, rounds: newRounds, targetWins: 2, isMatchOver: decided });
+          setBo3State({ userScore: newUserScore, opponentScore: newOpponentScore, currentRound: roundIndex + 2, rounds: newRounds, targetWins: BO3_TARGET_WINS, isMatchOver: decided });
           if (decided) {
             void finishServerMatch(newRounds, newUserScore, newOpponentScore, userTime, oppTime ?? 0);
           } else {
@@ -1210,7 +1182,7 @@ function isWalletCancel(msg: string): boolean {
     const newOpponentScore = bo3State.opponentScore + (roundWinner === 'opponent' ? 1 : 0);
     const newRounds = [...bo3State.rounds, newRoundResult];
 
-    const isMatchDecided = newUserScore >= 2 || newOpponentScore >= 2;
+    const isMatchDecided = bo3Decided(newUserScore, newOpponentScore);
 
     setLastRoundResult(newRoundResult);
     setBo3State({
@@ -1218,13 +1190,13 @@ function isWalletCancel(msg: string): boolean {
       opponentScore: newOpponentScore,
       currentRound: currentRoundNum + 1,
       rounds: newRounds,
-      targetWins: 2,
+      targetWins: BO3_TARGET_WINS,
       isMatchOver: isMatchDecided,
     });
 
     if (isMatchDecided) {
       // Final Match Outcome
-      const finalWinner = newUserScore >= 2 ? 'win' : 'loss';
+      const finalWinner = newUserScore >= BO3_TARGET_WINS ? 'win' : 'loss';
       const avgUserTime = Math.round(
         newRounds.reduce((acc, r) => acc + r.userTime, 0) / newRounds.length
       );
@@ -1309,7 +1281,7 @@ function isWalletCancel(msg: string): boolean {
       opponentScore: 0,
       currentRound: 1,
       rounds: [],
-      targetWins: 2,
+      targetWins: BO3_TARGET_WINS,
       isMatchOver: false,
     });
     // Audit M5: clear the SETTLEMENT state too. It used to survive, so a later
@@ -1321,7 +1293,6 @@ function isWalletCancel(msg: string): boolean {
     setOnchainAction('');
     setServerMatch(null);
     setServerSession(null);
-    setServerError('');
     setPhase('human-verify');
     randomizeCalibrationTarget();
   };
@@ -1376,14 +1347,22 @@ function isWalletCancel(msg: string): boolean {
           <span>{t('backToLobby')}</span>
         </button>
 
-        {/* Best of 3 Live Score Banner */}
-        <div className="flex items-center gap-3" dir="ltr" style={{ direction: 'ltr' }}>
+        {/* Best of 3 Live Score Banner.
+            Audit 8.10: this container holds TRANSLATED text (`bestOfThree`,
+            `serverModeLabel`, `practiceModeLabel`), so forcing `dir="ltr"` broke
+            the word order and punctuation for Persian and Arabic. The layout
+            stays LTR via `flex-row`; only the numeric/hex fragments below keep
+            an explicit LTR direction, which is where it is actually needed. */}
+        <div className="flex items-center gap-3">
           <div className="text-right">
             <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-mono">{t('bestOfThree')}</div>
             <div className="text-xs font-semibold text-zinc-200">
-              {isServerMode && opponent.startsWith('0x')
-                ? `${opponent.slice(0, 6)}...${opponent.slice(-4)}`
-                : opponent}
+              {isServerMode && opponent.startsWith('0x') ? (
+                // A hex address is LTR content, whatever the UI language is.
+                <span dir="ltr">{`${opponent.slice(0, 6)}...${opponent.slice(-4)}`}</span>
+              ) : (
+                opponent
+              )}
             </div>
             {isServerMode ? (
               <div className="text-[9px] text-emerald-400/90 font-mono">{t('serverModeLabel')}</div>
@@ -1414,7 +1393,7 @@ function isWalletCancel(msg: string): boolean {
               <span
                 className={cn(
                   'w-3 h-3 rounded-full transition-all duration-300 border',
-                  bo3State.userScore >= 2
+                  bo3State.userScore >= BO3_TARGET_WINS
                     ? 'bg-emerald-400 border-emerald-300 shadow-[0_0_10px_rgba(52,211,153,0.8)]'
                     : 'bg-zinc-800 border-zinc-700'
                 )}
@@ -1450,7 +1429,7 @@ function isWalletCancel(msg: string): boolean {
               <span
                 className={cn(
                   'w-3 h-3 rounded-full transition-all duration-300 border',
-                  bo3State.opponentScore >= 2
+                  bo3State.opponentScore >= BO3_TARGET_WINS
                     ? 'bg-sky-400 border-sky-300 shadow-[0_0_10px_rgba(56,189,248,0.8)]'
                     : 'bg-zinc-800 border-zinc-700'
                 )}
@@ -1468,7 +1447,7 @@ function isWalletCancel(msg: string): boolean {
         </div>
         <div className="text-emerald-400 font-mono font-bold text-xs">
           {isServerMode
-            ? t('prizeLabel', { prize: ((currentStake * 2 * ECONOMY.winnerShareBps) / 10_000).toFixed(2) })
+            ? t('prizeLabel', { prize: prizeForStake(currentStake).toFixed(2) })
             : t('prizeLabel', { prize: AntiCheat.calculatePrize(currentStake).toFixed(2) })}
         </div>
       </div>
@@ -1576,7 +1555,7 @@ function isWalletCancel(msg: string): boolean {
                   <div className="absolute inset-0 bg-grid opacity-20 pointer-events-none" />
                   <motion.button
                     data-testid="pulsar-verify-node"
-                    aria-label="Start the duel"
+                    aria-label={t('ariaStartDuel')}
                     onClick={handleVerifyNodeClick}
                     className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full p-4 flex items-center justify-center cursor-pointer shadow-lg active:scale-90 transition-transform"
                     style={{
@@ -1625,11 +1604,15 @@ function isWalletCancel(msg: string): boolean {
             {phase === 'waiting' && (
               <div
                 data-testid="pulsar-waiting"
-                onClick={handleEarlyClick}
-                className="w-full flex-1 flex flex-col items-center justify-center cursor-pointer p-4 select-none min-h-[320px]"
+                // Audit 8.3 + 8.11: the same rules must apply to both input
+                // methods — a keyboard player who jumps the gun false-starts
+                // exactly like a pointer player, and can reach this area at all.
+                {...clickableDivProps(() => handleEarlyClick())}
+                className="w-full flex-1 flex flex-col items-center justify-center cursor-pointer p-4 select-none min-h-[320px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500/60"
               >
                 {earlyClickWarning ? (
                   <motion.div
+                    role="alert"
                     initial={{ scale: 0.9, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
                     className="text-center"
@@ -1674,7 +1657,7 @@ function isWalletCancel(msg: string): boolean {
                 {/* Dynamic Anti-Cheat Pulsar Strike Target */}
                 <motion.button
                   data-testid="pulsar-target"
-                  aria-label="Hit the target"
+                  aria-label={t('ariaHitTarget')}
                   initial={{ scale: 0.3, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   whileTap={{ scale: 0.9 }}
@@ -1750,9 +1733,16 @@ function isWalletCancel(msg: string): boolean {
                   )}
                 </div>
 
-                <h3 className="text-sm font-bold text-sky-400 tracking-wider uppercase font-mono">
-                  {roundTransitionMessage}
-                </h3>
+                {/* Audit 8.8: this feedback is motion-only — a screen reader
+                    user never learned that the round ended or who won it.
+                    The live region is a WRAPPER, not the heading itself: a
+                    `role` on a heading replaces its heading role, and the
+                    document outline loses it. */}
+                <div role="status" aria-live="polite">
+                  <h3 className="text-sm font-bold text-sky-400 tracking-wider uppercase font-mono">
+                    {roundTransitionMessage}
+                  </h3>
+                </div>
 
                 {/* Round Speeds Compare */}
                 <div className="linear-card p-3 w-full mt-3 space-y-2 text-xs">
@@ -1800,11 +1790,11 @@ function isWalletCancel(msg: string): boolean {
 
                 <h2 className="text-xl font-bold text-red-400">
                   {matchResult.reason && isWalletCancel(matchResult.reason)
-                    ? 'Wallet action cancelled'
+                    ? t('reasonWalletCancelled')
                     : isServerMode ? t('serverConnError') : t('antiCheatTriggered')}
                 </h2>
                 <p className="text-xs text-zinc-400 mt-1.5 leading-relaxed px-3">
-                  {matchResult.reason || 'Input pattern flagged as non-human.'}
+                  {matchResult.reason || t('reasonNonHuman')}
                 </p>
                 {isServerMode && (
                   <p className="text-[10px] font-mono text-zinc-500 mt-2 px-3">
@@ -1833,7 +1823,11 @@ function isWalletCancel(msg: string): boolean {
                       <button onClick={refundDuel} className="w-full btn-secondary py-3 text-xs cursor-pointer">
                         Refund after {REFUND_OPENS_AFTER_MINUTES}-min timeout
                       </button>
-                      {onchainAction && <p className="text-[10px] font-mono text-zinc-400">{onchainAction}</p>}
+                      {onchainAction && (
+                        <p role="status" aria-live="polite" className="text-[10px] font-mono text-zinc-400">
+                          {onchainAction}
+                        </p>
+                      )}
                     </>
                   )}
                   <button
@@ -1879,6 +1873,7 @@ function isWalletCancel(msg: string): boolean {
                   )}
                 </motion.div>
 
+                <div role="status" aria-live="polite">
                 <h2
                   className={cn(
                     'text-2xl font-bold tracking-tight',
@@ -1887,6 +1882,7 @@ function isWalletCancel(msg: string): boolean {
                 >
                   {matchResult.outcome === 'win' ? t('matchVictory') : t('matchDefeat')}
                 </h2>
+                </div>
 
                 <div className="text-xs font-mono text-zinc-400 mt-1">
                   {t('finalScore')}: {matchResult.userScore} - {matchResult.opponentScore}
@@ -1913,7 +1909,7 @@ function isWalletCancel(msg: string): boolean {
                     <p className="text-[10px] text-amber-400/90 font-mono mt-1">{t('claimingPrize')}</p>
                     <div className="flex flex-col gap-2 w-full mt-2">
                       <button onClick={retrySettle} className="w-full btn-primary py-2.5 text-xs cursor-pointer">
-                        Retry on-chain claim
+                        {t('retryOnchainClaim')}
                       </button>
                       <button onClick={refundDuel} className="w-full btn-secondary py-2.5 text-xs cursor-pointer">
                         Refund after {REFUND_OPENS_AFTER_MINUTES}-min timeout
@@ -1924,7 +1920,7 @@ function isWalletCancel(msg: string): boolean {
                 )}
                 {settlementTxHash && matchResult.outcome !== 'win' && (
                   <p className="text-[10px] font-mono text-zinc-400 mt-1">
-                    You released the winner's prize on-chain.
+                    {t('releasedWinnerPrize')}
                   </p>
                 )}
                 {settlementTxHash && (
@@ -2083,7 +2079,7 @@ function isWalletCancel(msg: string): boolean {
                     className="w-full py-2.5 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-sky-400 font-mono text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors active:scale-95"
                   >
                     <ShieldCheck className="w-4 h-4 text-sky-400" />
-                    <span>View Cryptographic Certificate & Proof</span>
+                    <span>{t('viewCertificate')}</span>
                   </button>
 
                   {/* Audit 2026-10-13: `POST /api/dispute` had no client path —
@@ -2119,7 +2115,7 @@ function isWalletCancel(msg: string): boolean {
             game: 'reaction',
             result: matchResult.outcome === 'win' ? 'win' : 'loss',
             entryFee: currentStake,
-            prize: matchResult.outcome === 'win' ? matchResult.prize || ((currentStake * 2 * ECONOMY.winnerShareBps) / 10_000) : 0,
+            prize: matchResult.outcome === 'win' ? matchResult.prize || prizeForStake(currentStake) : 0,
             yourTime: matchResult.yourTime,
             opponentTime: matchResult.opponentTime,
             timestamp: Date.now(),

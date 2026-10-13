@@ -1,39 +1,17 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import {
-  Trophy,
-  Zap,
-  TrendingUp,
-  Flame,
-  Coins,
-  ShieldCheck,
-  Award,
-  ArrowUpRight,
-  Clock,
-  ChevronRight,
-  Sparkles,
-  ExternalLink,
-  Target,
-  BarChart3,
-  Activity,
-  History,
-  Medal,
-  Crown,
-  Users,
-  Layers,
-  ArrowDownRight,
-  Info,
-} from 'lucide-react';
+import { motion } from 'motion/react';
+import { Trophy, Zap, TrendingUp, Flame, Coins, Award, Clock, Sparkles, ExternalLink, Target, Activity, History, Crown } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
-import { CHAIN, ECONOMY } from '../lib/chain';
+import { CHAIN, prizeForStake } from '../lib/chain';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { PulsarDynamicAvatar, getAvatarTier } from '../components/PulsarDynamicAvatar';
 import { usePulsarStore } from '../store/usePulsarStore';
-import { XPSystem, TierInfo } from '../lib/xpSystem';
-import { LeaderboardPlayer } from '../lib/realWeb3';
+import { XPSystem } from '../lib/xpSystem';
+
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
+import { clickableDivProps } from '../lib/a11y';
 
 interface DashboardPageProps {
   onNavigate: (path: string) => void;
@@ -51,7 +29,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
   } = usePulsarStore();
 
   const [activeTab, setActiveTab] = useState<'my_stats' | 'leaderboard'>('my_stats');
-  const [showInspector, setShowInspector] = useState(false);
   const [selectedHistoryItem, setSelectedHistoryItem] = useState<string | null>(null);
 
   const winRate =
@@ -103,9 +80,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
         {/* Navigation Breadcrumbs & Top Bar */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 font-medium tracking-tight">
-            <span className="hover:text-zinc-300 cursor-pointer" onClick={() => onNavigate('/')}>
+            {/* Audit 8.3: a clickable element must be reachable by keyboard. */}
+            <button
+              type="button"
+              className="hover:text-zinc-300 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500/60 rounded"
+              onClick={() => onNavigate('/')}
+            >
               {t('navHome')}
-            </span>
+            </button>
             <span className="text-zinc-700">/</span>
             <span className="text-zinc-300">{t('navDashboard')}</span>
           </div>
@@ -434,12 +416,20 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                     return (
                       <div
                         key={m.id}
-                        onClick={() =>
-                          setSelectedHistoryItem(isExpanded ? null : m.id)
-                        }
-                        className="p-3 hover:bg-white/[0.02] transition-colors cursor-pointer"
+                        className="p-3 hover:bg-white/[0.02] transition-colors"
                       >
-                        <div className="flex items-center justify-between gap-2">
+                        {/* Audit 2026-10-13: the ARIA button pattern belongs on
+                            the SUMMARY line, not on the whole row. The expanded
+                            drawer below contains a real <a href> to the block
+                            explorer, and a `role="button"` containing a link is
+                            axe's `nested-interactive` (serious). */}
+                        <div
+                          {...clickableDivProps(() =>
+                            setSelectedHistoryItem(isExpanded ? null : m.id)
+                          )}
+                          aria-expanded={isExpanded}
+                          className="flex items-center justify-between gap-2 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500/60"
+                        >
                           <div className="flex items-center gap-2.5">
                             {/* Outcome Badge */}
                             <div
@@ -522,7 +512,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                                   <ExternalLink className="w-2.5 h-2.5" />
                                 </a>
                               ) : (
-                                <span className="text-zinc-500">Off-chain result</span>
+                                <span className="text-zinc-500">{t('offChainResult')}</span>
                               )}
                             </div>
                             <div className="flex items-center justify-between text-zinc-400">
@@ -530,7 +520,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                               {m.hash && /^0x[0-9a-fA-F]{64}$/.test(m.hash) ? (
                                 <span className="text-emerald-400">{t('verifiedEip191')}</span>
                               ) : (
-                                <span className="text-amber-400">Pending server settlement</span>
+                                <span className="text-amber-400">{t('pendingServerSettlement')}</span>
                               )}
                             </div>
                           </motion.div>
@@ -569,7 +559,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                   {podiumOrder.map(({ player, rank }) => {
                     const isFirst = rank === 1;
                     const isSecond = rank === 2;
-                    const isThird = rank === 3;
 
                     const borderColor = isFirst
                       ? 'border-amber-400/50 bg-gradient-to-b from-amber-400/[0.08] to-amber-500/[0.02] shadow-[0_8px_25px_rgba(245,158,11,0.12)]'
@@ -623,7 +612,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                               A row with no recorded earnings now says so. */}
                           {(player.totalWinnings ?? player.totalEarnedUSDT) != null
                             ? `$${(player.totalWinnings ?? player.totalEarnedUSDT ?? 0).toLocaleString()}`
-                            : `~$${(((player.wins ?? 0) * 2 * ECONOMY.winnerShareBps) / 10_000).toLocaleString()} (est.)`}
+                            : `~$${prizeForStake(player.wins ?? 0).toLocaleString()} (est.)`}
                         </div>
                       </div>
                     );
@@ -687,7 +676,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                         <div className="text-[9.5px] text-emerald-400">
                           {(p.totalWinnings ?? p.totalEarnedUSDT) != null
                             ? `$${(p.totalWinnings ?? p.totalEarnedUSDT ?? 0).toLocaleString()}`
-                            : `~$${(((p.wins ?? 0) * 2 * ECONOMY.winnerShareBps) / 10_000).toLocaleString()} (est.)`}
+                            : `~$${prizeForStake(p.wins ?? 0).toLocaleString()} (est.)`}
                         </div>
                       </div>
                     </div>

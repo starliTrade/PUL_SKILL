@@ -1,47 +1,20 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import {
-  Wallet,
-  Shield,
-  ShieldCheck,
-  Activity,
-  Award,
-  Zap,
-  TrendingUp,
-  Flame,
-  Clock,
-  ChevronRight,
-  ExternalLink,
-  Sparkles,
-  Lock,
-  Layers,
-  Copy,
-  Check,
-  Cpu,
-  Radio,
-  Sliders,
-  Trophy,
-  Edit2,
-  X,
-  Loader2,
-} from 'lucide-react';
+import { motion } from 'motion/react';
+import { Shield, ShieldCheck, Award, Zap, Flame, Sparkles, Copy, Check, Cpu, Radio, Sliders, Trophy, Edit2, X, Loader2 } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
 import { PendingPayoutCard } from '../components/PendingPayoutCard';
-import { ConnectWallet } from '../components/ConnectWallet';
+
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
-import {
-  PulsarDynamicAvatar,
-  getAvatarTier,
-  AVATAR_STAGES,
-} from '../components/PulsarDynamicAvatar';
+import { PulsarDynamicAvatar, getAvatarTier, AVATAR_STAGES } from '../components/PulsarDynamicAvatar';
 import { DuelCertificateModal } from '../components/DuelCertificateModal';
 import { usePulsarStore } from '../store/usePulsarStore';
-import { XPSystem, TierInfo } from '../lib/xpSystem';
+import { XPSystem } from '../lib/xpSystem';
 import { MatchRecord } from '../lib/realWeb3';
-import { ECONOMY } from '../lib/chain';
+import { prizeForStake } from '../lib/chain';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
+import { clickableDivProps } from '../lib/a11y';
 import { TranslationKey } from '../i18n/translations';
 
 interface ProfilePageProps {
@@ -76,11 +49,6 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
   const progressPercent = XPSystem.getLevelProgress(stats.xp);
   const { inLevel, span } = XPSystem.getXPToNextLevel(stats.xp);
 
-  // Financial calculations
-  const totalWinnings = history
-    .filter((m) => m.result === 'win')
-    .reduce((acc, m) => acc + (m.prize - m.entryFee), 0);
-
   const handleCopyAddress = () => {
     if (wallet.address) {
       sounds.playClick();
@@ -110,18 +78,18 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
     if (e) e.preventDefault();
     const clean = tagInput.trim();
     if (clean.length < 3) {
-      setTagError('Username must be at least 3 characters');
+      setTagError(t('errUsernameTooShort'));
       sounds.playLoss();
       return;
     }
     if (clean.length > 20) {
-      setTagError('Username cannot exceed 20 characters');
+      setTagError(t('errUsernameTooLong'));
       sounds.playLoss();
       return;
     }
     const pattern = /^[a-zA-Z0-9_]+$/;
     if (!pattern.test(clean)) {
-      setTagError('Only English letters, numbers, and (_) allowed');
+      setTagError(t('errUsernameCharset'));
       sounds.playLoss();
       return;
     }
@@ -131,7 +99,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
       setTagError(null);
       const res = await updatePlayerTag(clean);
       if (!res.success) {
-        setTagError(res.error || 'Username is already taken by another player');
+        setTagError(res.error || t('errUsernameTaken'));
         sounds.playLoss();
       } else {
         sounds.playWin();
@@ -140,7 +108,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
         setTimeout(() => setDepositMsg(null), 3500);
       }
     } catch (err: any) {
-      setTagError(err?.message || 'Failed to verify username uniqueness');
+      setTagError(err?.message || t('errUsernameCheckFailed'));
     } finally {
       setIsSavingTag(false);
     }
@@ -200,15 +168,20 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
         {/* Navigation Breadcrumb */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 font-medium tracking-tight">
-            <span className="hover:text-zinc-300 cursor-pointer" onClick={() => onNavigate('/')}>
+            {/* Audit 8.3: a clickable element must be reachable by keyboard. */}
+            <button
+              type="button"
+              className="hover:text-zinc-300 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500/60 rounded"
+              onClick={() => onNavigate('/')}
+            >
               {t('navHome')}
-            </span>
+            </button>
             <span className="text-zinc-700">/</span>
             <span className="text-zinc-300">{t('navProfile')}</span>
           </div>
           <span className="text-[10px] text-sky-400/90 font-mono flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
-            SIWE Session
+            {t('siweSession')}
           </span>
         </div>
 
@@ -245,7 +218,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                           setTagInput(e.target.value);
                           if (tagError) setTagError(null);
                         }}
-                        placeholder="e.g. StarWarrior_7"
+                        placeholder={t('placeholderGamerTag')}
                         maxLength={20}
                         autoFocus
                         className="bg-black/90 border border-sky-500/50 rounded px-2 py-0.5 text-xs text-white font-mono focus:outline-none focus:border-sky-400 min-w-0 flex-1 disabled:opacity-50"
@@ -254,7 +227,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                         type="submit"
                         disabled={isSavingTag}
                         className="p-1 rounded bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-black font-bold text-[10px] shrink-0 cursor-pointer flex items-center justify-center min-w-[24px] min-h-[24px]"
-                        title="Claim Unique Username"
+                        title={t('titleClaimUsername')}
                       >
                         {isSavingTag ? (
                           <Loader2 className="w-3 h-3 animate-spin text-black" />
@@ -267,13 +240,20 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                         disabled={isSavingTag}
                         onClick={() => setIsEditingTag(false)}
                         className="p-1 rounded bg-white/[0.08] hover:bg-white/[0.15] disabled:opacity-50 text-zinc-300 text-[10px] shrink-0 cursor-pointer min-w-[24px] min-h-[24px] flex items-center justify-center"
-                        title="Cancel"
+                        title={t('titleCancel')}
                       >
                         <X className="w-3 h-3" />
                       </button>
                     </form>
+                    {/* Audit 8.19: `depositMsg` was set on a successful claim
+                        and never rendered, so claiming a username showed the
+                        user nothing at all. */}
                     {tagError ? (
                       <span className="text-[9.5px] text-rose-400 block mt-0.5 font-medium">{tagError}</span>
+                    ) : depositMsg ? (
+                      <span role="status" aria-live="polite" className="text-[9.5px] text-emerald-400 block mt-0.5 font-medium">
+                        {depositMsg}
+                      </span>
                     ) : (
                       <span className="text-[9px] text-zinc-500 block mt-0.5">3-20 characters • Letters, numbers & (_)</span>
                     )}
@@ -295,7 +275,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                         <button
                           onClick={handleStartEditTag}
                           className="p-0.5 rounded bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white transition-all cursor-pointer shrink-0"
-                          title="Edit Gamer Tag"
+                          title={t('titleEditGamerTag')}
                         >
                           <Edit2 className="w-2.5 h-2.5" />
                         </button>
@@ -303,7 +283,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                           <button
                             onClick={handleCopyPlayerId}
                             className="p-0.5 rounded bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white transition-all cursor-pointer shrink-0"
-                            title="Copy Player ID"
+                            title={t('titleCopyPlayerId')}
                           >
                             {copiedPlayerId ? (
                               <Check className="w-2.5 h-2.5 text-emerald-400" />
@@ -534,11 +514,11 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
             <div className="flex items-center gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5 text-sky-400" />
               <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
-                Settled Battles & Certificates
+                {t('settledBattles')}
               </h3>
             </div>
             <span className="text-[9px] font-mono text-zinc-500">
-              Click to view on-chain proof
+              {t('clickToViewProof')}
             </span>
           </div>
 
@@ -552,18 +532,20 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                   const opp = m.opponentName || m.opponent || 'Duelist';
                   const fee = Number(m.entryFee ?? m.stake ?? 1);
                   const prize = Number(
-                    m.prize || ((fee * 2 * ECONOMY.winnerShareBps) / 10_000),
+                    m.prize || prizeForStake(fee),
                   );
                   const timeMs = m.yourTime || m.reactionTime || 185;
 
                   return (
                     <div
                       key={m.id || idx}
-                      onClick={() => {
+                      // Audit 8.3: a row with block children cannot be a
+                      // <button>, so it takes the ARIA button pattern.
+                      {...clickableDivProps(() => {
                         sounds.playClick();
                         setSelectedMatchForCert(m);
-                      }}
-                      className="p-2.5 rounded-lg bg-zinc-950/40 hover:bg-zinc-900/60 border border-white/[0.04] hover:border-white/10 flex items-center justify-between gap-2 cursor-pointer transition-colors"
+                      })}
+                      className="p-2.5 rounded-lg bg-zinc-950/40 hover:bg-zinc-900/60 border border-white/[0.04] hover:border-white/10 flex items-center justify-between gap-2 cursor-pointer transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500/60"
                     >
                       <div className="flex items-center gap-2 min-w-0">
                         <span
@@ -595,7 +577,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                           {isWin ? `+$${prize.toFixed(2)}` : `-$${fee}`}
                         </div>
                         <div className="text-[9px] text-sky-400 hover:underline">
-                          View Proof →
+                          {t('viewProof')}
                         </div>
                       </div>
                     </div>

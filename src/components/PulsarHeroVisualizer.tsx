@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ShieldCheck, Activity, Play, RotateCcw, Zap, AlertTriangle, Swords, Sparkles } from 'lucide-react';
+import { ShieldCheck, Activity, Play, RotateCcw, Zap, AlertTriangle, Swords } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { useLanguage } from '../i18n/LanguageContext';
+import { clickableDivProps } from '../lib/a11y';
 
 interface Star {
   x: number;
@@ -24,7 +25,7 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
   onStartBattle,
 }) => {
   const { bestReactionMs } = usePulsarStore();
-  const { t, isRTL } = useLanguage();
+  const { t } = useLanguage();
   const [livePing, setLivePing] = useState<number>(14);
 
   // Interactive reflex test state
@@ -279,7 +280,10 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
 
           {/* Center Display: Interactive Reflex Benchmark Screen */}
           <div
-            onClick={testState === 'waiting' || testState === 'ready' ? handleTestClick : undefined}
+            // Audit 8.3: the benchmark target must be reachable by keyboard.
+            {...(testState === 'waiting' || testState === 'ready'
+              ? clickableDivProps(() => handleTestClick({} as React.MouseEvent))
+              : {})}
             className={cn(
               'py-2.5 px-3 text-center transition-all duration-200 rounded-xl my-2 border select-none',
               testState === 'waiting' && 'bg-amber-950/30 border-amber-500/30 cursor-pointer shadow-[inset_0_0_20px_rgba(245,158,11,0.1)]',
@@ -320,9 +324,9 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
                 }}
               >
                 {testState === 'waiting' ? (
-                  <span className="text-amber-400 animate-pulse">WAIT...</span>
+                  <span className="text-amber-400 animate-pulse">{t('reflexWait')}</span>
                 ) : testState === 'ready' ? (
-                  <span className="text-emerald-300 animate-bounce">CLICK!</span>
+                  <span className="text-emerald-300 animate-bounce">{t('reflexClick')}</span>
                 ) : testState === 'result' ? (
                   testReactionMs
                 ) : bestReactionMs > 0 ? (
@@ -427,9 +431,12 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
           >
             <div className="flex items-center gap-1.5 text-zinc-400">
               <ShieldCheck className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
-              <span>Biometric Anti-Cheat v2.4</span>
+              {/* Audit H16 + 8.9: 'Biometric Anti-Cheat v2.4' claimed a capability the
+                  code does not have (there is no biometrics — the real checks are
+                  isTrusted, a human floor, and trajectory curvature). */}
+              <span>{t('inputIntegrityChecks')}</span>
             </div>
-            <span className="text-zinc-500 font-medium">Sub-ms Clock Sync</span>
+            <span className="text-zinc-500 font-medium">{t('highResTiming')}</span>
           </div>
         </div>
       </div>

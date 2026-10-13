@@ -28,7 +28,7 @@ const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title
 );
 
 export const LegalPage: React.FC<LegalPageProps> = ({ onNavigate, initialTab = 'tos' }) => {
-  const { t } = useLanguage();
+  const { t, currentLanguage } = useLanguage();
   const [tab, setTab] = useState<LegalTab>(initialTab);
 
   const tabs: { id: LegalTab; label: string; icon: React.ReactNode }[] = [
@@ -58,6 +58,21 @@ export const LegalPage: React.FC<LegalPageProps> = ({ onNavigate, initialTab = '
         <p className="text-[11px] text-zinc-500 mb-4">
           {t('legalEffectiveDate')} · {t('legalEntityNotice')}
         </p>
+
+        {/* Audit 2026-10-13: the 43 legal* keys exist ONLY in English, so in
+            Persian/Arabic/Turkish/Chinese the whole Terms of Service, Privacy
+            Policy and Risk Disclosure rendered in English with no explanation.
+            Translating legal text is a lawyer's job, not a machine's — a
+            mistranslated ToS is a liability — so the gap is DISCLOSED instead,
+            and the English text is stated to be the authoritative version. */}
+        {currentLanguage !== 'en' && (
+          <div
+            role="note"
+            className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-200/90 leading-relaxed"
+          >
+            {t('legalEnglishOnly')}
+          </div>
+        )}
 
         {/* Tabs */}
         <div className="flex gap-1.5 mb-4">

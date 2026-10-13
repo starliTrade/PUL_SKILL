@@ -12,10 +12,11 @@
  * not a property of this component.
  */
 
-import React, { useState } from 'react';
+import React, { useId, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { ShieldAlert, CheckCircle2, XCircle } from 'lucide-react';
 import { useLanguage } from '../i18n/LanguageContext';
+import { modalDialogProps, useModalA11y } from '../lib/useModalA11y';
 
 const CONSENT_KEY = 'pulsar.eligibility-consent.v1';
 
@@ -52,6 +53,18 @@ export const EligibilityGate: React.FC<EligibilityGateProps> = ({ onProceed }) =
     }
   })();
 
+  // Audit 8.4: role/aria-modal/focus-trap + focus restore. The gate is a dialog
+  // the user must ANSWER, so it gets `aria-modal` and — audit 2026-10-13 —
+  // `escapeCloses: false`. Escape used to dismiss it, which turned an 18+ /
+  // jurisdiction declaration into a single keystroke. The trap still holds
+  // focus, so the only ways out are Accept (which records consent) and Decline.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const closeGate = () => setDismissed(true);
+  useModalA11y(!(alreadyConsented || dismissed), closeGate, dialogRef, {
+    escapeCloses: false,
+  });
+
   if (alreadyConsented || dismissed) return null;
 
   const accept = () => {
@@ -77,6 +90,8 @@ export const EligibilityGate: React.FC<EligibilityGateProps> = ({ onProceed }) =
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/95 backdrop-blur-xl">
       <motion.div
+        ref={dialogRef}
+        {...modalDialogProps(titleId)}
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         className="w-full max-w-sm linear-card-elevated p-5 relative border border-sky-500/20"
@@ -85,7 +100,7 @@ export const EligibilityGate: React.FC<EligibilityGateProps> = ({ onProceed }) =
           <ShieldAlert className="w-5.5 h-5.5" />
         </div>
 
-        <h2 className="text-base font-bold text-white text-center mb-1">{t('eligibilityTitle')}</h2>
+        <h2 id={titleId} className="text-base font-bold text-white text-center mb-1">{t('eligibilityTitle')}</h2>
         <p className="text-xs text-zinc-400 text-center mb-4 leading-relaxed">{t('eligibilityIntro')}</p>
 
         <div className="space-y-2.5 mb-4">

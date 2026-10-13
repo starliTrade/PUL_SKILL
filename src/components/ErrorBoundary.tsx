@@ -1,6 +1,7 @@
 import { Component } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { reportError } from '../lib/monitoring';
+import { useLanguage } from '../i18n/LanguageContext';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -43,43 +44,58 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   };
 
   render(): ReactNode {
-    if (this.state.error) {
-      return (
+    if (!this.state.error) return this.props.children;
+    return (
+      <ErrorFallback
+        message={this.state.error.message}
+        onReload={this.handleReload}
+        onBack={this.handleBack}
+      />
+    );
+  }
+}
+
+/**
+ * The fallback UI.
+ *
+ * Audit 8.9: it is a function component so it can use `useLanguage()` — a class
+ * boundary cannot, which is why its copy was hardcoded English in an app that
+ * ships five languages.
+ */
+const ErrorFallback: React.FC<{ message: string; onReload: () => void; onBack: () => void }> = ({
+  message,
+  onReload,
+  onBack,
+}) => {
+  const { t } = useLanguage();
+  return (
         <div className="min-h-screen bg-[#07080a] text-slate-100 flex items-center justify-center p-6 font-sans">
           <div className="max-w-sm w-full space-y-4 text-center">
             <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center mx-auto">
               <span className="text-rose-400 text-xl font-bold">!</span>
             </div>
             <div className="space-y-1">
-              <h1 className="text-base font-bold text-white">Something went wrong</h1>
-              <p className="text-xs text-zinc-400 leading-relaxed">
-                An unexpected error interrupted the app. Your funds live in the escrow
-                contract — they are safe and unaffected by this.
-              </p>
+              <h1 className="text-base font-bold text-white">{t('errorTitle')}</h1>
+              <p className="text-xs text-zinc-400 leading-relaxed">{t('errorBody')}</p>
             </div>
-            {this.state.error?.message ? (
-              <p className="text-[10px] font-mono text-zinc-500 break-all">
-                {this.state.error.message}
-              </p>
+            {message ? (
+              <p className="text-[10px] font-mono text-zinc-500 break-all">{message}</p>
             ) : null}
             <div className="flex flex-col gap-2 pt-2">
               <button
-                onClick={this.handleReload}
+                onClick={onReload}
                 className="btn-primary py-2 text-xs font-bold cursor-pointer"
               >
-                Reload app
+                {t('errorReload')}
               </button>
               <button
-                onClick={this.handleBack}
+                onClick={onBack}
                 className="btn-ghost py-2 text-xs font-bold cursor-pointer"
               >
-                Back to home
+                {t('errorBackHome')}
               </button>
             </div>
           </div>
         </div>
       );
-    }
-    return this.props.children;
-  }
-}
+};

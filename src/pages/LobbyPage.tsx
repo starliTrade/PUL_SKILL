@@ -1,40 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'motion/react';
-import {
-  Zap,
-  ShieldCheck,
-  Search,
-  ChevronRight,
-  Users,
-  X,
-  Swords,
-  Radio,
-  Wallet,
-  Coins,
-  AlertCircle,
-  UserPlus,
-  Sparkles,
-  ArrowRight,
-} from 'lucide-react';
+import { motion } from 'motion/react';
+import { Zap, ShieldCheck, Search, Users, X, Swords, Coins, AlertCircle, UserPlus, ArrowRight } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
 import { ConnectWallet } from '../components/ConnectWallet';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { FriendChallengeModal } from '../components/FriendChallengeModal';
-import { AntiCheat, getRandomOpponent } from '../lib/antiCheat';
-import { ECONOMY } from '../lib/chain';
+import { getRandomOpponent } from '../lib/antiCheat';
+import { CHAIN, prizeForStake } from '../lib/chain';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { realWeb3Manager, MatchRecord } from '../lib/realWeb3';
 import { escrowStatus } from '../lib/escrowFlow';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
-import {
-  fetchPendingChallenges,
-  gameServerConfigured,
-  loadServerSession,
-  type PendingChallenge,
-} from '../lib/gameServerClient';
+import { fetchPendingChallenges, gameServerConfigured, loadServerSession, type PendingChallenge } from '../lib/gameServerClient';
 
 interface LobbyPageProps {
   onNavigate: (
@@ -64,7 +44,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
   onStartDuelWithOpponent,
 }) => {
   const { t } = useLanguage();
-  const { wallet, stats, refreshBalance, history } = usePulsarStore();
+  const { wallet, stats, refreshBalance } = usePulsarStore();
   const [gameMode, setGameMode] = useState<'real' | 'practice'>('real');
   const [selectedStake, setSelectedStake] = useState<number>(1);
   const [isMatchmaking, setIsMatchmaking] = useState(false);
@@ -125,7 +105,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
 
   // F-17: prize math derives from the single shared constant (mirrors the
   // contract's PLATFORM_FEE_BPS) — no layer-local hardcodes left.
-  const prize = (selectedStake * 2 * ECONOMY.winnerShareBps) / 10_000;
+  const prize = prizeForStake(selectedStake);
 
   const handleStartMatchmaking = () => {
     // P1.15/P2.2: real-money mode is honest — it only exists when BOTH the
@@ -215,7 +195,14 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
       <main className="relative z-10 px-4 pt-4 pb-28 max-w-md mx-auto">
         <div className="mb-4">
           <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 font-medium tracking-tight mb-1">
-            <span className="cursor-pointer hover:text-zinc-300" onClick={() => onNavigate('/')}>{t('navHome')}</span>
+            {/* Audit 8.3: a clickable element must be reachable by keyboard. */}
+            <button
+              type="button"
+              className="cursor-pointer hover:text-zinc-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500/60 rounded"
+              onClick={() => onNavigate('/')}
+            >
+              {t('navHome')}
+            </button>
             <span className="text-zinc-700">/</span>
             <span className="text-zinc-200">{t('navArena')}</span>
           </div>
@@ -373,7 +360,11 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                   <ShieldCheck className="w-3 h-3 text-emerald-400 shrink-0" />
                   <span>{t('biometricEntropy')}</span>
                 </div>
-                <span className="text-zinc-500 font-mono">Polygon Mainnet</span>
+                {/* Audit M34 (missed here): this was the literal "Polygon
+                    Mainnet", so on the Amoy testnet deployment the lobby told
+                    the player they were on mainnet. The network name comes from
+                    CHAIN, like everywhere else. */}
+                <span className="text-zinc-500 font-mono">{CHAIN.name}</span>
               </div>
             </>
           ) : (
@@ -538,7 +529,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                 const reactionMs = match.yourTime || match.reactionTime || match.opponentTime || 185;
                 const stakeVal = Number(match.entryFee ?? match.stake ?? 1);
                 const prizeVal = Number(
-                  match.prize || ((stakeVal * 2 * ECONOMY.winnerShareBps) / 10_000),
+                  match.prize || prizeForStake(stakeVal),
                 );
 
                 const timeAgo = match.timestamp

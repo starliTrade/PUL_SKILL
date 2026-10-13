@@ -3,29 +3,13 @@
  * Zero mock accounts, zero fake duels. Pure real-time on-chain & cloud persistence.
  */
 
-import {
-  doc,
-  getDoc,
-  setDoc,
-  deleteDoc,
-  collection,
-  query,
-  where,
-  orderBy,
-  limit,
-  getDocs,
-  onSnapshot,
-} from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, collection, query, where, orderBy, limit, getDocs, onSnapshot } from 'firebase/firestore';
 import { getDb } from './firebase';
 import { checkUsername, ensureSession, logoutServerSession } from './gameServerClient';
 import { CHAIN, TOKENS } from './chain';
 
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
-import { isMobileDevice,  isWalletInAppBrowser,
-  getWalletConnectDeepLink,
-  getNativeSchemeUri,
-  openWalletConnectInNativeApp,
-} from './web3DeepLinks';
+import { isMobileDevice, isWalletInAppBrowser, getWalletConnectDeepLink, getNativeSchemeUri, openWalletConnectInNativeApp } from './web3DeepLinks';
 
 export const getWalletConnectProjectId = (): string => {
   if (typeof window !== 'undefined') {
@@ -377,9 +361,10 @@ class RealWeb3Manager {
       /* ignore */
     }
 
-    provider.on('connect', (info: any) => {
-      let accounts = provider.accounts || [];
-      if (!accounts || accounts.length === 0) {
+    provider.on('connect', () => {
+      // Audit 8.20: this was a third, hand-rolled session walk.
+      const accounts = this.wcAccounts(provider);
+      if (accounts.length === 0) {
         const session = provider.session || provider?.signer?.session;
         if (session?.namespaces) {
           for (const ns of Object.values(session.namespaces) as any[]) {
@@ -439,7 +424,7 @@ class RealWeb3Manager {
 
         try {
           // Extract accounts directly or from active UniversalProvider sessions
-          let accounts: string[] = this.wcProvider?.accounts || [];
+          const accounts: string[] = this.wcProvider?.accounts || [];
           if (!accounts || accounts.length === 0) {
             const activeSessions = this.wcProvider?.client?.session?.getAll?.() || [];
             if (activeSessions.length > 0) {
@@ -627,8 +612,8 @@ class RealWeb3Manager {
     if (isWc) {
       try {
         const provider = await this.ensureWcProvider();
-        let accounts = provider?.accounts || [];
-        if (!accounts || accounts.length === 0) {
+        const accounts = this.wcAccounts(provider);
+        if (accounts.length === 0) {
           const activeSessions = provider?.client?.session?.getAll?.() || [];
           if (activeSessions.length > 0) {
             const latestSession = activeSessions[activeSessions.length - 1];
@@ -707,25 +692,51 @@ class RealWeb3Manager {
     return openWalletConnectInNativeApp(walletId, uri);
   }
 
-  /** Accounts already approved in a live WalletConnect session (survives tab suspend). */
+  /**
+   * The accounts a WalletConnect provider can actually use.
+   *
+   * Audit 8.20: `provider.accounts` falls back to the live session in five
+   * places, each written slightly differently — one checks `Array.isArray`,
+   * another `?.length`, another mutates the provider's own array. A session that
+   * survives a tab suspend is only visible through the session path, so a
+   * divergence here means "connected" in one flow and "no accounts" in another.
+   */
+  private wcAccounts(provider: any): string[] {
+    const direct = provider?.accounts;
+    if (Array.isArray(direct) && direct.length > 0) return [...direct];
+    return this.activeSessionAccounts(provider);
+  }
+
+  /**
+   * Accounts already approved in a live WalletConnect session (survives tab
+   * suspend).
+   *
+   * Audit 8.20: the two session lookups in this file disagreed — the `connect`
+   * handler read `provider.session.namespaces` while the resume paths read
+   * `provider.client.session.getAll()`. They can differ (the first is the
+   * CURRENT session, the second is every persisted one), so "connected" was
+   * true in one flow and false in another. This checks both, in that order.
+   */
   private activeSessionAccounts(provider: any): string[] {
     const out: string[] = [];
-    try {
-      const activeSessions = provider?.client?.session?.getAll?.() || [];
-      if (activeSessions.length > 0) {
-        const latestSession = activeSessions[activeSessions.length - 1];
-        const namespaces = latestSession?.namespaces || {};
-        for (const ns of Object.values(namespaces) as any[]) {
-          if (ns?.accounts && Array.isArray(ns.accounts)) {
-            for (const acc of ns.accounts) {
-              const cleanAddr = String(acc).split(':').pop();
-              if (cleanAddr && cleanAddr.startsWith('0x')) {
-                out.push(cleanAddr);
-              }
+    const collect = (namespaces: any) => {
+      for (const ns of Object.values(namespaces || {}) as any[]) {
+        if (ns?.accounts && Array.isArray(ns.accounts)) {
+          for (const acc of ns.accounts) {
+            const cleanAddr = String(acc).split(':').pop();
+            if (cleanAddr && cleanAddr.startsWith('0x') && !out.includes(cleanAddr)) {
+              out.push(cleanAddr);
             }
           }
         }
       }
+    };
+    try {
+      // The live session first (the `connect` handler's source) …
+      collect(provider?.session?.namespaces);
+      // … then every persisted session (the resume paths' source).
+      const activeSessions = provider?.client?.session?.getAll?.() || [];
+      for (const session of activeSessions) collect(session?.namespaces);
     } catch {}
     return out;
   }
@@ -741,10 +752,7 @@ class RealWeb3Manager {
     // storage. Reuse it instead of starting yet another pairing round.
     try {
       const existing: any = await this.ensureWcProvider();
-      const existingAccts: string[] =
-        (Array.isArray(existing?.accounts) && existing.accounts.length
-          ? [...existing.accounts]
-          : null) ?? this.activeSessionAccounts(existing);
+      const existingAccts: string[] = this.wcAccounts(existing);
       if (existing?.session && existingAccts.length) {
         this.lastWcUri = null;
         return await this.setConnectedAddress(
@@ -763,8 +771,7 @@ class RealWeb3Manager {
       // If a session with accounts exists NOW, use it immediately.
       try {
         const p: any = this.wcProvider;
-        const sessAccts: string[] =
-          (p?.accounts?.length ? [...p.accounts] : null) ?? this.activeSessionAccounts(p);
+        const sessAccts: string[] = this.wcAccounts(p);
         if (p?.session && sessAccts?.length) {
           this.wcConnectPromise = null;
           this.lastWcUri = null;
@@ -790,9 +797,13 @@ class RealWeb3Manager {
       try {
         const provider = await this.ensureWcProvider();
 
-        if (provider.session && provider.accounts?.length) {
+        // Audit 8.20: this required `provider.accounts` to be populated and so
+        // skipped the session fallback the other paths have — the exact
+        // "approved while the tab was suspended" case it exists for.
+        const fastAccounts = this.wcAccounts(provider);
+        if (provider.session && fastAccounts.length) {
           return await this.setConnectedAddress(
-            provider.accounts[0],
+            fastAccounts[0],
             providerName,
             provider.chainId || CHAIN.chainId,
             provider
@@ -824,13 +835,9 @@ class RealWeb3Manager {
           uriUnsub();
         }
 
-        const accounts = provider.accounts || [];
-        if (!accounts || accounts.length === 0) {
-          const fromSession = this.activeSessionAccounts(provider);
-          for (const a of fromSession) accounts.push(a);
-        }
+        const accounts = this.wcAccounts(provider);
 
-        if (accounts && accounts.length > 0) {
+        if (accounts.length > 0) {
           const chainId = provider.chainId || CHAIN.chainId;
           return await this.setConnectedAddress(accounts[0], providerName, chainId, provider);
         }
@@ -870,9 +877,9 @@ class RealWeb3Manager {
     }
 
     let eth = (window as any).ethereum;
-    let phantomEth = (window as any).phantom?.ethereum;
-    let coinbaseEth = (window as any).coinbaseWalletExtension;
-    let trustEth = (window as any).trustwallet;
+    const phantomEth = (window as any).phantom?.ethereum;
+    const coinbaseEth = (window as any).coinbaseWalletExtension;
+    const trustEth = (window as any).trustwallet;
 
     if (!eth && !phantomEth && !coinbaseEth && !trustEth) {
       try {
@@ -965,18 +972,22 @@ class RealWeb3Manager {
       }
     } catch (err: any) {
       if (err?.code === 4001 || err?.message?.includes('User rejected') || err?.message?.includes('cancelled')) {
-        throw new Error('Connection request was cancelled in your wallet.');
+        throw new Error('Connection request was cancelled in your wallet.', { cause: err });
       }
       if (err?.code === -32002) {
-        throw new Error('Wallet is already waiting for your confirmation. Please check your wallet extension or app.');
+        throw new Error(
+          'Wallet is already waiting for your confirmation. Please check your wallet extension or app.',
+          { cause: err },
+        );
       }
       const inIframe = typeof window !== 'undefined' && window.self !== window.top;
       if (inIframe) {
         throw new Error(
-          `Could not connect to ${providerDetail.info.name} inside the preview iframe. Please use WalletConnect QR, Instant Guest Duelist, or open in a new tab.`
+          `Could not connect to ${providerDetail.info.name} inside the preview iframe. Please use WalletConnect QR, Instant Guest Duelist, or open in a new tab.`,
+          { cause: err },
         );
       }
-      throw new Error(err?.message || `Failed to connect to ${providerDetail.info.name}`);
+      throw new Error(err?.message || `Failed to connect to ${providerDetail.info.name}`, { cause: err });
     }
   }
 
@@ -1070,7 +1081,7 @@ class RealWeb3Manager {
                 });
                 chainId = CHAIN.chainId;
               } else {
-                throw new Error('Please approve the Polygon network switch in your wallet.');
+                throw new Error('Please approve the Polygon network switch in your wallet.', { cause: switchError });
               }
             }
           }
@@ -1082,10 +1093,10 @@ class RealWeb3Manager {
         throw new Error('No wallet account was selected.');
       } catch (err: any) {
         if (err?.code === 4001 || err?.message?.includes('User rejected') || err?.message?.includes('cancelled')) {
-          throw new Error('Connection request was cancelled in your wallet.');
+          throw new Error('Connection request was cancelled in your wallet.', { cause: err });
         }
         if (err?.code === -32002) {
-          throw new Error('Wallet is waiting for your confirmation. Please check your wallet app.');
+          throw new Error('Wallet is waiting for your confirmation. Please check your wallet app.', { cause: err });
         }
         const inIframe = typeof window !== 'undefined' && window.self !== window.top;
         if (inIframe) {
@@ -1095,7 +1106,7 @@ class RealWeb3Manager {
           return await this.connectWalletConnectTargeted(provider, onUri);
         }
         if (err instanceof Error) throw err;
-        throw new Error('The wallet did not complete the connection request.');
+        throw new Error('The wallet did not complete the connection request.', { cause: err });
       }
     }
 
@@ -1135,10 +1146,9 @@ class RealWeb3Manager {
       // its internal namespace is gone — every request then throws
       // "undefined is not an object (evaluating 'this.namespace...')".
       // A zombie must NOT shadow the healthy injected provider.
-      let alive = false;
+      let alive: boolean;
       try {
-        const accts: string[] = Array.isArray(wc.accounts) ? wc.accounts : [];
-        alive = !!(wc.session && (accts.length > 0 || this.activeSessionAccounts(wc).length > 0));
+        alive = !!(wc.session && this.wcAccounts(wc).length > 0);
       } catch {
         alive = false;
       }
@@ -1292,7 +1302,7 @@ class RealWeb3Manager {
     } catch {}
 
     // Load clean real data from Cloud Firestore with local cache
-    const userData = await this.loadUserDataAsync(formatted);
+    await this.loadUserDataAsync(formatted);
 
     this.currentAccount = {
       address: formatted,
@@ -1324,7 +1334,6 @@ class RealWeb3Manager {
 
   public static getPlayerTagForAddress(address: string): string {
     const clean = address.toLowerCase();
-    const short = clean.slice(2, 6).toUpperCase();
     const adjectives = ['Quantum', 'Apex', 'Cyber', 'Vortex', 'Hyper', 'Neon', 'Solar', 'Pulse', 'Shadow', 'Titan', 'Aero', 'Chrono'];
     const titles = ['Striker', 'Phantom', 'Runner', 'Sniper', 'Rider', 'Specter', 'Knight', 'Glitch', 'Blade', 'Viper', 'Ghost', 'Nova'];
     

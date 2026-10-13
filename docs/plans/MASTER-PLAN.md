@@ -361,28 +361,28 @@
 **تخمین:** ۲ روز · **وابستگی:** فاز ۴
 **🚦 گیت خروج:** axe صفر خطای critical/serious + تست keyboard-only سبز + snapshot RTL
 
-- [ ] **8.1 · L1** حذف `maximum-scale=1, user-scalable=no` (WCAG 1.4.4) — `index.html:5`
-- [ ] **8.2 · L2** `lang` داینامیک بر اساس زبان انتخاب‌شده — `index.html:2`
-- [ ] **8.3 · L3** دکمه‌های غیر-`<button>` → عناصر معنایی با keyboard (۴ مورد)
-- [ ] **8.4 · L4** `role="dialog"` + `aria-modal` + focus-trap + Escape برای ۴ مودال
-- [ ] **8.5 · L5** `aria-label` برای همه‌ی آیکون-باتن‌ها
-- [ ] **8.6 · L6** `LanguageSelector` با `aria-expanded`/`aria-haspopup` + ناوبری کلید
-- [ ] **8.7** `<label>` برای input جستجو — `FriendChallengeModal.tsx:273-279`
-- [ ] **8.8** live-region برای بازخوردهای motion-only
-- [ ] **8.9 · L7** i18n: انتقال همه‌ی متن‌های hardcoded به `translations.ts`
-- [ ] **8.10** RTL: حذف `dir="ltr"` از پنل‌های دارای متن ترجمه‌شده
-- [ ] **8.11** بازی فقط با کیبورد (هدف با Enter/Space فعال شود)
-- [ ] **8.12** `prefers-reduced-motion` رعایت شود
-- [ ] **8.13** axe: صفر خطای critical/serious
-- [ ] **8.14 · L8** `ClaimRequest.signature` نادیده گرفته می‌شود — حذف یا استفاده
-- [ ] **8.15 · L10** `_finalize_if_due`/`_resign` استثناها را می‌بلعند — لاگ + health
-- [ ] **8.16 · L11** `vite.config.ts:19` `allowedHosts: true` — محدود شود
-- [ ] **8.17 · L12** `Deploy.s.sol:27` فقط chain 137 را بلاک می‌کند
-- [ ] **8.18 · L13** `compile_check.js` تست‌ها را کامپایل نمی‌کند
-- [ ] **8.19 · L14** حذف کد مرده (۱۵ مورد)
-- [ ] **8.20 · L15** یکسان‌سازی منطق تکراری (ریاضی جایزه در ۹ جا، WC accounts در ۵ جا، Bo3 در ۵ جا)
-- [ ] **8.21 · L16** ESLint + ruff + mypy در CI
-- [ ] **8.22 · L17** fuzz runs افزایش (به CT14 منتقل شد — ادغام)
+- [x] **8.1** · L1** حذف `maximum-scale=1, user-scalable=no` (WCAG 1.4.4) — `index.html:5` — ✅ viewport اصلاح شد (pinch-zoom آزاد) + تست
+- [x] **8.2** · L2** `lang` داینامیک بر اساس زبان انتخاب‌شده — `index.html:2` — ✅ از قبل پیاده بود (`LanguageContext` → `lang`/`dir`) — با تست pin شد
+- [x] **8.3** · L3** دکمه‌های غیر-`<button>` → عناصر معنایی با keyboard (۴ مورد) — ✅ ۷ عنصر تعاملی: breadcrumbها `<button>`، ردیف‌ها/لوگو/آواتار/بنچمارک/ناحیه‌ی early-click با `clickableDivProps` + گارد منبع
+- [x] **8.4** · L4** `role="dialog"` + `aria-modal` + focus-trap + Escape برای ۴ مودال — ✅ هوک مشترک `useModalA11y` روی ۴ مودال + ۶ تست (role/aria-modal/trap/Escape/restore)
+- [x] **8.5** · L5** `aria-label` برای همه‌ی آیکون-باتن‌ها — ✅ ۴ دکمه‌ی آیکونی نام‌دار شد (certificate ×۳، friend ×۱)
+- [x] **8.6** · L6** `LanguageSelector` با `aria-expanded`/`aria-haspopup` + ناوبری کلید — ✅ listbox با aria-expanded/haspopup + Arrow/Home/End/Escape + ۴ تست
+- [x] **8.7** `<label>` برای input جستجو — `FriendChallengeModal.tsx:273-279` — ✅ `<label>` واقعی + `aria-describedby` (sr-only)
+- [x] **8.8** live-region برای بازخوردهای motion-only — ✅ ۴ live-region (round-transition، false-start، نتیجه، on-chain)
+- [x] **8.9** · L7** i18n: انتقال همه‌ی متن‌های hardcoded به `translations.ts` — ✅ ۴۵ رشته به `translations.ts` (۵ زبان) + گارد منبع؛ برندها عمداً literal
+- [x] **8.10** RTL: حذف `dir="ltr"` از پنل‌های دارای متن ترجمه‌شده — ✅ بنر امتیاز از `dir="ltr"` آزاد شد؛ فقط قطعات hex/عددی LTR ماندند
+- [x] **8.11** بازی فقط با کیبورد (هدف با Enter/Space فعال شود) — ✅ هر دو هدف `<button>` بودند؛ گارد منبع + ناحیه‌ی early-click هم کیبوردی شد
+- [x] **8.12** `prefers-reduced-motion` رعایت شود — ✅ `@media (prefers-reduced-motion)` + `<MotionConfig reducedMotion="user">`
+- [x] **8.13** axe: صفر خطای critical/serious — ✅ axe-core در vitest: ۱۴ sweep (۹ کامپوننت + ۵ صفحه) + گارد «رندر خالی پاس نمی‌شود»
+- [x] **8.14** · L8** `ClaimRequest.signature` نادیده گرفته می‌شود — حذف یا استفاده — ✅ فیلد `signature` بی‌مصرف حذف شد (کلاینت هم نمی‌فرستاد)
+- [x] **8.15** · L10** `_finalize_if_due`/`_resign` استثناها را می‌بلعند — لاگ + health — ✅ ۴ استثنای بلعیده‌شده حالا در `/api/health` شمرده می‌شوند
+- [x] **8.16** · L11** `vite.config.ts:19` `allowedHosts: true` — محدود شود — ✅ `allowedHosts` از `true` به allowlist (با `VITE_ALLOWED_HOSTS` برای پروکسی)
+- [x] **8.17** · L12** `Deploy.s.sol:27` فقط chain 137 را بلاک می‌کند — ✅ گارد دیپلوی معکوس شد: MockUSDT فقط روی allowlist تست‌نت‌ها
+- [x] **8.18** · L13** `compile_check.js` تست‌ها را کامپایل نمی‌کند — ✅ گیت کامپایل حالا هر ۸ فایل `*.t.sol` را هم کامپایل می‌کند
+- [x] **8.19** · L14** حذف کد مرده (۱۵ مورد) — ✅ ESLint ۱۶۳ مشکل پیدا کرد؛ کد مرده حذف شد و ۳ باگ واقعی آشکار شد
+- [x] **8.20** · L15** یکسان‌سازی منطق تکراری (ریاضی جایزه در ۹ جا، WC accounts در ۵ جا، Bo3 در ۵ جا) — ✅ `prizeForStake` (۸ جا)، `bo3Decided` (۸ جا)، `wcAccounts` (۴ جا) + گارد
+- [x] **8.21** · L16** ESLint + ruff + mypy در CI — ✅ ESLint (flat config) + mypy.ini + هر دو در CI و در `bun run lint`
+- [x] **8.22** · L17** fuzz runs افزایش (به CT14 منتقل شد — ادغام) — ✅ ادغام‌شده در CT14 (پروفایل ci با fuzz/invariant بزرگ‌تر) — از قبل انجام شده
 
 ---
 
@@ -578,6 +578,7 @@ docs/plans/MASTER-PLAN.md  ← همین فایل
 | 1.2-LOCKED | 2026-10-12 | آیتم‌های 0.5 و 0.6 تیک خوردند. | ⬜ |
 | 1.3-LOCKED | 2026-10-12 | آیتم 0.8 تیک خورد (Anvil + escrow + تست تسویه واقعی). 0.9–0.11 طبق توافق به فاز ۴ موکول شد. | ⬜ |
 | 1.4-LOCKED | 2026-10-12 | آیتم‌های 0.12 و 0.13 تیک خوردند. **فاز ۰ به‌جز 0.3 (مهاجرت کامل legacy) و 0.9–0.11 (موکول به فاز ۴) بسته شد.** | ⬜ |
+| 8.0-CLOSED | 2026-10-13 | **فاز ۸ کامل (۲۲/۲۲).** گیت خروج: axe صفر خطای critical/serious (۱۴ sweep با axe-core در vitest، چون Playwright در فاز ۱۰ است)، keyboard-only سبز، و RTL pin شده. **دسترس‌پذیری:** viewport قابل‌زوم، مودال‌ها واقعاً dialog شدند (هوک مشترک `useModalA11y`: role/aria-modal/focus-trap/Escape/restore)، ۷ عنصر تعاملی غیر-`<button>` کیبوردی شدند، LanguageSelector یک listbox واقعی شد، live-region برای بازخوردهای motion-only، `prefers-reduced-motion` (CSS + MotionConfig)، و ۴۵ رشته‌ی hardcoded به `translations.ts` منتقل شد. **LOW:** فیلد `signature` بی‌مصرف حذف، استثناهای بلعیده‌شده‌ی sweep حالا در health شمرده می‌شوند، `allowedHosts` محدود شد، گارد دیپلوی معکوس شد (MockUSDT فقط روی تست‌نت)، گیت کامپایل حالا فایل‌های تست را هم کامپایل می‌کند، و ESLint + mypy به CI اضافه شدند. **ESLint ۱۶۳ مشکل پیدا کرد** که ۳ باگ واقعی را آشکار کرد: پیام موفقیت claim یوزرنیم هرگز رندر نمی‌شد، `isSearching` هرگز رندر نمی‌شد (بدون loading state)، و `serverError` مرده بود. **۸.۲۰:** `prizeForStake` (۸ کپی)، `bo3Decided` (۸ کپی)، `wcAccounts` (۴ کپی) یکپارچه شدند + گارد منبع. **شواهد:** ۱۸۷ تست فرانت (۴۵ فایل)، ۲۷۱ تست پایتون، ۸۱ تست قرارداد، eslint/mypy/tsc صفر خطا. | ⬜ |
 | 0.14-CLOSED | 2026-10-13 | **ممیزی مستقل چهارلایه‌ای فازهای ۰–۷ (سرور / قرارداد / کلاینت / بین‌لایه+CI) پیش از مرج.** حکم اولیه: **مرج نکنیم** — ۲ CRITICAL و ۶ HIGH. همه رفع شدند. **CRITICAL-1:** کلاینت Firestore از `auth`/`economy`/endpointهای username قابل‌دسترس نبود (`getattr(store_module, "_fs_store")` — attribute ماژولی که هرگز وجود ندارد) → در production ledger هیچ‌وقت نمی‌نوشت، claim شکست گزارش می‌شد، replay-protection و ابطال session فقط per-process بود، و registry همیشه 503. تست‌ها با monkeypatch همان attribute پنهانش کرده بودند و یک مرحله‌ی integration «skip» را PASS می‌شمرد. **CRITICAL-2:** اصلاحات فاز ۵ (ping cap، band رتبه، جبران تأخیر) در `match_engine.MatchStore` بودند که production هرگز نمی‌سازد. **HIGH:** لنگر افق تسویه در قرارداد با لنگر refund یکی نبود (هر proof دیرهنگام رد می‌شد)؛ refresh recovery مرده بود؛ مسیر recovery کیف‌پول رندر اول را می‌خواند (برنده به‌عنوان بازنده ثبت می‌شد)؛ جبران RTT قابل‌بازی بود؛ CI هرگز سبز نشده بود؛ و گیت کاوریج CI با verify یکی نبود. **MEDIUM:** درآمد/زمان واکنش ساختگی روی leaderboard، متر latency تصادفی، ادعاهای Mining، live feed از history خود بازیکن، نمایش `$0.00` قبل از خواندن زنجیره، `withdraw()` برای گیرنده‌ی بلاک‌شده، `ORACLE_CHAIN_ID` غایب از env اجباری، پرچم forfeit ثبت نمی‌شد، sweep نامحدود، `/api/dispute` و `/api/username/{name}` بدون مصرف‌کننده، لو رفتن آدرس مالک در username_lookup، آیتم ۶.۱۱ تیک‌خورده‌ی بی‌پیاده‌سازی، مستندات متناقض، و نبود pin برای ریاضی جایزه. **شواهد:** `bun run verify` ۱۴ گیت pass / ۰ fail (گیت‌های قرارداد حالا اجرا می‌شوند — Foundry نصب شد)، `forge test` ۸۱ تست، ۲۷۰ تست پایتون + ۱۵۰ تست فرانت، ratchet کاوریج ۸۴٪. | ⬜ |
 | 6.1-CLOSED | 2026-10-13 | **فاز ۶ واقعاً بسته شد (۱۱/۱۱).** بازبینی کامل نشان داد اعلام قبلی «۴/۴» نادرست بود: پنج آیتم باز مانده بود. **6.9 (M15/M16/M17):** `onchain._cache` و `_rl_window` هیچ‌وقت evict نمی‌شدند (نشتی حافظه با هر match id / هر آدرس) و ست‌های auth بدون قفل از threadpool تغییر می‌کردند — هر سه رفع شد با تست‌های bound و lock. **6.7:** `.env.example` نه‌فقط ناقص بود، بلکه چهار متغیر را نام می‌برد که هیچ‌جا خوانده نمی‌شوند؛ بازنویسی شد + تستی که هر متغیر خوانده‌شده را در فایل می‌خواهد. **6.6:** runbook حادثه نوشته شد (RPC down، Firestore down، کلید oracle، پول گیرکرده، sweep مرده، limiter تنزل‌یافته، عدم‌تطابق chain-id، توقف اضطراری) + تستی که endpointهای نام‌برده‌شده را با روت‌های واقعی تطبیق می‌دهد. **6.8:** `api/requirements.lock` (pip-compile، ۱۵۱ خط) + تست سازگاری با requirements.txt. **6.5:** هر کوئری Firestore و ایندکس لازمش مستند شد + تست. | ⬜ |
 | 7.1-CLOSED | 2026-10-13 | **بازبینی مستقل بستن فاز ۷ (۳ یافته، همه رفع شد).** (۱) **HIGH** — هدف چالش یک‌بارمصرف نبود: `App.tsx` فقط وقتی آرگومان تعریف‌شده بود `activeOpponentAddress` را می‌نوشت و هیچ‌وقت پاکش نمی‌کرد، پس **دوئل عادی بعدی** با آدرس کهنه صف می‌شد (سرور ماتچ را برای دوست قبلی رزرو می‌کرد و بازیکن ۹۰ ثانیه منتظر می‌ماند). (۲) **MEDIUM** — `player_stats` برای بازیکن بدون ردیف ledger صفرها را «معتبر» برمی‌گرداند و کلاینت پیشرفت محلی را با آن بازنویسی می‌کرد؛ و `recordMatch` مشترکِ ranked/practice بود، پس هر تمرین XP واقعی بازیکن را صفر می‌کرد. (۳) **MEDIUM** — `sweep_expired` کل سند صف را غیرتراکنشی بازنویسی می‌کرد و با `enqueue` همزمان مسابقه می‌داد (lost wakeup). **یافته‌های LOW هم رفع شد:** گواهی بازنده وقتی برنده اول تسویه کرده بود «NOT ON-CHAIN» می‌گفت (حالا tx را از رویداد `MatchSettled` زنجیره می‌خواند)، ارسال دوباره روی دوئل refunded، مستندات کهنه‌ی ماتریس XP، و نوار streak که مقدار محلی را نشان می‌داد. **گپ بین‌لایه‌ای بسته شد:** بازیکن چالش‌شده حالا با `GET /api/challenges` + بنر Lobby می‌تواند چالش را ببیند و بپذیرد. ۲۱۳ تست سرور + ۱۳۷ تست فرانت. | ⬜ |

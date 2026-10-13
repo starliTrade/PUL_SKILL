@@ -216,7 +216,7 @@ def test_concurrent_claims_cannot_both_win(ledger, fs_db):
     def claim(tx_hash: str) -> None:
         try:
             barrier.wait(timeout=10)
-            results.append(ledger.record_claim(match_id, winner, tx_hash, "0xsig"))
+            results.append(ledger.record_claim(match_id, winner, tx_hash))
         except BaseException as exc:  # pragma: no cover - surfaced below
             results.append(False)
             print("claim raised:", exc)

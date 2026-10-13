@@ -1,7 +1,8 @@
-import React, { lazy, Suspense, useState, useEffect } from 'react';
+import React, { lazy, Suspense } from 'react';
 import { PulsarStarIcon } from './PulsarLogo';
 import { LanguageSelector } from './LanguageSelector';
 import { cn } from '../lib/utils';
+import { useLanguage } from '../i18n/LanguageContext';
 
 // Audit-#5 item 10: the wallet stack (Reown/AppKit + ethers) is ~1MB gzipped
 // and was loaded on EVERY page via the header. Lazy-load it so the initial
@@ -25,6 +26,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   className,
   maxWidthClass = 'max-w-md',
 }) => {
+  const { t } = useLanguage();
   // Audit 2026-10-13 — HONESTY: this header used to render
   // `Math.floor(14 + Math.random() * 8)` every four seconds as "Network latency:
   // Nms · Polygon Escrow Node". A random number presented as a measurement, on
@@ -51,7 +53,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
           type="button"
           onClick={() => onNavigate('/')}
           className="brand-logo-unit inline-flex items-center gap-2 select-none cursor-pointer group focus:outline-none h-8 p-0 m-0 border-0 bg-transparent"
-          title="PULSAR Arena"
+          title={t('titlePulsarArena')}
         >
           {/* Star Icon Box - Original Aesthetic, rounded-xl and glow */}
           <div className="w-8 h-8 rounded-xl shrink-0 flex items-center justify-center transition-all duration-300 overflow-hidden bg-zinc-950/65 backdrop-blur-2xl border border-white/[0.08] group-hover:border-white/[0.18] shadow-[0_8px_32px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] relative">

@@ -1,5 +1,5 @@
 import { MouseTrajectoryPoint, MatchResolution, BiometricTelemetry, TargetVectorDirection } from '../types';
-import { ECONOMY } from './chain';
+import { prizeForStake } from './chain';
 
 export const BOT_NAMES = [
   'ShadowStrike',
@@ -117,9 +117,9 @@ class AntiCheatEngine {
 
     // 4. Trajectory Physics & Fitts's Law Evaluation
     let totalCurvature = 0;
-    let timeDeltas: number[] = [];
-    let velocities: number[] = [];
-    let accelerations: number[] = [];
+    const timeDeltas: number[] = [];
+    const velocities: number[] = [];
+    const accelerations: number[] = [];
     let isPurelyLinear = true;
 
     for (let i = 1; i < trajectory.length; i++) {
@@ -166,32 +166,11 @@ class AntiCheatEngine {
     // F-14: REAL kinematic metrics only — every number below is measured
     // from the trajectory, never randomized. Two honest hard checks already
     // passed above: event.isTrusted and a non-perfectly-linear path.
-    const midpoint = Math.floor(velocities.length / 2);
-    const maxVel = Math.max(...velocities, 0.001);
-    const maxIndex = velocities.indexOf(maxVel);
-
-    // (a) Bell-curve conformance: peak velocity near the middle of the stroke
-    // (accelerate then decelerate). A pure snap has no profile at all.
-    const hasBellCurveProfile = maxIndex > 0 && maxIndex < velocities.length - 1;
-    const centrality = hasBellCurveProfile
-      ? 1 - Math.abs(maxIndex - midpoint) / Math.max(1, midpoint)
-      : 0;
-
-    // (b) Velocity variance → jitter strength in a human-plausible band.
-    // A real hand tremors; a scripted interpolation does not.
-    const meanVel = velocities.reduce((a, v) => a + v, 0) / Math.max(1, velocities.length);
-    const velVar =
-      velocities.reduce((a, v) => a + (v - meanVel) * (v - meanVel), 0) /
-      Math.max(1, velocities.length);
-    const jitterHz = Math.max(2.2, Math.min(7.8, Math.sqrt(velVar)));
-
-    // (c) Acceleration smoothness: mean |Δv| relative to peak velocity.
-    const dvs: number[] = [];
-    for (let i = 1; i < velocities.length; i++) dvs.push(Math.abs(velocities[i] - velocities[i - 1]));
-    const smoothness = dvs.length
-      ? Math.max(0, Math.min(1, 1 - dvs.reduce((a, v) => a + v, 0) / dvs.length / maxVel))
-      : 0;
-
+    // Audit 8.19: this block computed a bell-curve conformance score, a jitter
+    // estimate and an acceleration-smoothness score, then discarded all three —
+    // the function returns only `trajectoryCurvature` and `sampleCount`. Dead
+    // measurements are the same liability as fabricated ones: they look like
+    // analysis and contribute nothing.
     // (d) Deterministic per-session pseudo-identifier (hash of real signals,
     // NOT a “human-entropy” score — it measures nothing about the user).
 
@@ -244,10 +223,9 @@ class AntiCheatEngine {
 
   public calculatePrize(stake: number = 10): number {
     // Audit #6 P3: prize math must derive from ONE source of truth —
-    // ECONOMY.winnerShareBps (mirrors contract PLATFORM_FEE_BPS), not a
-    // hardcoded 0.98 that drifts when the rake changes.
-    const prize = (stake * 2 * ECONOMY.winnerShareBps) / 10_000;
-    return parseFloat(prize.toFixed(2));
+    // `prizeForStake` (mirrors contract PLATFORM_FEE_BPS), not a hardcoded
+    // 0.98 that drifts when the rake changes.
+    return parseFloat(prizeForStake(stake).toFixed(2));
   }
 
   public resolveMatch(
