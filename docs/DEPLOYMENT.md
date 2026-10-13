@@ -112,6 +112,7 @@ Server environment (all **secrets** — set on the host, never in git):
 | `FIRESTORE_PROJECT_ID` | Your Firebase project ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Service-account JSON path (or use ambient Cloud Run credentials) |
 | `CORS_ALLOW_ORIGINS` | **Required in production.** Comma-separated origin allowlist. Audit 2026-10-13: this row said "optional — leave unset (`*`)", but the H6 fail-closed gate (`REQUIRED_PRODUCTION_ENV`) refuses to start without it, so following this doc produced a server that would not boot. An unset value is refused rather than defaulting to `*` |
+| `ALLOWED_HOSTS` | Comma-separated hostnames **this API answers to**. Defaults to `ALLOWED_DOMAIN`, which is only correct when the frontend and the API share a host. Audit 2026-10-13: the `TrustedHost` allowlist reused `ALLOWED_DOMAIN` (the FRONTEND's SIWE host), so in the split topology the API rejected **every** request with 403 — it was unreachable in exactly the deployment this runbook describes |
 | `ALLOWED_DOMAIN` | **Required in production.** The SIWE domain the server issues and accepts statements for. Audit H7: it is taken from here, never from the client's `Host` header, so a spoofed header cannot choose the domain a user signs for |
 | `SENTRY_DSN` (optional) | Server error monitoring |
 

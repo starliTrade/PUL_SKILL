@@ -206,7 +206,24 @@ fi
 
 # --- 8. E2E browser tests (playwright) — plan item 0.10 -----------------------
 if [[ -f "$ROOT/playwright.config.ts" ]]; then
-  run_gate "browser E2E (playwright)" bun run test:e2e
+  # The E2E drives the REAL stack: the API starts with the escrow address, RPC
+  # and oracle key set, so anvil must be up with the escrow deployed. Start it
+  # the same way the emulator is started above, rather than failing on a
+  # prerequisite the gate can satisfy itself.
+  if ! curl -sf -o /dev/null -X POST -H "Content-Type: application/json" \
+      --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+      "http://127.0.0.1:${PULSAR_ANVIL_PORT:-8545}" 2>/dev/null; then
+    if [[ -x "$ROOT/scripts/start_anvil.sh" ]]; then
+      PATH="$PATH:/root/workspace/.foundry/bin" bash "$ROOT/scripts/start_anvil.sh" --bg >/dev/null 2>&1 || true
+    fi
+  fi
+  if curl -sf -o /dev/null -X POST -H "Content-Type: application/json" \
+      --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+      "http://127.0.0.1:${PULSAR_ANVIL_PORT:-8545}" 2>/dev/null; then
+    run_gate "browser E2E (playwright)" bun run test:e2e
+  else
+    skip_gate "browser E2E (playwright)" "anvil is not running — run scripts/start_anvil.sh --bg"
+  fi
 else
   skip_gate "browser E2E (playwright)" "playwright not wired up yet (plan item 0.10)"
 fi
