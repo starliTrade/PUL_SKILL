@@ -36,6 +36,8 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
   // Practice/local results are clearly labeled as such — never dressed as on-chain.
   const isOnChain = Boolean(match.hash && /^0x[0-9a-fA-F]{64}$/.test(match.hash));
   const txHash = isOnChain ? (match.hash as string) : null;
+  // Audit 9.6: the server's signature over the settled result.
+  const oracleSignature = (match.oracleSignature as string) || null;
   const displayTx = txHash ? `${txHash.slice(0, 10)}...${txHash.slice(-8)}` : null;
   const reactionMs = match.yourTime || 0;
   const oppMs = match.opponentTime || 0;
@@ -202,6 +204,31 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                   {copiedKey === 'duelId' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                 </button>
               </div>
+
+              {/* Audit 9.6 (M39): the oracle signature is the proof that the
+                  server signed THIS result — the certificate is the surface
+                  that is supposed to show it, and it showed only the tx hash. */}
+              {oracleSignature ? (
+                <div className="flex items-center justify-between p-2.5 rounded-lg bg-black/40 border border-white/5">
+                  <div className="space-y-0.5 min-w-0 pr-2">
+                    <div className="text-[10px] text-zinc-500">{t('certOracleSignature')}</div>
+                    <div className="text-sky-300 truncate font-mono">
+                      {`${oracleSignature.slice(0, 10)}...${oracleSignature.slice(-8)}`}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleCopy(oracleSignature, 'oracleSig')}
+                    aria-label={t('certCopySignature')}
+                    className="p-1 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white shrink-0"
+                  >
+                    {copiedKey === 'oracleSig' ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                </div>
+              ) : null}
 
               {isOnChain && txHash ? (
                 <div className="flex items-center justify-between p-2.5 rounded-lg bg-black/40 border border-white/5">
