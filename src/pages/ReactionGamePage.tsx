@@ -875,9 +875,9 @@ function isWalletCancel(msg: string): boolean {
           if (state.status !== 3) {
             const proof = proofFrom(bytes32);
             setLastProof(proof);
-            const releaseTx = await settleDuelOnChain(proof);
-            setSettlementTxHash(releaseTx);
-            setOnchainAction(`Pot released to the winner: ${releaseTx.slice(0, 10)}…${releaseTx.slice(-8)}`);
+            txHash = await settleDuelOnChain(proof);
+            setSettlementTxHash(txHash);
+            setOnchainAction(`Pot released to the winner: ${txHash.slice(0, 10)}…${txHash.slice(-8)}`);
           }
         } catch (releaseError) {
           // The winner may still settle, or the refund window covers it.
@@ -906,6 +906,10 @@ function isWalletCancel(msg: string): boolean {
         opponentTime: avgOpp,
         yourTime: avgUser,
         timestamp: Date.now(),
+        // Audit M39: carry the real settlement tx so the certificate (and the
+        // profile history view) can show a verifiable on-chain proof instead
+        // of always claiming "NOT ON-CHAIN".
+        hash: txHash || undefined,
       }).then((xpRes) => setXpSummary(xpRes));
 
       setPhase('result');
@@ -2032,6 +2036,10 @@ function isWalletCancel(msg: string): boolean {
             opponentTime: matchResult.opponentTime,
             timestamp: Date.now(),
             opponentName: opponent,
+            // Audit M39: the certificate derives its ON-CHAIN badge from this
+            // hash. Omitting it made a settled duel's certificate claim
+            // "LOCAL RESULT · NOT ON-CHAIN" while the tx link sat right below.
+            hash: settlementTxHash || undefined,
           }}
           playerTag={wallet.playerId}
           walletAddress={wallet.address || undefined}

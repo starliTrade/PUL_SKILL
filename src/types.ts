@@ -36,6 +36,11 @@ export interface MatchHistoryItem {
   yourTime: number;
   timestamp: number;
   xpEarned?: number;
+  /** Audit M39: the on-chain settlement tx hash, when the duel settled on
+   *  chain. `DuelCertificateModal` renders the verifiable proof from this —
+   *  without it every certificate claimed "NOT ON-CHAIN" even for settled
+   *  duels. Absent for practice/local results. */
+  hash?: string;
 }
 
 export interface MouseTrajectoryPoint {
