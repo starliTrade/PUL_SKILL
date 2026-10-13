@@ -13,6 +13,7 @@ workflow failed to parse.
 from __future__ import annotations
 
 import pathlib
+import re
 
 import pytest
 
@@ -110,10 +111,15 @@ def test_firestore_emulator_is_started(workflow: dict):
 
 
 def test_pytest_runs_with_the_coverage_ratchet(workflow: dict):
+    """The ratchet is enforced by `coverage report` over the whole suite.
+
+    Audit HIGH-8 changed HOW it is measured (one session over pytest + the
+    legacy suites, matching `scripts/verify.sh`) — not whether.
+    """
     scripts = "\n".join(
         step["run"] for step in _steps(workflow["jobs"]["game-server"]) if "run" in step
     )
-    assert "--cov=api" in scripts, "CI runs pytest without the coverage ratchet"
+    assert "coverage report" in scripts, "CI runs pytest without the coverage ratchet"
 
 
 def test_chain_tests_run_against_anvil(workflow: dict):
@@ -152,4 +158,63 @@ def test_game_server_install_step_cannot_fail_before_any_test(workflow: dict):
         "the game-server job must verify sqlite3 is importable — the Firestore "
         "STDLib fallback depends on it, and a silent fallback to the memory "
         "store is the blind spot that hid C1/H3/H4"
+    )
+
+
+# --- audit 2026-10-13: the gates must be the SAME gates -----------------------
+
+
+def _job_scripts(workflow: dict, job: str) -> str:
+    return "\n".join(step["run"] for step in _steps(workflow["jobs"][job]) if "run" in step)
+
+
+def test_ci_measures_coverage_the_same_way_verify_does(workflow: dict):
+    """Audit HIGH-8: a green `verify` must imply a green CI.
+
+    CI measured `pytest --cov=api` alone (79.09% against a 79.0 floor) while
+    `scripts/verify.sh` measured pytest PLUS the legacy suites in one session
+    (81%). The two gates disagreed, so CI could fail on a change verify passed.
+    Both must now use one coverage session: `coverage run` then `--append`.
+    """
+    scripts = _job_scripts(workflow, "game-server")
+    assert "coverage run --source=api -m pytest" in scripts, (
+        "CI does not run pytest under a coverage session"
+    )
+    assert scripts.count("coverage run --append --source=api") >= 3, (
+        "the legacy suites are not appended to the same coverage session"
+    )
+    assert "coverage report" in scripts, "CI never enforces the ratchet"
+    # ...and it must NOT use the pytest-cov shortcut that measures a different set.
+    assert "--cov=api" not in scripts, (
+        "CI still measures pytest alone with pytest-cov — a different gate from verify.sh"
+    )
+
+
+def test_ci_asserts_the_server_suite_actually_ran(workflow: dict):
+    """A suite that collects nothing must not look green."""
+    scripts = _job_scripts(workflow, "game-server")
+    assert "collect-only" in scripts, (
+        "the game-server job has no 'the suite actually ran' guard"
+    )
+
+
+def test_the_contracts_job_uses_the_ci_profile(workflow: dict):
+    """`[profile.ci]` in foundry.toml was dead config — nothing selected it."""
+    for step in _steps(workflow["jobs"]["contracts"]):
+        if "forge test" in str(step.get("run", "")):
+            assert str(step.get("env", {}).get("FOUNDRY_PROFILE", "")) == "ci", (
+                "the contracts job runs forge test without FOUNDRY_PROFILE=ci, so "
+                "the larger fuzz/invariant budgets never run"
+            )
+            return
+    pytest.fail("the contracts job does not run forge test")
+
+
+def test_the_contract_test_floor_is_near_the_real_count(workflow: dict):
+    """A floor far below the real count only catches 'zero tests'."""
+    scripts = _job_scripts(workflow, "contracts")
+    match = re.search(r'test "\$ran" -ge (\d+)', scripts)
+    assert match, "no contract-test floor"
+    assert int(match.group(1)) >= 75, (
+        f"the contract-test floor is {match.group(1)} while the suite has ~81 tests"
     )

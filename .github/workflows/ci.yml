@@ -71,23 +71,50 @@ jobs:
             sleep 1
           done
           echo "emulator failed to start"; tail -40 /tmp/fsemu.log; exit 1
-      - name: Server tests (pytest + coverage ratchet) — plan items 0.3, 0.12
+      # Audit HIGH-8: the coverage ratchet must measure the SAME thing here as it
+      # does in `scripts/verify.sh`. CI used to run `pytest --cov=api` alone,
+      # which measured 79.09% against a 79.0 floor — 0.09 points of headroom —
+      # while verify.sh measured pytest PLUS the legacy suites in one session
+      # (81%). A green `bun run verify` therefore did not imply a green CI, and a
+      # one-line regression failed CI while verify stayed green.
+      #
+      # The suites below run under ONE coverage session (`coverage run` then
+      # `--append`), exactly like verify.sh, and the ratchet is enforced by the
+      # final `coverage report` (`.coveragerc` sets fail_under; it may only ever
+      # go up). The chain-marked tests skip here (no anvil in this job) and run
+      # in the contracts job.
+      - name: Server tests under the coverage session — plan items 0.3, 0.12
         env:
           FIRESTORE_EMULATOR_HOST: 127.0.0.1:8081
           GCLOUD_PROJECT: demo-pulsar
-        # `.coveragerc` sets fail_under; it may only ever go up. The chain-marked
-        # tests skip here (no anvil in this job) and run in the contracts job.
-        run: python3 -m pytest -q --cov=api --cov-report=term-missing
+        run: |
+          set -euo pipefail
+          python3 -m coverage erase
+          python3 -m coverage run --source=api -m pytest -q
       - name: Protocol smoke tests (SIWE, commit-reveal, settlement, oracle, store roundtrip)
-        run: python3 scripts/test_game_server.py
+        env:
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8081
+          GCLOUD_PROJECT: demo-pulsar
+        run: python3 -m coverage run --append --source=api scripts/test_game_server.py
       - name: HTTP end-to-end tests (real FastAPI request layer)
-        run: python3 scripts/test_http_e2e.py
+        run: python3 -m coverage run --append --source=api scripts/test_http_e2e.py
       - name: Smoke tests again with the FALLBACK path forced (PULSAR_MATCH_STORE=firestore, no credentials)
         env:
           PULSAR_MATCH_STORE: firestore
-        run: python3 scripts/test_game_server.py
+        run: python3 -m coverage run --append --source=api scripts/test_game_server.py
       - name: Deposit gate + distributed rate limiter + matchmaking probe (audit #5)
-        run: python3 scripts/probe_a5.py
+        run: python3 -m coverage run --append --source=api scripts/probe_a5.py
+      - name: Assert the server suite actually ran (audit HIGH-8)
+        # The contracts job has had this guard since CI-1; the game-server job
+        # had none, so a suite that collected nothing would still "pass".
+        run: |
+          set -euo pipefail
+          n="$(python3 -m pytest --collect-only -q 2>/dev/null | grep -c '::' || true)"
+          echo "server tests collected: $n"
+          test "$n" -ge 200
+      - name: Coverage ratchet over the WHOLE server suite — plan item 0.12
+        # The same measurement `bun run verify` enforces, so the two gates agree.
+        run: python3 -m coverage report --skip-covered
       - name: Firestore integration suite against the REAL emulator (no longer skips)
         env:
           FIRESTORE_EMULATOR_HOST: 127.0.0.1:8081
@@ -127,6 +154,11 @@ jobs:
           test -f lib/forge-std/src/Test.sol
           test -f lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol
       - name: forge test (includes struct-layout + fee pins vs the server decoder)
+        # Audit 2026-10-13: `contracts/foundry.toml` defines a `[profile.ci]` with
+        # larger fuzz/invariant budgets, but this step never selected it, so CI
+        # ran the DEFAULT budgets and the documented profile was dead config.
+        env:
+          FOUNDRY_PROFILE: ci
         run: cd contracts && forge test -vvv
       - name: Assert the contract suite actually ran (CI-1 regression guard)
         # A green `forge test` that ran zero tests is the exact failure this
@@ -137,7 +169,9 @@ jobs:
           out="$(forge test --json 2>/dev/null || true)"
           ran="$(printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(len(v.get("test_results",{})) for v in d.values()))')"
           echo "contract tests executed: $ran"
-          test "$ran" -ge 21
+          # Audit 2026-10-13: the floor was 21 while the suite has ~81 tests, so a
+          # 60-test regression still passed. Keep it near the real count.
+          test "$ran" -ge 75
       # Plan item 0.8: the settlement digest / decoder / Solidity contract are a
       # three-way agreement that unit tests cannot verify. Run the real money
       # path against a local EVM.
