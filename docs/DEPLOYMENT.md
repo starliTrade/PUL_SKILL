@@ -120,6 +120,38 @@ Smoke-test the deployment: `GET https://<server>/api/health` must return
 
 ---
 
+## 3b. Firestore indexes (plan item 6.5)
+
+Deploy the declared indexes before the server takes traffic:
+
+```
+gcloud firestore indexes composite create --file=firestore.indexes.json
+# or: firebase deploy --only firestore:indexes
+```
+
+Every query the server issues, and whether it needs a composite index:
+
+| Query | Where | Index |
+|---|---|---|
+| `pulsar_matches.where(status == 'settled').order_by(settled_at)` | the re-sign sweep (`store.py`) | **COMPOSITE (status, settled_at)** — declared in `firestore.indexes.json` |
+| `pulsar_matches.where(status == 'active')` | the sweep's expiry pass | single-field, automatic |
+| `pulsar_matches.where(players.<addr>.address == addr).limit(5)` | `player_live_match` (idempotent queueing) | single-field on a map subfield, automatic |
+| `pulsar_queue` documents (streamed) | matchmaking + pending challenges | collection scan, bounded by the number of stakes |
+| `matches.orderBy(timestamp desc).limit(15)` | the live arena feed (client) | single-field, automatic |
+| `leaderboard.orderBy(wins desc).limit(20)` | the podium (client) | single-field, automatic |
+| `users.where(playerId == tag).limit(10)` | friend search by tag (client) | single-field, automatic |
+
+`firestore.indexes.json` sets `fieldOverrides: []`, so nothing is excluded from
+the automatic single-field indexes — the map-subfield query above depends on
+that.
+
+**Why the composite index matters.** Without it Firestore *rejects* the sweep's
+query. The sweep is the F-12 prize rescue: it re-signs a settled duel whose
+10-minute proof expired while both clients were offline. The rejection used to
+be swallowed by a bare `except Exception: pass`, so the sweep silently no-opped
+in production while still paying for the query (audit H9). It is now counted and
+surfaced on `/api/health` under `sweep` — check that field after deploying.
+
 ## 4. Configure the web client
 
 Set in Freebuff **Settings → Environment** (dev) **and** in
