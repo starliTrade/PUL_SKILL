@@ -6,7 +6,7 @@
  * then asserts the sweep is clean.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, act } from '@testing-library/react';
 import React from 'react';
 import { axeViolations, describeViolations } from './a11y';
 
@@ -28,7 +28,8 @@ vi.mock('../lib/sound', () => ({
 
 vi.mock('../lib/escrowFlow', () => ({
   escrowStatus: () => ({ configured: true, escrowAddress: '0x' + 'ab'.repeat(20), message: '' }),
-  getPendingWithdrawal: vi.fn(async () => '0'),
+  // A non-zero credit so the card actually renders (it hides itself at zero).
+  getPendingWithdrawal: vi.fn(async () => '1.96'),
   withdrawPending: vi.fn(),
 }));
 
@@ -54,6 +55,9 @@ import { BottomNav } from '../components/BottomNav';
 import { LanguageSelector } from '../components/LanguageSelector';
 
 async function expectClean(node: HTMLElement, label: string) {
+  // A sweep over an EMPTY render passes trivially. Assert there is real markup
+  // to audit, so a broken mock cannot turn this gate into a no-op.
+  expect(node.querySelectorAll('*').length, `${label} rendered nothing to audit`).toBeGreaterThan(0);
   const found = await axeViolations(node);
   expect(found, `${label}\n${describeViolations(found)}`).toEqual([]);
 }
@@ -94,6 +98,11 @@ describe('axe sweep — components (plan item 8.13)', () => {
 
   it('PendingPayoutCard', async () => {
     const { container } = render(<PendingPayoutCard address={'0x' + '11'.repeat(20)} />);
+    // The card resolves its credit in an effect; let it land before auditing.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     await expectClean(container, 'PendingPayoutCard');
   });
 
