@@ -76,7 +76,16 @@ export default function App() {
     }
     // Audit M27: a friend challenge carries the challenged ADDRESS so the
     // server can reserve the duel for that player.
-    if (opponentAddress !== undefined) {
+    //
+    // The target is ONE-SHOT. It used to be written only when the argument was
+    // present and never cleared, so after any challenge the next ORDINARY duel
+    // was queued with the stale address: the server reserved the match for the
+    // previous friend, the player waited out the 90-second timeout, and they
+    // could not match a stranger at all until a reload. Entering the game route
+    // always sets the target to what THIS navigation asked for.
+    if (path === '/game/reaction') {
+      setActiveOpponentAddress(opponentAddress ?? '');
+    } else if (opponentAddress !== undefined) {
       setActiveOpponentAddress(opponentAddress);
     }
     setCurrentPath(path);
