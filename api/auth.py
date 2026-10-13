@@ -138,13 +138,16 @@ def _durable_backend() -> Any | None:
 
     Late-imported to avoid a circular import (store imports match_engine,
     main imports both).
+
+    Audit CRITICAL-1: this used to read `getattr(store, "_fs_store", None)` — a
+    MODULE attribute that never exists, so in production the durable branch was
+    dead: nonce replay protection and session revocation were per-process only.
+    `store.durable_db()` reads the client the ACTIVE store is actually using.
     """
     try:
         import store as _store  # local import avoids a circular import
 
-        fs = getattr(_store, "_fs_store", None)
-        if fs is not None:
-            return fs.db
+        return _store.durable_db()
     except Exception:
         pass
     return None

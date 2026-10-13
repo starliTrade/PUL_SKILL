@@ -125,7 +125,12 @@ def main() -> int:
         md = store._fs_store.db.collection("matches").document(m1.match_id).get().to_dict() or {}
         check("economy: match ledger doc written", md.get("id") == m1.match_id)
     else:
-        check("economy ledger (skipped: Admin SDK unavailable)", True)
+        # Audit CRITICAL-1: this used to count a SKIP as a PASS, which is how a
+        # dead ledger stayed invisible for the whole remediation. This suite
+        # runs against a REAL Firestore backend, so the ledger MUST be reachable
+        # from the store — if it is not, the wiring is broken and that is a
+        # failure, not a skip.
+        check("economy ledger is reachable from the durable store", False)
 
     print()
     print("FAILURES:", failures if failures else "none")

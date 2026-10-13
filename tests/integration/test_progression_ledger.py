@@ -132,10 +132,15 @@ def _emulator_db(monkeypatch):
         db.collection("_probe").document("ping").set({"ok": True})
     except Exception as exc:  # pragma: no cover - environment problem
         pytest.skip(f"Firestore emulator unreachable at {host}: {exc}")
-    import store as store_module
-    from store import FirestoreStore
+    # Audit CRITICAL-1: build the store the way PRODUCTION does, instead of
+    # monkeypatching a module attribute production never sets.
+    monkeypatch.setenv("PULSAR_MATCH_STORE", "firestore")
+    monkeypatch.setenv("FIRESTORE_PROJECT_ID", "demo-pulsar")
 
-    monkeypatch.setattr(store_module, "_fs_store", FirestoreStore(db), raising=False)
+    import store as store_module
+
+    built = store_module.create_store()
+    assert built.backend_name == "firestore", "the fixture did not reach the durable backend"
     return db
 
 

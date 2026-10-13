@@ -38,15 +38,19 @@ import xp as xp_engine
 
 
 def _fs_db() -> Any:
-    """The Firestore client from the store, or None in memory mode."""
+    """The Firestore client the ACTIVE store is using, or None in memory mode.
+
+    Audit CRITICAL-1: this used to read `getattr(store, "_fs_store", None)` (and
+    a `store.store` fallback that is also never set) — module attributes that do
+    not exist, because `_fs_store` is an INSTANCE attribute of
+    DurableMatchStore. In production the ledger therefore never wrote anything:
+    no wins, no XP, no prize, no leaderboard row. `store.durable_db()` is the
+    ONE definition of this resolution.
+    """
     try:
         import store as _store  # local import avoids a circular import
 
-        fs = getattr(_store, "_fs_store", None) or getattr(
-            getattr(_store, "store", None), "_fs_store", None
-        )
-        if fs is not None:
-            return fs.db
+        return _store.durable_db()
     except Exception:
         pass
     return None

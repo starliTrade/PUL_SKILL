@@ -937,4 +937,36 @@ def install_persistence(store: DurableMatchStore, engine_module: Any) -> None:
 
 def create_store() -> DurableMatchStore:
     store = DurableMatchStore()
+    # Audit CRITICAL-1: expose the ACTIVE store so the modules that need the
+    # durable client (auth, economy, the username registry) can find it.
+    #
+    # They used to resolve it as `getattr(store_module, "_fs_store", None)` — a
+    # MODULE attribute that never existed, because `_fs_store` is an INSTANCE
+    # attribute of DurableMatchStore. In production every one of them therefore
+    # saw "no durable backend": the ledger never wrote, SIWE replay protection
+    # and session revocation were per-process only, and the username registry
+    # always 503'd. The suite hid it by monkeypatching the module attribute into
+    # existence.
+    global _active_store
+    _active_store = store
     return store
+
+
+# The store `create_store()` last returned. `main` holds the same object as its
+# module-level `store`; this is the seam the other modules read.
+_active_store: DurableMatchStore | None = None
+
+
+def durable_client() -> Any | None:
+    """The FirestoreStore the ACTIVE store is using, or None in memory mode."""
+    return getattr(_active_store, "_fs_store", None)
+
+
+def durable_db() -> Any | None:
+    """The Firestore client the ACTIVE store is using, or None in memory mode.
+
+    ONE definition for every consumer (audit CRITICAL-1). A second copy of this
+    resolution is how the bug survived: each module re-derived it, and each
+    re-derivation was wrong in the same way.
+    """
+    return getattr(durable_client(), "db", None)

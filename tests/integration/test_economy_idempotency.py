@@ -44,13 +44,24 @@ def fs_db():
 
 @pytest.fixture
 def ledger(fs_db, monkeypatch):
-    """Point economy._fs_db() at the emulator."""
-    import store as store_module
-    from store import FirestoreStore
+    """Point economy._fs_db() at the emulator, the way PRODUCTION does.
 
-    monkeypatch.setattr(store_module, "_fs_store", FirestoreStore(fs_db), raising=False)
+    Audit CRITICAL-1: this used to `monkeypatch.setattr(store_module,
+    "_fs_store", ...)` — creating a MODULE attribute that production never sets,
+    which is exactly what hid the wiring bug. It now builds the store through
+    `create_store()`, so the fixture exercises the same path production uses.
+    """
+    monkeypatch.setenv("PULSAR_MATCH_STORE", "firestore")
+    monkeypatch.setenv("FIRESTORE_PROJECT_ID", PROJECT)
+
+    import store as store_module
+
+    built = store_module.create_store()
+    assert built.backend_name == "firestore", "the fixture did not reach the durable backend"
+
     import economy
 
+    assert economy._fs_db() is not None, "the ledger cannot see the durable client"
     return economy
 
 

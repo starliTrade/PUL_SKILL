@@ -1510,14 +1510,12 @@ def username_claim(body: UsernameRequest, request: Request) -> dict[str, Any]:
     _rl_check("username", address, 10)
     tag = _clean_username(body.username)
     normalized = tag.lower()
-    db = None
-    try:
-        import store as _store_mod
+    # Audit CRITICAL-1: `getattr(store, "_fs_store")` is a MODULE attribute that
+    # never exists (`_fs_store` is an instance attribute of DurableMatchStore),
+    # so this endpoint answered 503 for every caller in production.
+    import store as _store_mod
 
-        db = getattr(_store_mod, "_fs_store", None)
-        db = db.db if db is not None else None
-    except Exception:
-        db = None
+    db = _store_mod.durable_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Username registry requires the durable store (Firestore)")
 
@@ -1566,14 +1564,12 @@ def username_lookup(name: str, request: Request) -> dict[str, Any]:
     # for the UI (a couple of calls per claim) while throttling crawlers.
     _rl_check_ip("username_lookup", request, RL_USERNAME_LOOKUP_MAX)
     normalized = name.strip().lower()
-    db = None
-    try:
-        import store as _store_mod
+    # Audit CRITICAL-1: `getattr(store, "_fs_store")` is a MODULE attribute that
+    # never exists (`_fs_store` is an instance attribute of DurableMatchStore),
+    # so this endpoint answered 503 for every caller in production.
+    import store as _store_mod
 
-        db = getattr(_store_mod, "_fs_store", None)
-        db = db.db if db is not None else None
-    except Exception:
-        db = None
+    db = _store_mod.durable_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Username registry requires the durable store (Firestore)")
     snap = db.collection("usernames").document(normalized).get()
