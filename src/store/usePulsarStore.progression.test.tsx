@@ -77,6 +77,8 @@ const MATCH = {
   opponentTime: 300,
   yourTime: 200,
   timestamp: Date.now(),
+  // A server-settled duel: the ledger is authoritative for this one.
+  ranked: true,
 };
 
 describe('server-authoritative progression (audit M31)', () => {
@@ -148,6 +150,35 @@ describe('server-authoritative progression (audit M31)', () => {
 
     expect(Array.isArray(h.stored?.history)).toBe(true);
     expect((h.stored?.history as unknown[]).length).toBe(1);
+  });
+
+  it('does not reconcile a PRACTICE match against the ranked ledger', async () => {
+    // Practice has no settlement behind it, so the ledger knows nothing about
+    // it. Reconciling anyway replaced the practice XP — which is real and
+    // locally earned — with the ranked-only numbers, resetting a connected
+    // player's progression to 0 after every training round.
+    h.fetchPlayerStats.mockResolvedValue({
+      available: true,
+      wins: 99,
+      losses: 0,
+      voids: 0,
+      totalMatches: 99,
+      xp: 99999,
+      level: 40,
+      winStreak: 9,
+      bestReactionMs: 150,
+      avgReactionMs: 200,
+      lastXpAwarded: 0,
+    });
+
+    const { result } = renderHook(() => usePulsarStore());
+    await act(async () => {
+      await result.current.recordMatch({ ...MATCH, ranked: false });
+    });
+
+    expect(h.fetchPlayerStats).not.toHaveBeenCalled();
+    expect(h.stored?.wins).toBe(1);
+    expect(h.stored?.xp).not.toBe(99999);
   });
 
   it('describes the SERVER total, so level and progress bar agree', async () => {

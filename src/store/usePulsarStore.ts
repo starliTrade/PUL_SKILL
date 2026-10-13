@@ -293,7 +293,12 @@ const recordMatch = async (match: MatchHistoryItem): Promise<XPSummary> => {
   // is only a fallback for when the ledger cannot answer — a player must not be
   // able to edit their own level, and the server's XP is computed from the
   // settlement's own validated times rather than from a client number.
-  const serverStats = await fetchServerProgression(userAddress);
+  //
+  // Only for a RANKED duel: the ledger records settled duels, so consulting it
+  // after a practice match would replace the practice XP (which is real, and
+  // locally earned) with the ranked-only numbers — resetting a player's
+  // progression to 0 after every training round.
+  const serverStats = match.ranked ? await fetchServerProgression(userAddress) : null;
   if (serverStats) {
     data.wins = serverStats.wins;
     data.losses = serverStats.losses;

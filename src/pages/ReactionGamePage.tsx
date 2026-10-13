@@ -44,7 +44,7 @@ import {
   type ServerSession,
   type MatchView,
 } from '../lib/gameServerClient';
-import { settleDuel as settleDuelOnChain, refundTimeoutMatch, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState, getTokenDecimals } from '../lib/escrowFlow';
+import { settleDuel as settleDuelOnChain, refundTimeoutMatch, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState, getTokenDecimals, findSettlementTx } from '../lib/escrowFlow';
 import { isEscrowConfigured, CHAIN, TOKENS, ECONOMY, REFUND_OPENS_AFTER_MINUTES } from '../lib/chain';
 import { ethers } from 'ethers';
 import { realWeb3Manager, ACTIVE_RANKED_MATCH_KEY } from '../lib/realWeb3';
@@ -75,7 +75,7 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   challengeOpponent,
 }) => {
   const { t } = useLanguage();
-  const { wallet, recordMatch } = usePulsarStore();
+  const { wallet, stats, recordMatch } = usePulsarStore();
 
   const [phase, setPhase] = useState<GamePhase>('human-verify');
   const [countdown, setCountdown] = useState<number>(3);
@@ -884,9 +884,23 @@ function isWalletCancel(msg: string): boolean {
         try {
           const bytes32 = await matchIdToBytes32(result.matchId);
           const state = await getDuelState(bytes32);
-          // status 3 = Settled. Skip the tx (and its gas) when the winner
-          // already settled first — the common case.
-          if (state.status !== 3) {
+          // Terminal on-chain states: 3 Settled, 4 Cancelled, 5 Refunded. In
+          // any of them `settleDuel` would revert and burn the loser's gas.
+          const terminal = state.status === 3 || state.status === 4 || state.status === 5;
+          if (state.status === 3) {
+            // The winner settled first — the common case. Read the settlement
+            // tx back from the chain so the certificate shows the real proof
+            // instead of claiming "NOT ON-CHAIN" for a settled duel.
+            try {
+              const settledTx = await findSettlementTx(bytes32);
+              if (settledTx) {
+                txHash = settledTx;
+                setSettlementTxHash(settledTx);
+              }
+            } catch {
+              /* best effort — the result screen must still render */
+            }
+          } else if (!terminal) {
             const proof = proofFrom(bytes32);
             setLastProof(proof);
             txHash = await settleDuelOnChain(proof);
@@ -924,6 +938,9 @@ function isWalletCancel(msg: string): boolean {
         // profile history view) can show a verifiable on-chain proof instead
         // of always claiming "NOT ON-CHAIN".
         hash: txHash || undefined,
+        // Audit M31: the ledger only knows about settled duels — this mark is
+        // what tells `recordMatch` it may reconcile against it.
+        ranked: true,
       }).then((xpRes) => setXpSummary(xpRes));
 
       setPhase('result');
@@ -1949,13 +1966,14 @@ function isWalletCancel(msg: string): boolean {
                       </div>
                     </div>
 
-                    {/* Audit M31: the streak bonus is server-owned and now
-                        actually fires — show it, or the extra XP is
-                        unexplained. */}
-                    {xpSummary.streakBonusXP > 0 && (
+                    {/* Audit M31: the streak is server-owned and now actually
+                        feeds the XP. Show the COUNT the ledger reports — the
+                        local bonus amount would not reconcile with the
+                        server's total. */}
+                    {stats.winStreak > 1 && (
                       <div className="flex justify-between text-[10px] font-mono text-amber-400/90">
                         <span>{t('winStreakLabel')}</span>
-                        <span>+{xpSummary.streakBonusXP} XP</span>
+                        <span>×{stats.winStreak}</span>
                       </div>
                     )}
 
