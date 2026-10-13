@@ -240,13 +240,42 @@ def _eth_call(to: str, data: str) -> str | None:
     return result
 
 
+# The reachability probe's own cooldown. `_chain_ok` latches after the FIRST
+# successful chain-id read, so it cannot answer "is the RPC up right now".
+_RPC_PROBE_COOLDOWN = 5.0
+_rpc_reachable_cache: bool | None = None
+_rpc_probed_at = 0.0
+
+
+def _rpc_reachable() -> bool:
+    """Whether the configured RPC answered recently (cooldown-cached).
+
+    Audit 2026-10-13 (found by the phase-10 chaos suite): `chain_reachable()`
+    returned `_chain_ok()`, which only reports a chain-id MISMATCH. With the
+    node down, `_rpc_chain_id()` returns None, the mismatch latch never trips,
+    and `/api/health` reported `rpc.reachable: true` **while the RPC was dead** —
+    a health probe that lies is worse than no probe, because an operator trusts
+    it. The deposit gate was never fooled (it does the real call and fails
+    closed), but the signal an operator reads was.
+    """
+    global _rpc_reachable_cache, _rpc_probed_at
+    if not escrow_configured():
+        return False
+    now = timebase.now()
+    if _rpc_reachable_cache is not None and now - _rpc_probed_at < _RPC_PROBE_COOLDOWN:
+        return _rpc_reachable_cache
+    _rpc_reachable_cache = _rpc_chain_id() is not None
+    _rpc_probed_at = now
+    return _rpc_reachable_cache
+
+
 def chain_reachable() -> bool:
     """Public wrapper for /api/health (phase 6.2).
 
-    The module's own probes are private by convention; the health endpoint needs
-    a stable public name rather than reaching into an underscore helper.
+    Answers "is the RPC answering", not "does its chain id match" — those are
+    different questions and the health endpoint needs the first one.
     """
-    return _chain_ok()
+    return _rpc_reachable()
 
 
 def rpc_chain_id() -> int | None:

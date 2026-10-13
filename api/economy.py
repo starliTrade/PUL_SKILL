@@ -70,7 +70,25 @@ def _firestore_module() -> Any:
         return None
 
 
+def ledger_configured() -> bool:
+    """Whether a durable client was constructed — a CONFIG check."""
+    return _fs_db() is not None
+
+
 def ledger_available() -> bool:
+    """Whether the ledger is USABLE — a config check, and named as one.
+
+    Audit 2026-10-13 (found by the phase-10 chaos suite): this was surfaced on
+    `/api/health` as `available`, which reads like a reachability probe. It is
+    not: it answers "was a client constructed", so a dead Firestore still
+    reported `available: true`.
+
+    A real reachability probe was tried and REVERTED: a Firestore read inside a
+    health check hangs when the backend is down (the client retries far longer
+    than a liveness probe may take), and a hanging probe gets the container
+    killed — worse than the lie. The honest signal is `failures`, which
+    increments on an actual ledger failure (`_log_ledger_error`).
+    """
     return _fs_db() is not None
 
 
@@ -98,7 +116,11 @@ def _log_ledger_error(where: str, exc: BaseException) -> None:
 def ledger_health() -> dict[str, Any]:
     """Observability for the best-effort ledger (audit #10 item 6)."""
     return {
+        # `configured` is the config check; `available` is kept as its alias
+        # for existing dashboards, and `failures` is the signal that actually
+        # moves when the ledger breaks.
         "available": ledger_available(),
+        "configured": ledger_configured(),
         "failures": dict(_LEDGER_FAILURES),
         "lastError": dict(_LEDGER_LAST_ERROR),
     }
