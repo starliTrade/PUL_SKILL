@@ -503,6 +503,28 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
      * Deliberately reverting when there is nothing to withdraw: a silent no-op
      * would look like a successful claim.
      */
+    /**
+     * @dev Claim a payout the token refused at settlement time (audit H17).
+     *
+     * Audit 2026-10-13 — the deferred credit is held, not lost, and that is
+     * deliberate. A recipient the TOKEN refuses (a Tether blacklist, a paused
+     * token, a contract that reverts on receipt) cannot be paid by this escrow,
+     * and this function reverts for them exactly as `settleDuel` would have.
+     * Two alternatives were considered and rejected:
+     *
+     *   - paying an ALTERNATE address: that would let a blacklisted recipient
+     *     route around the token issuer's own control. The escrow must not
+     *     defeat a sanctions/blacklist decision;
+     *   - an admin sweep of stuck credits: that is a seizure of a player's
+     *     money by the operator.
+     *
+     * So the credit stays on `pendingWithdrawals[recipient]` until the token
+     * allows the transfer. If the blacklist is lifted, this call pays in full —
+     * the money is not destroyed, it is waiting. The duel's other side is
+     * unaffected: the fee still reaches the treasury, and the loser's stake was
+     * genuinely lost (pre-H17 the whole settlement reverted, which handed the
+     * loser a free option — see the H17 note on `_pay`).
+     */
     function withdraw() external nonReentrant {
         uint256 amount = pendingWithdrawals[msg.sender];
         require(amount > 0, "Nothing to withdraw");

@@ -156,8 +156,17 @@ contract credits `pendingWithdrawals` instead of reverting the whole
 settlement. The money is on chain and reachable.
 
 **Do.** The player presses **Claim** on the *Pending payout* card in their
-profile. The client checks gas before claiming. If the token still refuses, the
-credit stays until it can be paid.
+profile. The client checks gas before claiming.
+
+**If the token refuses the recipient permanently** (a Tether blacklist), the
+credit is held, not lost — and that is deliberate. The escrow will not pay an
+alternate address (that would route around the token issuer's own control) and
+there is no admin sweep (that would be a seizure). The money stays on
+`pendingWithdrawals[recipient]` until the token allows the transfer; if the
+blacklist is lifted, the claim pays in full. The other side of the duel is
+unaffected: the fee still reaches the treasury, and the loser's stake was
+genuinely lost. Do not "fix" this by editing the contract — the correct answer
+to a token-level block is to leave it in force.
 
 ### 4d. Funds are in a duel whose match record is gone
 
