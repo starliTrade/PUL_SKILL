@@ -31,3 +31,9 @@ contracts/deployments/
 htmlcov/
 .pytest_cache/
 .ruff_cache/
+
+# Playwright (phase 10)
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/

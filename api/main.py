@@ -583,18 +583,35 @@ if bool(os.environ.get("ESCROW_ADDRESS")) != bool(os.environ.get("ESCROW_RPC_URL
         file=sys.stderr,
     )
 
-# Audit #8 F-09 — TrustedHost: when ALLOWED_DOMAIN is configured, requests
-# with a foreign Host header are rejected at the middleware layer instead of
-# being trusted for SIWE domain binding (host-header injection hardening).
+# Audit #8 F-09 — TrustedHost: requests with a foreign Host header are rejected
+# at the middleware layer instead of being trusted for SIWE domain binding
+# (host-header injection hardening).
+#
+# Audit 2026-10-13 (found by the phase-10 E2E setup): this used ALLOWED_DOMAIN —
+# which is the FRONTEND's public host, the value the SIWE statement is bound to.
+# In the documented split topology (frontend on app.example.com, API on
+# api.example.com) the browser sends `Host: api.example.com`, the allowlist held
+# only `app.example.com`, and **every request to the API was rejected with 403**.
+# The API was unreachable in exactly the deployment the runbook describes.
+#
+# The two are different values, so they are different variables now:
+#   ALLOWED_HOSTS  — the hostnames THIS API answers to (defaults to
+#                    ALLOWED_DOMAIN, which is correct only when they share one).
+#   ALLOWED_DOMAIN — the SIWE domain, unchanged.
 _allowed_domain = os.environ.get("ALLOWED_DOMAIN", "")
-if _allowed_domain:
+_allowed_hosts = [
+    h.strip()
+    for h in os.environ.get("ALLOWED_HOSTS", _allowed_domain).split(",")
+    if h.strip()
+]
+if _allowed_hosts:
     try:
         from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
-        app.add_middleware(
-            TrustedHostMiddleware,
-            allowed_hosts=[_allowed_domain, _allowed_domain.removeprefix("www.")],
-        )
+        expanded = list(_allowed_hosts)
+        for host in _allowed_hosts:
+            expanded.append(host.removeprefix("www."))
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=expanded)
     except Exception:  # pragma: no cover — older FastAPI without the middleware
         pass
 

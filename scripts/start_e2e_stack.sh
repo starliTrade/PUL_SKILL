@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# PULSAR — the local stack the E2E suite drives (plan item 10.1).
+#
+# Starts the API against anvil + the Firestore emulator with the REAL production
+# configuration (escrow address, RPC, oracle key, chain id, allowed domain), so
+# the E2E exercises the same fail-closed gates a deployment does — not a dev
+# bypass. Anvil and the emulator must already be running:
+#
+#   scripts/start_emulator.sh --bg
+#   scripts/start_anvil.sh --bg      # deploys the escrow, writes the manifest
+#
+# Usage: scripts/start_e2e_stack.sh [--stop]
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MANIFEST="$ROOT/contracts/deployments/local.json"
+PIDFILE="/tmp/pulsar-e2e-api.pid"
+LOGFILE="/tmp/pulsar-e2e-api.log"
+PORT="${PULSAR_E2E_API_PORT:-8000}"
+FRONTEND_PORT="${PULSAR_E2E_FRONTEND_PORT:-3000}"
+
+if [[ "${1:-}" == "--stop" ]]; then
+  if [[ -f "$PIDFILE" ]]; then
+    kill "$(cat "$PIDFILE")" 2>/dev/null || true
+    rm -f "$PIDFILE"
+    echo "stopped the E2E API"
+  fi
+  exit 0
+fi
+
+if [[ ! -f "$MANIFEST" ]]; then
+  echo "no deployment manifest at $MANIFEST — run scripts/start_anvil.sh --bg" >&2
+  exit 1
+fi
+
+read_manifest() { python3 -c "import json,sys; print(json.load(open('$MANIFEST'))$1)"; }
+
+ESCROW="$(read_manifest "['escrow']")"
+RPC="$(read_manifest "['rpcUrl']")"
+CHAIN_ID="$(read_manifest "['chainId']")"
+ORACLE_KEY="$(read_manifest "['oracleKey']")"
+
+# A deterministic signing secret for the test run — never a real one.
+SIGNING_SECRET="0x$(printf '11%.0s' {1..32})"
+
+cd "$ROOT/api"
+# NOTE: Starlette strips the port before matching a Host header, so
+# ALLOWED_HOSTS holds HOSTNAMES (no ports).
+PULSAR_MATCH_STORE=firestore \
+FIRESTORE_EMULATOR_HOST="${FIRESTORE_EMULATOR_HOST:-127.0.0.1:8081}" \
+GCLOUD_PROJECT="${GCLOUD_PROJECT:-demo-pulsar}" \
+CORS_ALLOW_ORIGINS="http://127.0.0.1:${FRONTEND_PORT},http://localhost:${FRONTEND_PORT}" \
+ALLOWED_DOMAIN="127.0.0.1:${FRONTEND_PORT}" \
+ALLOWED_HOSTS="127.0.0.1,localhost" \
+ESCROW_ADDRESS="$ESCROW" \
+ESCROW_RPC_URL="$RPC" \
+ORACLE_PRIVATE_KEY="$ORACLE_KEY" \
+ORACLE_CHAIN_ID="$CHAIN_ID" \
+ORACLE_SIGNING_SECRET="$SIGNING_SECRET" \
+nohup "$ROOT/.venv/bin/python" -m uvicorn main:app --port "$PORT" --log-level warning \
+  > "$LOGFILE" 2>&1 &
+echo $! > "$PIDFILE"
+
+for _ in $(seq 1 40); do
+  if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/health"; then
+    echo "E2E API up on 127.0.0.1:${PORT} (escrow ${ESCROW:0:10}…, chain ${CHAIN_ID})"
+    exit 0
+  fi
+  sleep 0.5
+done
+
+echo "the E2E API did not become healthy — see $LOGFILE" >&2
+tail -20 "$LOGFILE" >&2 || true
+exit 1
