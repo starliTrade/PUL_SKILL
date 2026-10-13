@@ -8,7 +8,15 @@
  */
 
 import { BrowserProvider, Contract, formatUnits, parseUnits } from 'ethers';
-import { CHAIN, TOKENS, PULSAR_ESCROW_ABI, ERC20_ABI, ESCROW, isPaymentTokenConfigured } from './chain';
+import {
+  CHAIN,
+  TOKENS,
+  PULSAR_ESCROW_ABI,
+  ERC20_ABI,
+  ESCROW,
+  isEscrowConfigured,
+  isPaymentTokenConfigured,
+} from './chain';
 import { realWeb3Manager } from './realWeb3';
 
 export interface EscrowStatus {
@@ -18,7 +26,11 @@ export interface EscrowStatus {
 }
 
 export function escrowStatus(): EscrowStatus {
-  if (!ESCROW.address) {
+  // Audit M33: ONE source of truth. This used to re-derive "is the escrow
+  // configured" from ESCROW.address and isPaymentTokenConfigured(), while
+  // chain.ts had its own predicate — so the UI showed a different answer
+  // depending on which module a component happened to import.
+  if (!isEscrowConfigured()) {
     return {
       configured: false,
       escrowAddress: '',
@@ -85,6 +97,39 @@ async function ensureCorrectChain(): Promise<void> {
   }
 }
 
+/**
+ * decimals() of the payment token, cached per token address (audit H13).
+ *
+ * The write path used the hard-coded `TOKENS.USDT_DECIMALS` (6) while the read
+ * path read the real value, so on any other token the stake was scaled by 10^k
+ * in the wrong direction — `createDuel(…, parseUnits("1", 6))` deposits 1e-12
+ * tokens on an 18-decimal token while the UI advertises a whole one. The
+ * joiner's check used the same constant, so nothing caught it.
+ *
+ * Cached because it is immutable for a given token and every write needs it.
+ */
+let _decimalsCache: { token: string; value: number } | null = null;
+
+export async function getTokenDecimals(): Promise<number> {
+  const token = TOKENS.USDT;
+  if (_decimalsCache && _decimalsCache.token === token) {
+    return _decimalsCache.value;
+  }
+  const provider = requireInjected();
+  const contract = new Contract(token, ERC20_ABI, provider);
+  const value = Number(await contract.decimals());
+  if (!Number.isInteger(value) || value < 0 || value > 36) {
+    throw new Error(`The payment token reports an implausible decimals() value: ${value}`);
+  }
+  _decimalsCache = { token, value };
+  return value;
+}
+
+/** Test seam: forget the cached decimals. */
+export function resetTokenDecimalsCache(): void {
+  _decimalsCache = null;
+}
+
 function requireEscrowAddress(): string {
   if (!ESCROW.address) {
     throw new Error('Escrow address is not configured. Real-money play is disabled.');
@@ -99,8 +144,29 @@ function requireEscrowAddress(): string {
 // what wallets estimate (observed: node min 25 gwei vs wallet suggestion
 // 15 gwei → eth_sendRawTransaction reverted code 32603). Always floor the
 // price at 30 gwei so wallet suggestions can never dip below the node floor.
+/**
+ * Audit M41 — the gas floor is PER-CHAIN.
+ *
+ * A single 30 gwei floor is right for Polygon mainnet (its node floor is ~25-30
+ * gwei; a lower suggestion reverts with code 32603) and wrong everywhere else:
+ * on an L2 or a testnet it makes every transaction cost tens of times more than
+ * needed, and the user pays it.
+ */
+const GAS_FLOORS_WEI: Record<number, bigint> = {
+  137: 30_000_000_000n, // Polygon mainnet — the node floor is real
+  80002: 30_000_000n, // Polygon Amoy testnet
+  1: 1_000_000_000n, // Ethereum mainnet
+};
+
+/** A conservative floor for a chain we do not know: 1 gwei, not 30. */
+const DEFAULT_GAS_FLOOR_WEI = 1_000_000_000n;
+
+export function gasFloorWei(chainId: number): bigint {
+  return GAS_FLOORS_WEI[chainId] ?? DEFAULT_GAS_FLOOR_WEI;
+}
+
 async function safeGasPrice(): Promise<bigint> {
-  const FLOOR = parseUnits('30', 'gwei');
+  const FLOOR = gasFloorWei(CHAIN.chainId);
   try {
     const fee = await requireInjected().getFeeData();
     const suggested = fee.gasPrice ?? 0n;
@@ -114,14 +180,14 @@ export async function getUsdtBalance(address: string): Promise<string> {
   const provider = requireInjected();
   const token = new Contract(TOKENS.USDT, ERC20_ABI, provider);
   const raw: bigint = await token.balanceOf(address);
-  return formatUnits(raw, TOKENS.USDT_DECIMALS);
+  return formatUnits(raw, await getTokenDecimals());
 }
 
 export async function getAllowance(owner: string): Promise<string> {
   const provider = requireInjected();
   const token = new Contract(TOKENS.USDT, ERC20_ABI, provider);
   const raw: bigint = await token.allowance(owner, requireEscrowAddress());
-  return formatUnits(raw, TOKENS.USDT_DECIMALS);
+  return formatUnits(raw, await getTokenDecimals());
 }
 
 /** ERC-20 approve for the escrow to pull `stakeUsdt`. Returns real tx hash. */
@@ -130,7 +196,7 @@ export async function approveUsdt(stakeUsdt: number): Promise<string> {
   const provider = requireInjected();
   const signer = await provider.getSigner();
   const token = new Contract(TOKENS.USDT, ERC20_ABI, signer);
-  const amount = parseUnits(String(stakeUsdt), TOKENS.USDT_DECIMALS);
+  const amount = parseUnits(String(stakeUsdt), await getTokenDecimals());
   const tx = await token.approve(requireEscrowAddress(), amount, { gasPrice: await safeGasPrice() });
   await tx.wait();
   return tx.hash as string;
@@ -142,7 +208,7 @@ export async function createDuel(matchIdBytes32: string, stakeUsdt: number): Pro
   const provider = requireInjected();
   const signer = await provider.getSigner();
   const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, signer);
-  const amount = parseUnits(String(stakeUsdt), TOKENS.USDT_DECIMALS);
+  const amount = parseUnits(String(stakeUsdt), await getTokenDecimals());
   const tx = await escrow.createDuel(matchIdBytes32, amount, { gasPrice: await safeGasPrice() });
   await tx.wait();
   return tx.hash as string;
@@ -188,6 +254,47 @@ export async function settleDuel(proof: SettlementProof): Promise<string> {
   return tx.hash as string;
 }
 
+/**
+ * Read the deferred payout the escrow owes `address` (audit H17b).
+ *
+ * Audit H17 credits a payout the token refused (Tether blacklist, a paused
+ * token, a contract that reverts on receipt) instead of reverting the whole
+ * settlement. Without this read, that money is invisible to the player who is
+ * owed it.
+ */
+export async function getPendingWithdrawal(address: string): Promise<string> {
+  const provider = requireInjected();
+  const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, provider);
+  const raw: bigint = await escrow.pendingWithdrawals(address);
+  return formatUnits(raw, await getTokenDecimals());
+}
+
+/**
+ * Claim a deferred payout (audit H17b).
+ *
+ * The contract's `withdraw()` reverts when there is nothing pending, and a
+ * no-op would look like a successful claim — so this checks first and refuses
+ * before spending the player's gas.
+ */
+export async function withdrawPending(): Promise<string> {
+  await ensureCorrectChain();
+  const provider = requireInjected();
+  const signer = await provider.getSigner();
+  const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, signer);
+
+  const me = await signer.getAddress();
+  const pending: bigint = await escrow.pendingWithdrawals(me);
+  if (pending === 0n) {
+    throw new Error(
+      'Nothing to withdraw — the escrow does not owe you a deferred payout.',
+    );
+  }
+
+  const tx = await escrow.withdraw({ gasPrice: await safeGasPrice() });
+  await tx.wait();
+  return tx.hash as string;
+}
+
 /** Anyone can trigger a timeout refund after MATCH_TIMEOUT. */
 export async function refundTimeoutMatch(matchIdBytes32: string): Promise<string> {
   await ensureCorrectChain(); // H5
@@ -219,4 +326,31 @@ export async function getDuelState(matchIdBytes32: string): Promise<{
     totalPool: m.totalPool,
     winner: m.winner,
   };
+}
+
+/** How far back to look for a duel's settlement event. A settled duel is
+ *  recent; a bounded window keeps the log query cheap on a busy chain. */
+const SETTLEMENT_LOOKBACK_BLOCKS = 5000;
+
+/**
+ * The transaction that settled this duel on chain (audit M27/M39 closure).
+ *
+ * When the winner settles first, the loser's client never submits anything, so
+ * it has no tx hash of its own — and its certificate then claimed "LOCAL RESULT
+ * · NOT ON-CHAIN" for a duel that IS settled on chain. The contract's
+ * `MatchSettled` event carries the matchId, so the tx can be read back from the
+ * chain instead of guessed. Returns '' when no settlement is found.
+ */
+export async function findSettlementTx(matchIdBytes32: string): Promise<string> {
+  const provider = requireInjected();
+  const escrow = new Contract(requireEscrowAddress(), PULSAR_ESCROW_ABI, provider);
+  const latest = await provider.getBlockNumber();
+  const fromBlock = Math.max(0, latest - SETTLEMENT_LOOKBACK_BLOCKS);
+  const logs = await escrow.queryFilter(
+    escrow.filters.MatchSettled(matchIdBytes32),
+    fromBlock,
+    latest
+  );
+  if (!logs.length) return '';
+  return logs[logs.length - 1].transactionHash ?? '';
 }

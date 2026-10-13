@@ -17,9 +17,9 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
-import time
 from typing import Any
 
+import timebase
 from eth_account import Account
 
 # EIP-191 personal-message prefix the contract applies before ecrecover.
@@ -49,6 +49,33 @@ _KMS_KEY_ENV = "ORACLE_PRIVATE_KEY"
 _DEFAULT_CHAIN_ID = int(os.environ.get("ORACLE_CHAIN_ID", "80002"))
 
 
+_signer_cache: Account | None = None
+_signer_cache_key: str | None = None
+
+
+def reset_signer_cache() -> None:
+    """Test seam: forget the cached signer."""
+    global _signer_cache, _signer_cache_key
+    _signer_cache = None
+    _signer_cache_key = None
+
+
+def load_signer() -> Account:
+    """The referee signer, loaded ONCE (audit M8).
+
+    `Account.from_key` performs an EC scalar multiplication — the expensive part
+    of signing — and this used to run on every signature. Cached per key, so a
+    key rotation is still picked up.
+    """
+    global _signer_cache, _signer_cache_key
+    key = os.environ.get(_KMS_KEY_ENV, "")
+    if _signer_cache is not None and _signer_cache_key == key:
+        return _signer_cache
+    _signer_cache = _load_signer()
+    _signer_cache_key = key
+    return _signer_cache
+
+
 def _load_signer() -> Account:
     key = os.environ.get(_KMS_KEY_ENV, "")
     if not key:
@@ -60,7 +87,7 @@ def _load_signer() -> Account:
 
 
 def oracle_address() -> str:
-    return _load_signer().address
+    return load_signer().address
 
 
 # secp256k1 group order — needed for low-s (EIP-2) normalization, which the
@@ -76,9 +103,19 @@ def _signature_to_low_s_bytes(raw: bytes) -> bytes:
     r = int.from_bytes(raw[:32], "big")
     s = int.from_bytes(raw[32:64], "big")
     v = raw[64]
+    # Audit M6: `v` was never validated. A raw recovery id (0/1) or any other
+    # byte passed straight through and reached the CONTRACT, which rejects it —
+    # so the failure surfaced as an on-chain revert AFTER a settlement was
+    # announced. Reject it here, where the caller can still do something.
+    if v not in (27, 28):
+        raise ValueError(f"invalid signature v value: {v} (expected 27 or 28)")
     if s > _SECP256K1_HALF_N:
         s = _SECP256K1_N - s
-        v ^= 0x01  # flips 27<->28 and 0<->1 alike
+        # Audit M6 (found by the test): this was `v ^= 0x01` with a comment
+        # claiming it "flips 27<->28". It does not — 27 ^ 1 is 26, which the
+        # contract rejects. The recovery id is `v - 27`, so flipping it means
+        # `v = 27 + (1 - (v - 27))` = `55 - v`.
+        v = 55 - v
     return r.to_bytes(32, "big") + s.to_bytes(32, "big") + bytes([v])
 
 
@@ -122,8 +159,15 @@ _address_bytes32 = _address_bytes20
 
 
 def _match_id_bytes32(match_id: str) -> bytes:
+    """The 32-byte id the contract uses, from a server match id.
+
+    Convention (audit M19): a 64-character HEX id is decoded as bytes; anything
+    else is hashed. The old code checked only the LENGTH, so a 64-character
+    non-hex id hit `bytes.fromhex` and raised — taking the signing path down.
+    The hash branch has to actually be reachable.
+    """
     clean = match_id.lower().removeprefix("0x")
-    if len(clean) == 64:
+    if len(clean) == 64 and all(c in "0123456789abcdef" for c in clean):
         return bytes.fromhex(clean)
     # Server-generated match ids are free-form; hash them into the 32-byte id
     # the client must also use when calling createDuel/joinDuel.
@@ -183,6 +227,17 @@ def sign_settlement(
     env-configured deployment chain (used by tests); production callers omit
     it so the signer and the deployed escrow always share ORACLE_CHAIN_ID.
     """
+    # Audit M7: the shape checks below prove the record LOOKS like engine
+    # output. They cannot prove it IS — any caller that can build a dict with
+    # these keys got a signature over real money. The engine stamps its records
+    # and the stamp is a MAC, so it cannot be forged by a caller.
+    import match_engine as _engine
+
+    if not _engine.settlement_is_stamped(record):
+        raise ValueError(
+            "Refusing to sign: record carries no valid engine stamp "
+            "(only match_engine.settle() output may be signed)"
+        )
     if record.get("status") != "settled":
         raise ValueError("Refusing to sign: settlement status is not 'settled'")
     if not record.get("winner"):
@@ -195,7 +250,7 @@ def sign_settlement(
         )
 
     server_nonce = secrets.randbelow(2**48)
-    deadline = int(time.time()) + SETTLEMENT_DEADLINE_SECONDS
+    deadline = int(timebase.now()) + SETTLEMENT_DEADLINE_SECONDS
     # Audit #10 (item 5): clamp to the on-chain refund horizon when the caller
     # can identify the match (activated_at + contract MATCH_TIMEOUT). Without
     # the clamp, a re-sign issued near minute 30 would mint a proof valid past
@@ -207,7 +262,7 @@ def sign_settlement(
             deadline = min(deadline, _me.settlement_deadline(matchish))
         except Exception:  # clamping must never block settlement
             pass
-    if deadline <= int(time.time()):
+    if deadline <= int(timebase.now()):
         raise ValueError(
             "Refusing to sign: the on-chain MATCH_TIMEOUT has elapsed — "
             "this duel can only refund via refundTimeoutMatch."
@@ -224,7 +279,7 @@ def sign_settlement(
         server_nonce,
         chain_id=_DEFAULT_CHAIN_ID if chain_id is None else int(chain_id),
     )
-    signed = _sign_hash_bytes(_load_signer(), digest)
+    signed = _sign_hash_bytes(load_signer(), digest)
     raw_sig = bytes(signed.signature) if not isinstance(signed.signature, bytes) else signed.signature
     low_s = _signature_to_low_s_bytes(raw_sig)
     signature = "0x" + low_s.hex()
@@ -239,4 +294,11 @@ def sign_settlement(
         "oracleAddress": _load_signer().address,
         "signature": signature,
         "validatedTimes": record.get("validatedTimes", {}),
+        # Audit 2026-10-13: the engine declares forfeits in its result
+        # (`forfeits: {addr: bool}`), but the packet dropped the field, so
+        # `economy.record_settlement` read an empty map and recorded
+        # `forfeit: false` for every duel — including forfeits. The ledger then
+        # disagreed with what actually happened. (Not part of the signed digest:
+        # the digest covers matchId/winner/times/deadline/chain/contract.)
+        "forfeits": record.get("forfeits", {}),
     }

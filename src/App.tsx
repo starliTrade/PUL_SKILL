@@ -1,3 +1,4 @@
+import { IdentityLockBanner } from './components/IdentityLockBanner';
 import React, { Suspense, lazy, useState, useEffect } from 'react';
 import type { LegalTab } from './pages/LegalPage';
 import { EligibilityGate } from './components/EligibilityGate';
@@ -41,6 +42,9 @@ export default function App() {
 
   const [activeOpponent, setActiveOpponent] = useState<string | undefined>(undefined);
   const [activeStake, setActiveStake] = useState<number>(1);
+  // Audit M27: the address of the challenged player, when the duel was opened
+  // from a friend challenge. Empty/undefined for ordinary matchmaking.
+  const [activeOpponentAddress, setActiveOpponentAddress] = useState<string>('');
 
   useEffect(() => {
     const handlePopState = () => {
@@ -56,13 +60,33 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  const navigate = (path: string, opponent?: string, stake?: number, legalTab?: LegalTab) => {
+  const navigate = (
+    path: string,
+    opponent?: string,
+    stake?: number,
+    legalTab?: LegalTab,
+    opponentAddress?: string
+  ) => {
     if (path === '/legal' && legalTab) setLegalTab(legalTab);
     if (opponent !== undefined) {
       setActiveOpponent(opponent);
     }
     if (stake !== undefined) {
       setActiveStake(stake);
+    }
+    // Audit M27: a friend challenge carries the challenged ADDRESS so the
+    // server can reserve the duel for that player.
+    //
+    // The target is ONE-SHOT. It used to be written only when the argument was
+    // present and never cleared, so after any challenge the next ORDINARY duel
+    // was queued with the stale address: the server reserved the match for the
+    // previous friend, the player waited out the 90-second timeout, and they
+    // could not match a stranger at all until a reload. Entering the game route
+    // always sets the target to what THIS navigation asked for.
+    if (path === '/game/reaction') {
+      setActiveOpponentAddress(opponentAddress ?? '');
+    } else if (opponentAddress !== undefined) {
+      setActiveOpponentAddress(opponentAddress);
     }
     setCurrentPath(path);
     window.scrollTo({ top: 0, behavior: 'instant' });
@@ -78,15 +102,19 @@ export default function App() {
   return (
     <ErrorBoundary>
     <div className="min-h-screen bg-[#07080a] text-slate-100 flex flex-col font-sans selection:bg-sky-500/30 selection:text-white">
+      {/* Audit H15b: the identity lock refuses a wallet/network switch mid-match;
+          this is where the player finds out why. */}
+      <IdentityLockBanner />
       {/* Route Views (lazy-loaded chunks per route) */}
       <Suspense fallback={<RouteFallback />}>
         {currentPath === '/' && <HomePage onNavigate={navigate} />}
         {currentPath === '/lobby' && (
           <LobbyPage
             onNavigate={navigate}
-            onStartDuelWithOpponent={(opp, stake) => {
+            onStartDuelWithOpponent={(opp, stake, oppAddress) => {
               setActiveOpponent(opp);
               if (stake) setActiveStake(stake);
+              setActiveOpponentAddress(oppAddress || '');
             }}
           />
         )}
@@ -95,6 +123,7 @@ export default function App() {
             onNavigate={navigate}
             opponentName={activeOpponent}
             stakeAmount={activeStake}
+            challengeOpponent={activeOpponentAddress}
           />
         )}
         {currentPath === '/dashboard' && <DashboardPage onNavigate={navigate} />}

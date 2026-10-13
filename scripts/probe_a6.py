@@ -63,6 +63,11 @@ check("C2: self-forged nonce fails freshness", not auth_module.nonce_is_fresh(fo
 check("C2: tampered MAC fails", auth_module.nonce_window(good[:-4] + "beef") is None)
 
 # --- main.py wiring -------------------------------------------------------------
+# Audit H6 inverted the production default: every environment is
+# production-like unless it opts out explicitly. These are local dev
+# tools, so they opt out BEFORE importing the app.
+os.environ.setdefault("PULSAR_ENV", "dev")
+
 import main as server  # noqa: E402
 
 check("claim endpoint registered", any(r.path == "/api/match/{match_id}/claim" for r in server.app.routes))

@@ -29,11 +29,16 @@ os.environ.setdefault("ORACLE_SIGNING_SECRET", "probe-a8-secret")
 os.environ.setdefault("ORACLE_PRIVATE_KEY", "0x" + "11" * 32)
 os.environ.setdefault("ESCROW_ADDRESS", "0x" + "ab" * 20)
 
+# Audit H6 inverted the production default: every environment is
+# production-like unless it opts out explicitly. These are local dev
+# tools, so they opt out BEFORE importing the app.
+os.environ.setdefault("PULSAR_ENV", "dev")
+
+import main as server  # noqa: E402
 from eth_account import Account  # noqa: E402
 from eth_account.messages import encode_defunct  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-import main as server  # noqa: E402
 import auth as auth_module  # noqa: E402
 
 failures: list[str] = []
@@ -53,7 +58,7 @@ def make_session(account: Account) -> tuple[str, str]:
     addr = account.address.lower()
     r = client.post("/api/auth/nonce", json={"address": addr}, headers={"host": DOMAIN})
     assert r.status_code == 200, r.text
-    nonce = r.json()["nonce"]
+    _nonce = r.json()["nonce"]  # noqa: F841 — kept to document the response shape
     message = r.json()["message"]
     sig = account.sign_message(encode_defunct(text=message)).signature.hex()
     if not sig.startswith("0x"):
@@ -149,7 +154,7 @@ check("F-02 immediate replay blocked", r2.status_code != 200)
 # Flood: 4096 fresh logins by the attacker to evict the victim's burn.
 flood_account = Account.create()
 evicted = False
-for i in range(4096):
+for _i in range(4096):
     rr = client.post("/api/auth/nonce", json={"address": flood_account.address.lower()}, headers={"host": DOMAIN})
     if rr.status_code != 200:  # rate-limited: flood throttled is also a pass
         evicted = False

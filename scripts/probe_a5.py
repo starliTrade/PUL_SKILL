@@ -30,9 +30,15 @@ def check(name, cond):
 # fastapi import first (TestClient + HTTPException)
 import time as _time  # noqa: E402
 
+# Audit H6 inverted the production default: every environment is
+# production-like unless it opts out explicitly. These are local dev
+# tools, so they opt out BEFORE importing the app.
+os.environ.setdefault("PULSAR_ENV", "dev")
+
+import main as server  # noqa: E402
+
 import match_engine as me  # noqa: E402
 import onchain  # noqa: E402
-import main as server  # noqa: E402
 
 m = me.Match(match_id="ab" * 32, stake=1.0, created_at=_time.time())
 m.players["0x" + "a" * 40] = {"address": "0x" + "a" * 40, "joinedAt": 0}
@@ -56,9 +62,8 @@ m2.players["0x" + "b" * 40] = {"address": "0x" + "b" * 40, "joinedAt": 0}
 m2.creator = "0x" + "b" * 40
 m2.status = "active"
 m2.created_at = 0  # ancient
-import urllib.request  # noqa: E402
-import json as _json  # noqa: E402
 import hashlib as _hashlib  # noqa: E402
+import json as _json  # noqa: E402
 
 
 def _rpc_status_payload(status: int) -> str:
@@ -101,7 +106,11 @@ orig_urlopen = onchain.urllib.request.urlopen
 onchain.urllib.request.urlopen = _FakeCreated
 try:
     gate = server._verify_deposits_or_void(m2)
-    check("CREATED + timeout → void", isinstance(gate, dict) and gate.get("void") is True and m2.status == "void")
+    # Audit H10: the gate is PURE — it reports the verdict and the CALLER
+    # persists the void (it now runs outside the store lock, so it must not
+    # mutate the match).
+    check("CREATED + timeout → void verdict", isinstance(gate, dict) and gate.get("void") is True)
+    check("gate does not mutate the match", m2.status == "active")
 finally:
     onchain.urllib.request.urlopen = orig_urlopen
 
@@ -201,18 +210,18 @@ try:
     gate = server._verify_deposits_or_void(m3)
     check(
         "ACTIVE but dust stake → void (F-03)",
-        isinstance(gate, dict) and gate.get("void") is True and m3.status == "void",
+        isinstance(gate, dict) and gate.get("void") is True,
     )
 
     # F-03 regression: deposited from wallet W2, playing as W1
-    m3.status = "active"
+    m3.status = "active"  # the gate no longer mutates; reset is a no-op guard
     _FakeEscrowRPC.stake_units = _STAKE_UNITS
     _FakeEscrowRPC.p2 = "0x" + "9" * 40
     onchain._cache.clear()
     gate = server._verify_deposits_or_void(m3)
     check(
         "ACTIVE but wrong participants → void (F-03)",
-        isinstance(gate, dict) and gate.get("void") is True and m3.status == "void",
+        isinstance(gate, dict) and gate.get("void") is True,
     )
 finally:
     onchain.urllib.request.urlopen = orig_urlopen
@@ -256,7 +265,7 @@ class _FakeWrongChain(_FakeCreated):
             result = "0x1"
         else:
             result = _rpc_status_payload(2)
-        return '{"jsonrpc":"2.0","id":1,"result":"' + result + '"}'.encode()
+        return '{"jsonrpc":"2.0","id":1,"result":"' + result + b'"}'
 
 
 onchain._chain_id_checked = False

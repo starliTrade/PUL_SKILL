@@ -29,7 +29,7 @@ First scaffold forge-std (one time) and run the test suite on your machine:
 
 ```bash
 cd contracts && forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-commit
-forge test        # 10-test lifecycle suite: replay, forged sig, high-s, deadlines, refunds
+forge test        # the full suite (~81 tests): replay, forged sig, high-s, deadlines, refunds, tokens, invariants
 ```
 
 Then deploy with the provided script (Amoy shown; mainnet = add `--chain 137`):
@@ -64,6 +64,13 @@ When moving to mainnet (137): set `PAYMENT_TOKEN_ADDRESS=0xc2132D05D31c914a87C66
 ⚠️ The oracle key signs real payouts. Use a dedicated key holding no funds;
 give it only signing authority. Consider moving production signing to AWS KMS
 or GCP KMS (the signing surface in `api/oracle.py` is designed for it).
+
+⚠️ **Rotating the oracle or the treasury is a two-step, timelocked operation**
+(audit M24). `setOracleSigner` / `setTreasuryWallet` only SCHEDULE the change;
+it takes effect after `ADMIN_TIMELOCK` (2 days) via `applyOracleSigner()` /
+`applyTreasuryWallet()`, and `cancelPendingAdminChanges()` aborts both. Plan a
+rotation two days ahead, and remember that an oracle rotation invalidates every
+settlement signature the old key has already issued.
 
 ⚠️ Chain binding: `ORACLE_CHAIN_ID` on the server **must equal** `VITE_CHAIN_ID`
 on the client. `settleDuel()` hashes `block.chainid`, so a mismatch makes every
@@ -104,14 +111,68 @@ Server environment (all **secrets** — set on the host, never in git):
 | `PULSAR_MATCH_STORE` | `firestore` (or unset for in-memory dev fallback) |
 | `FIRESTORE_PROJECT_ID` | Your Firebase project ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Service-account JSON path (or use ambient Cloud Run credentials) |
-| `CORS_ALLOW_ORIGINS` (optional) | Comma-separated allowlist; leave unset ("*") while frontend and API are on different origins |
+| `CORS_ALLOW_ORIGINS` | **Required in production.** Comma-separated origin allowlist. Audit 2026-10-13: this row said "optional — leave unset (`*`)", but the H6 fail-closed gate (`REQUIRED_PRODUCTION_ENV`) refuses to start without it, so following this doc produced a server that would not boot. An unset value is refused rather than defaulting to `*` |
+| `ALLOWED_DOMAIN` | **Required in production.** The SIWE domain the server issues and accepts statements for. Audit H7: it is taken from here, never from the client's `Host` header, so a spoofed header cannot choose the domain a user signs for |
 | `SENTRY_DSN` (optional) | Server error monitoring |
-| `ALLOWED_DOMAIN` (optional) | Force the SIWE domain if behind a proxy that rewrites Host |
 
 Smoke-test the deployment: `GET https://<server>/api/health` must return
 `{"ok": true, "matchStore": "firestore"}` in production.
 
 ---
+
+## 3b. Firestore indexes (plan item 6.5)
+
+Deploy the declared indexes before the server takes traffic:
+
+```
+gcloud firestore indexes composite create --file=firestore.indexes.json
+# or: firebase deploy --only firestore:indexes
+```
+
+Every query the server issues, and whether it needs a composite index:
+
+| Query | Where | Index |
+|---|---|---|
+| `pulsar_matches.where(status == 'settled').order_by(settled_at)` | the re-sign sweep (`store.py`) | **COMPOSITE (status, settled_at)** — declared in `firestore.indexes.json` |
+| `pulsar_matches.where(status == 'active')` | the sweep's expiry pass | single-field, automatic |
+| `pulsar_matches.where(players.<addr>.address == addr).limit(5)` | `player_live_match` (idempotent queueing) | single-field on a map subfield, automatic |
+| `pulsar_queue` documents (streamed) | matchmaking + pending challenges | collection scan, bounded by the number of stakes |
+| `matches.orderBy(timestamp desc).limit(15)` | the live arena feed (client) | single-field, automatic |
+| `leaderboard.orderBy(wins desc).limit(20)` | the podium (client) | single-field, automatic |
+| `users.where(playerId == tag).limit(10)` | friend search by tag (client) | single-field, automatic |
+
+`firestore.indexes.json` sets `fieldOverrides: []`, so nothing is excluded from
+the automatic single-field indexes — the map-subfield query above depends on
+that.
+
+**Why the composite index matters.** Without it Firestore *rejects* the sweep's
+query. The sweep is the F-12 prize rescue: it re-signs a settled duel whose
+10-minute proof expired while both clients were offline. The rejection used to
+be swallowed by a bare `except Exception: pass`, so the sweep silently no-opped
+in production while still paying for the query (audit H9). It is now counted and
+surfaced on `/api/health` under `sweep` — check that field after deploying.
+
+## 3c. Firestore TTL policies (audit 2026-10-13)
+
+Three collections are written by the server and never deleted by it. Without a
+TTL policy they grow without bound — a storage cost that scales with traffic:
+
+| Collection | Written by | TTL field | Suggested policy |
+|---|---|---|---|
+| `rate_limits` | the distributed rate limiter (`api/main.py`) | `expiresAt` | delete 1 hour after `expiresAt` |
+| `auth_nonce_burns` | SIWE nonce replay protection (`api/auth.py`) | `burnedAt` | delete after 24 hours |
+| `auth_revocations` | session revocation (`api/auth.py`) | `revokedAt` | delete after the session TTL (2 hours) + slack |
+
+Configure them in the Firebase console (Firestore → TTL) or with gcloud:
+
+```
+gcloud firestore fields ttls update expiresAt \
+  --collection-group=rate_limits --enable-ttl
+```
+
+**A TTL policy is a deployment step, not a code change** — the server writes the
+field and the platform deletes the row. Verify the policy is active after
+deploying: `rate_limits` should stop growing once traffic is steady.
 
 ## 4. Configure the web client
 
@@ -173,5 +234,8 @@ template. Before enabling real-money mode:
 - [ ] Legal docs reviewed + placeholders replaced; geo-blocking at edge active
 - [ ] Sentry (client + server) receiving test events
 - [ ] End-to-end test with real wallet on **Polygon Amoy testnet first**: approve → createDuel → joinDuel → play → settleDuel; verify winner receives 98% and treasury 2%
-- [ ] `refundTimeoutMatch` verified: create a duel, wait 30 minutes (MATCH_TIMEOUT), refund works
+- [ ] `refundTimeoutMatch` verified: create a duel, wait **MATCH_TIMEOUT + REFUND_GRACE (40 minutes)**, refund works.
+      The window is 40 minutes, not 30: audit H19 added an exclusive settlement
+      window so a stalling loser cannot refund the winner's prize away. A refund
+      attempted at 30 minutes reverts with "Match not timed out".
 - [ ] Rollback plan: keep `VITE_ESCROW_ADDRESS` unset → app reverts to honest practice-only mode instantly

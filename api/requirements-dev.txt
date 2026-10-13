@@ -1,0 +1,13 @@
+# PULSAR — development/test tooling (plan item 0.4).
+# Runtime dependencies live in requirements.txt; this file is for gates only.
+-r requirements.txt
+
+pytest==8.3.4
+pytest-cov==6.0.0
+pytest-asyncio==0.25.2
+hypothesis==6.123.2
+time-machine==2.17.0
+respx==0.22.0
+httpx==0.28.1
+ruff==0.9.4
+mypy==1.14.1

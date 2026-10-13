@@ -78,6 +78,27 @@ export const TREASURY = resolveConfigured('treasury', 'VITE_TREASURY_WALLET_ADDR
 /** Oracle signer — verifies settleDuel signatures. Set VITE_ORACLE_WALLET_ADDRESS. */
 export const ORACLE_SIGNER = resolveConfigured('oracle', 'VITE_ORACLE_WALLET_ADDRESS', '');
 
+/**
+ * Escrow timing — must mirror `contracts/PulsarEscrow.sol`.
+ *
+ * Audit H19 added `REFUND_GRACE`: the permissionless refund opens only at
+ * MATCH_TIMEOUT + REFUND_GRACE, so a stalling loser cannot deny the winner.
+ * Every user-facing string that tells a player when they can refund has to use
+ * these, or the player follows the instruction and gets a revert.
+ *
+ * `src/lib/chain.test.ts` pins both against the Solidity source.
+ */
+export const ESCROW_TIMING = {
+  /** == PulsarEscrow.MATCH_TIMEOUT (30 min): the settlement window. */
+  matchTimeoutSeconds: 30 * 60,
+  /** == PulsarEscrow.REFUND_GRACE (10 min). */
+  refundGraceSeconds: 10 * 60,
+} as const;
+
+/** Minutes a player must wait before `refundTimeoutMatch` will succeed. */
+export const REFUND_OPENS_AFTER_MINUTES =
+  (ESCROW_TIMING.matchTimeoutSeconds + ESCROW_TIMING.refundGraceSeconds) / 60;
+
 export const ECONOMY = {
   /** Platform rake in basis points — must match contract PLATFORM_FEE_BPS (200 = 2%). */
   platformFeeBps: 200,
@@ -94,6 +115,25 @@ export const PULSAR_ESCROW_ABI = [
   'function joinDuel(bytes32 matchId) external',
   'function settleDuel((bytes32 matchId, address winner, uint256 winnerTimeMs, uint256 loserTimeMs, uint256 nonce, uint256 deadline, bytes signature) proof) external',
   'function refundTimeoutMatch(bytes32 matchId) external',
+  // Audit H17: a payout the token refused (blacklist / paused / reverting
+  // recipient) is credited instead of reverting the settlement, and the
+  // beneficiary pulls it here.
+  'function withdraw() external',
+  'function pendingWithdrawals(address) view returns (uint256)',
+  // Audit H20: when the duel became playable — the refund clock's anchor.
+  'function activatedAt(bytes32) view returns (uint256)',
+  // Audit H19: the exclusive settlement window — the refund opens only after
+  // MATCH_TIMEOUT + REFUND_GRACE, so a stalling loser cannot deny the winner.
+  'function REFUND_GRACE() view returns (uint256)',
+  // Audit M22: derived from the payment token's decimals, not hard-coded.
+  'function MIN_STAKE_UNITS() view returns (uint256)',
+  // Audit M24: admin changes are scheduled, then applied after a timelock.
+  'function ADMIN_TIMELOCK() view returns (uint256)',
+  'function pendingTreasuryWallet() view returns (address)',
+  'function pendingOracleSigner() view returns (address)',
+  'function applyTreasuryWallet() external',
+  'function applyOracleSigner() external',
+  'function cancelPendingAdminChanges() external',
   'function matches(bytes32) view returns (bytes32 matchId, address player1, address player2, uint256 stakeAmount, uint256 totalPool, uint256 createdAt, uint8 status, address winner, uint256 winnerReactionMs, uint256 loserReactionMs)',
   'function paymentToken() view returns (address)',
   'function treasuryWallet() view returns (address)',
@@ -105,9 +145,14 @@ export const PULSAR_ESCROW_ABI = [
   'event MatchSettled(bytes32 indexed matchId, address indexed winner, uint256 prizePaid, uint256 platformFee)',
   'event MatchCancelled(bytes32 indexed matchId, string reason)',
   'event MatchRefunded(bytes32 indexed matchId, uint256 refundPerPlayer)',
+  'event PayoutDeferred(address indexed to, uint256 amount)',
+  'event Withdrawn(address indexed to, uint256 amount)',
 ] as const;
 
 export const ERC20_ABI = [
+  // Audit H13: the write path must scale by the token's OWN decimals, not a
+  // hard-coded 6 — see escrowFlow.getTokenDecimals().
+  'function decimals() view returns (uint8)',
   'function balanceOf(address) view returns (uint256)',
   'function allowance(address owner, address spender) view returns (uint256)',
   'function approve(address spender, uint256 value) returns (bool)',

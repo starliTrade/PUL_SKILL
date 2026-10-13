@@ -1,0 +1,14 @@
+{
+  "indexes": [
+    {
+      "//": "Audit H9: the durable re-sign sweep (the F-12 prize rescue) queries pulsar_matches with .where('status','==','settled').order_by('settled_at'). Without this composite index Firestore rejects the query, and the old `except Exception: pass` swallowed the error — so the sweep silently no-opped in production while still paying for the query.",
+      "collectionGroup": "pulsar_matches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "settled_at", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

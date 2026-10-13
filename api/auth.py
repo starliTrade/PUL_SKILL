@@ -31,9 +31,13 @@ import hmac
 import json
 import os
 import secrets
-import time
+import sys
+import threading
 from dataclasses import dataclass
+from datetime import UTC
+from typing import Any
 
+import timebase
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
@@ -49,7 +53,19 @@ EXPECTED_CHAIN_ID = int(os.environ.get("ORACLE_CHAIN_ID", "80002"))
 
 # Audit-#3 fix: nonce single-use replay protection. Each nonce burns exactly
 # once, on first successful verification.
+#
+# Audit M17: FastAPI runs sync endpoints in a THREADPOOL, so these sets are
+# mutated concurrently. A bare `set.add` happens to be atomic under CPython's
+# GIL, but the check-then-act sequences here (membership test + add + order-list
+# append + count-map update) are not — two threads could interleave and leave
+# the count map disagreeing with the order list, which corrupts eviction.
+# Every mutation now runs under this lock.
+_AUTH_LOCK = threading.Lock()
+
 _used_nonces: set[str] = set()
+# Audit M4: how many times each nonce appears in _used_nonces_order, so eviction
+# is O(1) instead of scanning the order list.
+_used_nonce_counts: dict[str, int] = {}
 _used_nonces_order: list[str] = []
 _USED_NONCE_MAX = 4096  # memory-mode fallback cap ONLY (see F-02 comment)
 
@@ -102,7 +118,7 @@ def issue_nonce(address: str, domain: str) -> str:
     The random component keeps successive issuances unique so single-use
     enforcement can never self-DoS a legitimate re-authentication.
     """
-    window = int(time.time() // NONCE_WINDOW_SECONDS)
+    window = int(timebase.now() // NONCE_WINDOW_SECONDS)
     body = f"{domain.lower()}|{address.lower()}|{window}|{secrets.token_hex(8)}"
     payload = _b64url_hex(body.encode("utf-8"))
     return f"{payload}.{_hmac_hex(payload)}"
@@ -122,25 +138,47 @@ def _durable_backend() -> Any | None:
 
     Late-imported to avoid a circular import (store imports match_engine,
     main imports both).
+
+    Audit CRITICAL-1: this used to read `getattr(store, "_fs_store", None)` — a
+    MODULE attribute that never exists, so in production the durable branch was
+    dead: nonce replay protection and session revocation were per-process only.
+    `store.durable_db()` reads the client the ACTIVE store is actually using.
     """
     try:
         import store as _store  # local import avoids a circular import
 
-        fs = getattr(_store, "_fs_store", None)
-        if fs is not None:
-            return fs.db
+        return _store.durable_db()
     except Exception:
         pass
     return None
 
 
+# Audit M3: how long into a new window a nonce issued in the PREVIOUS one is
+# still accepted. Without this, a nonce issued in the last seconds of a window
+# fails if it is verified in the next one — a random login failure with no cause
+# the user can act on. The BURN is what prevents replay; the window is only a
+# staleness bound, so this costs nothing.
+NONCE_BOUNDARY_GRACE_SECONDS = 30
+
+
 def _fresh_window(window: int | None) -> bool:
-    """Audit #8 F-02: the previous-window grace is GONE. A nonce is valid only
-    in the exact window it was issued in — the replay pre-condition window
-    shrinks from up to 10 minutes to exactly the issuance window."""
+    """Is this nonce's issuance window still acceptable?
+
+    Audit #8 F-02 shrank this from "up to 10 minutes" to the issuance window,
+    which is right. Audit M3 adds back a BOUNDED grace for the previous window:
+    the boundary was a coin flip, and the replay protection is the burn, not the
+    window.
+    """
     if window is None:
         return False
-    return window == int(time.time() // NONCE_WINDOW_SECONDS)
+    now = int(timebase.now())
+    current = now // NONCE_WINDOW_SECONDS
+    if window == current:
+        return True
+    if window == current - 1:
+        # Only for the first NONCE_BOUNDARY_GRACE_SECONDS of the new window.
+        return (now % NONCE_WINDOW_SECONDS) <= NONCE_BOUNDARY_GRACE_SECONDS
+    return False
 
 
 def nonce_is_fresh(nonce: str) -> bool:
@@ -192,12 +230,18 @@ def _burn_nonce(nonce: str) -> bool:
             )
             doc.create(
                 {
-                    "burnedAt": int(time.time()),
-                    "expiresAt": int(time.time()) + 2 * NONCE_WINDOW_SECONDS,
+                    "burnedAt": int(timebase.now()),
+                    "expiresAt": int(timebase.now()) + 2 * NONCE_WINDOW_SECONDS,
                 }
             )
-        except Exception:
-            # create() raises when the document EXISTS → replay.
+        except Exception as exc:
+            # Audit M2: create() raises when the document EXISTS → replay. Any
+            # OTHER exception is an outage, and reporting it as a replay makes
+            # an outage look like an attack. Still fail CLOSED — an unverifiable
+            # burn cannot authenticate — but record and log the difference.
+            if _is_already_exists(exc):
+                return False
+            _note_burn_error(exc)
             return False
         # Reflect in the local set too (fast-path rejection on this replica).
         _remember_used(nonce)
@@ -210,15 +254,67 @@ def _burn_nonce(nonce: str) -> bool:
     return True
 
 
+_burn_errors = 0
+
+
+def nonce_burn_errors() -> int:
+    """How many burns failed for a reason OTHER than a replay (audit M2)."""
+    return _burn_errors
+
+
+def _note_burn_error(exc: BaseException) -> None:
+    global _burn_errors
+    _burn_errors += 1
+    _log_burn_error(exc)
+
+
+def _log_burn_error(exc: BaseException) -> None:
+    print(
+        f"[auth] nonce burn failed (NOT a replay — an outage): {exc!r}",
+        file=sys.stderr,
+    )
+
+
+def _is_already_exists(exc: BaseException) -> bool:
+    """True when the exception means the document already existed.
+
+    Matched by name rather than by importing the Firestore exception class, so
+    this module keeps working when the durable backend is absent.
+    """
+    name = type(exc).__name__
+    if name in ("AlreadyExists", "Conflict"):
+        return True
+    code = getattr(exc, "code", None)
+    if callable(code):
+        try:
+            code = code()
+        except Exception:
+            code = None
+    return str(code).lower() in ("already_exists", "6", "409")
+
+
 def _remember_used(nonce: str) -> None:
-    if nonce in _used_nonces:
-        return
-    _used_nonces.add(nonce)
-    _used_nonces_order.append(nonce)
-    while len(_used_nonces_order) > _USED_NONCE_MAX:
-        evicted = _used_nonces_order.pop(0)
-        if not any(n == evicted for n in _used_nonces_order):
-            _used_nonces.discard(evicted)
+    """Remember a burned nonce, evicting the oldest past the cap.
+
+    Audit M4: eviction used `any(n == evicted for n in _used_nonces_order)` — an
+    O(n) scan of the whole order list on EVERY eviction, on the authentication
+    path. Past the cap that is ~4096 comparisons per verification. A count map
+    makes it O(1).
+    """
+    with _AUTH_LOCK:
+        if nonce in _used_nonces:
+            return
+        _used_nonces.add(nonce)
+        _used_nonces_order.append(nonce)
+        _used_nonce_counts[nonce] = _used_nonce_counts.get(nonce, 0) + 1
+        while len(_used_nonces_order) > _USED_NONCE_MAX:
+            evicted = _used_nonces_order.pop(0)
+            remaining = _used_nonce_counts.get(evicted, 0) - 1
+            if remaining > 0:
+                _used_nonce_counts[evicted] = remaining
+            else:
+                _used_nonce_counts.pop(evicted, None)
+                _used_nonces.discard(evicted)
 
 
 def revoke_session(jti: str) -> None:
@@ -230,14 +326,25 @@ def revoke_session(jti: str) -> None:
         try:
             db.collection("auth_revocations").document(
                 hashlib.sha256(jti.encode("utf-8")).hexdigest()
-            ).create({"revokedAt": int(time.time())})
+            ).create(
+                {
+                    "revokedAt": int(timebase.now()),
+                    # Audit 2026-10-13: without a TTL field this collection could
+                    # never be pruned — a revocation row outlives the token it
+                    # revokes by definition. Keep it for the session TTL plus a
+                    # day of slack, then let the platform delete it.
+                    "expiresAt": int(timebase.now()) + SESSION_TTL_SECONDS + 24 * 60 * 60,
+                }
+            )
         except Exception:
             pass  # already revoked
         return
-    _revoked_jtis.add(jti)
-    _revoked_jtis_order.append(jti)
-    while len(_revoked_jtis_order) > _REVOKED_JTI_MAX:
-        _revoked_jtis.discard(_revoked_jtis_order.pop(0))
+    # Audit M17: same threadpool hazard as `_remember_used`.
+    with _AUTH_LOCK:
+        _revoked_jtis.add(jti)
+        _revoked_jtis_order.append(jti)
+        while len(_revoked_jtis_order) > _REVOKED_JTI_MAX:
+            _revoked_jtis.discard(_revoked_jtis_order.pop(0))
 
 
 def _jti_is_revoked(jti: str) -> bool:
@@ -330,10 +437,10 @@ def verify_siwe(message: str, signature: str, expected_domain: str) -> str | Non
         return None
     try:
         if fields.expiration_time:
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             expiry = datetime.fromisoformat(fields.expiration_time.replace("Z", "+00:00"))
-            if datetime.now(timezone.utc) >= expiry:
+            if datetime.now(UTC) >= expiry:
                 return None
         recovered = Account.recover_message(
             encode_defunct(text=message), signature=signature
@@ -342,6 +449,13 @@ def verify_siwe(message: str, signature: str, expected_domain: str) -> str | Non
         return None
     address = getattr(recovered, "address", recovered)
     verified = str(address).lower() or None
+    # Audit M1: the recovered signer must BE the address the message claims.
+    # Returning the signer for a statement that names someone else is not
+    # directly exploitable today (the caller uses the return value), but the
+    # contract was ambiguous — and ambiguity in an authentication function is
+    # how the next change becomes a vulnerability.
+    if verified and verified != fields.address.lower():
+        return None
     if verified:
         # Audit #8 F-02: the burn IS the replay check now — _burn_nonce
         # returns False when the nonce was already consumed (durable create
@@ -354,13 +468,35 @@ def verify_siwe(message: str, signature: str, expected_domain: str) -> str | Non
 
 def issue_session(address: str) -> str:
     # Audit #8 F-06: every session carries a unique jti so it can be revoked.
-    exp = int(time.time()) + SESSION_TTL_SECONDS
+    exp = int(timebase.now()) + SESSION_TTL_SECONDS
     payload = json.dumps(
         {"a": address.lower(), "e": exp, "j": secrets.token_hex(16)},
         separators=(",", ":"),
     )
     body = _b64url(payload.encode("utf-8"))
     return f"{body}.{_hmac_hex(body)}"
+
+
+def session_jti(token: str) -> str | None:
+    """The jti of a VALID session token, or None (audit H22).
+
+    `verify_session` returns only the address, so the caller had no way to name
+    the session it wanted to revoke — which is why `revoke_session` was dead
+    code. This verifies the same HMAC and expiry before handing the jti out.
+    """
+    try:
+        body, sig = token.split(".", 1)
+    except ValueError:
+        return None
+    if not hmac.compare_digest(_hmac_hex(body), sig):
+        return None
+    try:
+        payload = json.loads(_from_b64url(body))
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if int(payload.get("e", 0)) < timebase.now():
+        return None
+    return str(payload.get("j", "")) or None
 
 
 def verify_session(token: str) -> str | None:
@@ -374,9 +510,20 @@ def verify_session(token: str) -> str | None:
         payload = json.loads(_from_b64url(body))
     except (ValueError, json.JSONDecodeError):
         return None
-    if int(payload.get("e", 0)) < time.time():
+    if not isinstance(payload, dict):
+        return None
+    # Audit M5: the payload's TYPES were trusted. `int(payload["e"])` on a
+    # string, null or list raises OUTSIDE this try, so a malformed token became
+    # a 500 — a crash on the authentication path is also a denial of service.
+    expiry = payload.get("e")
+    if not isinstance(expiry, int) or isinstance(expiry, bool):
+        return None
+    if expiry < timebase.now():
+        return None
+    address = payload.get("a")
+    if not isinstance(address, str) or not address:
         return None
     # Audit #8 F-06: revoked (logged-out / compromised) sessions are dead.
     if _jti_is_revoked(str(payload.get("j", ""))):
         return None
-    return str(payload.get("a")) or None
+    return address.lower()

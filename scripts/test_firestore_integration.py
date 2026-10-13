@@ -16,6 +16,11 @@ smoke suite can only simulate:
 Run: .venv/bin/python scripts/test_firestore_integration.py
 """
 import os
+
+# Audit H6 inverted the production default: every environment is
+# production-like unless it opts out explicitly. These are local dev
+# tools, so they opt out.
+os.environ.setdefault("PULSAR_ENV", "dev")
 import sys
 import time
 
@@ -24,7 +29,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
 os.environ.setdefault("ORACLE_SIGNING_SECRET", "fs-itest-secret")
 os.environ.setdefault("ORACLE_PRIVATE_KEY", "0x" + "11" * 32)
 
-import match_engine as me  # noqa: E402
 from store import DurableMatchStore  # noqa: E402
 
 failures: list[str] = []
@@ -121,7 +125,12 @@ def main() -> int:
         md = store._fs_store.db.collection("matches").document(m1.match_id).get().to_dict() or {}
         check("economy: match ledger doc written", md.get("id") == m1.match_id)
     else:
-        check("economy ledger (skipped: Admin SDK unavailable)", True)
+        # Audit CRITICAL-1: this used to count a SKIP as a PASS, which is how a
+        # dead ledger stayed invisible for the whole remediation. This suite
+        # runs against a REAL Firestore backend, so the ledger MUST be reachable
+        # from the store — if it is not, the wiring is broken and that is a
+        # failure, not a skip.
+        check("economy ledger is reachable from the durable store", False)
 
     print()
     print("FAILURES:", failures if failures else "none")

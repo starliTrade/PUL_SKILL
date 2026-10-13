@@ -35,9 +35,10 @@ import hashlib
 import hmac
 import os
 import secrets
-import time
 from dataclasses import dataclass, field
 from typing import Any
+
+import timebase
 
 ROUNDS = 3
 MIN_HUMAN_MS = 105.0           # below this is not humanly plausible — MUST match
@@ -65,9 +66,13 @@ ROUND_EXPIRY_SECONDS = 60
 # numbers the server reasons about; oracle.py imports them so a signature can
 # never outlive the on-chain refund horizon.
 MATCH_TIMEOUT_SECONDS = 30 * 60  # == PulsarEscrow.MATCH_TIMEOUT (30 min): the
-                                 # HARD ceiling — after this the contract lets
-                                 # anyone refund both stakes and a settlement
-                                 # signature is worthless.
+                                 # settlement window. Audit H19 added
+                                 # PulsarEscrow.REFUND_GRACE (10 min) on top:
+                                 # the permissionless refund opens only at
+                                 # MATCH_TIMEOUT + REFUND_GRACE, so a stalling
+                                 # loser cannot deny the winner. A signature is
+                                 # therefore worthless from MATCH_TIMEOUT on,
+                                 # which is what this clamp enforces.
 MATCH_EXPIRY_SECONDS = 600     # active-play expiry, counted from ACTIVATION
                                # (the moment the joiner paired), NOT from queue
                                # entry (audit #8 F-05). The on-chain refund
@@ -85,15 +90,57 @@ FORFEIT_SENTINEL_MS = 0.0      # audit #8 F-15: declared forfeit time in the
 MATCH_SETTLE_GRACE_SECONDS = 480  # 8 minutes after activation (unchanged)
 
 
+# Audit H1 — latency fairness (D1 = option D: real money).
+#
+# `observed_ms` = elapsed − target_ms, where `elapsed` runs from when the server
+# SENT the target to when the submission ARRIVED. Network latency can only
+# inflate it, so a player 10ms from the server and one 100ms away who react
+# identically differ by ~45ms — decisive in a game whose range is ~150-400ms.
+#
+# The ranking value is `observed − min_rtt/2`. The MINIMUM is what makes this
+# safe: a naive `observed − rtt/2` rewards INFLATING the reported RTT (a larger
+# rtt yields a smaller compensated time, i.e. looking faster). The minimum
+# cannot be inflated — the true value stays in the set — and cannot be deflated
+# below the network floor, and deflating only REDUCES the compensation, so there
+# is no incentive in either direction.
+MAX_COMPENSATION_MS = 150.0  # never credit more than this, whatever is reported
+MAX_QUEUE_RTT_MS = 400.0  # entry gate: above this the experience is unplayable
+
+# Audit H23 / G5 — skill-based matchmaking (D1 = option D: real money).
+#
+# Pairing the first two players in a stake bucket is, under real money, a
+# money-transfer mechanism: a novice and a veteran queue at the same stake, are
+# paired instantly, and the novice's stake moves to the veteran. No amount of
+# anti-cheat fixes that — the veteran is not cheating.
+#
+# The rating is ELO-style and derived from settled OUTCOMES. It is deliberately
+# NOT derived from raw reaction times: a reaction time is one noisy sample, and
+# a rating built on noise would move every player's number by tens of points per
+# match, which makes the band meaningless.
+DEFAULT_RATING = 1200.0
+K_FACTOR = 32.0  # standard ELO step
+RATING_BAND = 150.0  # initial pairing window, in rating points
+RATING_BAND_WIDEN_SECONDS = 10.0  # wait this long and the window grows
+MAX_RATING_BAND = 800.0  # ...but never past this: a queue that never matches
+                         # is its own failure, and beyond this the mismatch is
+                         # worse than the wait
+
+
 def settlement_deadline(match: Any) -> int:
     """Return the contract's refund horizon for this match.
 
-    PulsarEscrow starts MATCH_TIMEOUT at ``createdAt`` in createDuel(), which
-    is represented by the server's ``created_at``. Activation is a gameplay
-    clock only; using it here could leave a settlement proof valid after a
-    permissionless on-chain refund had already become available.
+    Audit H20 changed the contract's anchor: `refundTimeoutMatch` now counts
+    MATCH_TIMEOUT from ACTIVATION when the duel was paired, and from the deposit
+    only for a duel that never paired. This must mirror that exactly — a clamp
+    anchored to the wrong instant either mints a proof the contract rejects or
+    leaves one valid after a permissionless refund became available.
+
+    (Before H20 the contract anchored on `createdAt` alone, which is why this
+    used to read `created_at` unconditionally.)
     """
-    origin = float(getattr(match, "created_at", 0.0))
+    created = float(getattr(match, "created_at", 0.0))
+    activated = float(getattr(match, "activated_at", 0.0) or 0.0)
+    origin = max(created, activated)
     return int(origin + MATCH_TIMEOUT_SECONDS)
 
 # Secret used to MAC result proofs.
@@ -132,6 +179,10 @@ class Round:
     index: int
     commit_hash: str = ""
     commit_at: float = 0.0
+    # Audit H2: a SERVER-chosen salt, minted at commit time and folded into
+    # `result_proof`. Without it the binding rested entirely on a client-chosen
+    # hash, so the server could not prove the commitment predates the target.
+    commit_salt: str = ""
     target_hash: str = ""
     target_salt: str = ""
     target_ms: float = 0.0
@@ -171,6 +222,15 @@ class Match:
     # role is persisted and restored with the match instead of being inferred
     # from an on-chain read that cannot succeed yet.
     joiner: str = ""  # second player — deposits after the creator's deposit is visible
+    # Audit H1: the MINIMUM RTT each player has reported this match. Per match,
+    # not per round, so a player cannot "warm up" a good value late.
+    min_rtt_ms: dict[str, float] = field(default_factory=dict)
+    # Audit M27: a friend challenge is a waiting match RESERVED for one
+    # address. Empty string = open queueing (the default, and every legacy
+    # document). Pairing requires BOTH sides to agree: the reservation must be
+    # for the arriving player, and the arriving player must not have named
+    # someone else.
+    target: str = ""
 
     def play_started_at(self) -> float:
         """The instant the PLAY clock started (activation, falling back to
@@ -247,82 +307,22 @@ class Match:
         return view
 
 
-class MatchStore:
+def _result_proof(
+    match_id: str,
+    address: str,
+    round_index: int,
+    commit_hash: str,
+    target_ms: int,
+    commit_salt: str,
+) -> str:
+    """Unforgeable per-player round proof.
+
+    Audit H2: `commit_salt` is REQUIRED. It is minted by the server at commit
+    time, so the proof is bound to a value the client could not predict when it
+    committed — and a commitment cannot be swapped for a different one after the
+    target is revealed, because the salt changes with it.
     """
-    In-memory store with explicit in-memory markers so horizontal scaling
-    fails loudly instead of silently splitting matches across replicas.
-    """
-
-    def __init__(self) -> None:
-        self.matches: dict[str, Match] = {}
-        self.queue: dict[float, list[str]] = {}
-        # address -> live (waiting|active) match id. Makes enqueue IDEMPOTENT:
-        # re-polling the queue returns the caller's existing match instead of
-        # minting orphan waiting matches every poll (the deadlock that left
-        # the first player forever in matchmaking while P2 played alone).
-        self.player_match: dict[str, str] = {}
-
-    def enqueue(self, address: str, stake: float) -> Match:
-        addr = address.lower()
-        live = self.player_match.get(addr)
-        if live:
-            m = self.matches.get(live)
-            if m and m.status in ("waiting", "active"):
-                return m
-            self.player_match.pop(addr, None)
-        bucket = self.queue.setdefault(stake, [])
-        for other in list(bucket):
-            m = self.matches.get(other)
-            if m is None or m.status != "waiting":
-                bucket.remove(other)
-                continue
-            if addr in m.players:
-                bucket.remove(other)
-                continue
-            # Found an opponent: activate the match.
-            m.players[addr] = {"address": addr, "joinedAt": time.time()}
-            m.status = "active"
-            m.joiner = addr
-            bucket.remove(other)
-            self.player_match[addr] = m.match_id
-            return m
-        # No opponent: create a new waiting match.
-        match_id = secrets.token_hex(16)
-        m = Match(
-            match_id=match_id,
-            stake=stake,
-            created_at=time.time(),
-            players={addr: {"address": addr, "joinedAt": time.time()}},
-            creator=addr,
-        )
-        self.matches[match_id] = m
-        bucket.append(match_id)
-        self.player_match[addr] = match_id
-        return m
-
-    def get(self, match_id: str) -> Match:
-        m = self.matches.get(match_id)
-        if m is None:
-            raise MatchError("Match not found")
-        return m
-
-    def sweep_expired(self) -> None:
-        now = time.time()
-        for mid in list(self.matches):
-            m = self.matches[mid]
-            if m.status in ("waiting", "active") and now - m.created_at > MATCH_EXPIRY_SECONDS:
-                m.status = "void"
-        for stake, bucket in list(self.queue.items()):
-            self.queue[stake] = [
-                mid for mid in bucket
-                if mid in self.matches and self.matches[mid].status == "waiting"
-            ]
-
-
-def _result_proof(match_id: str, address: str, round_index: int, commit_hash: str, target_ms: int) -> str:
-    """Unforgeable per-player round proof: unguessable before the commit +
-    reveal, and unusable by any other player or round."""
-    payload = f"{match_id}|{address}|{round_index}|{commit_hash}|{target_ms}".encode()
+    payload = f"{match_id}|{address}|{round_index}|{commit_hash}|{target_ms}|{commit_salt}".encode()
     return hmac.new(_PROOF_SECRET, payload, hashlib.sha256).hexdigest()
 
 
@@ -333,9 +333,15 @@ def commit_intent(match: Match, address: str, round_index: int, intent_hash: str
         raise MatchError("Invalid round")
     rounds = match.rounds.setdefault(address.lower(), {})
     r = rounds.get(round_index) or Round(index=round_index)
-    now = time.time()
-    if r.commit_hash and now - r.commit_at < COMMIT_WINDOW_SECONDS:
+    now = timebase.now()
+    if r.commit_hash:
         if r.commit_hash != intent_hash.lower():
+            # Audit H2: a commitment is FINAL — the window is not an escape
+            # hatch. It used to allow a replacement once COMMIT_WINDOW_SECONDS
+            # had elapsed, so a player could commit, reveal the target, wait,
+            # and commit again with a hash chosen AFTER seeing it. The stored
+            # commitment then carried no information, and `result_proof` was
+            # bound to it.
             raise MatchError("Round already committed")
         # Idempotent retry of the SAME intent (e.g. a dropped HTTP response on
         # the first commit). Returns without error so a rejected submission can
@@ -343,6 +349,8 @@ def commit_intent(match: Match, address: str, round_index: int, intent_hash: str
         return
     r.commit_hash = intent_hash.lower()
     r.commit_at = now
+    # Audit H2: the server's own salt, minted here and never re-minted.
+    r.commit_salt = secrets.token_hex(16)
     rounds[round_index] = r
 
 
@@ -356,9 +364,12 @@ def reveal_target(match: Match, address: str, round_index: int) -> dict[str, Any
     r = rounds.get(round_index)
     if r is None or not r.commit_hash:
         raise MatchError("Commit before reveal required")
-    now = time.time()
+    now = timebase.now()
     if now - r.commit_at > COMMIT_WINDOW_SECONDS:
-        raise MatchError("Commit expired, re-commit the round")
+        # Audit H2: a commit is final, so this round is DEAD for this player —
+        # the same policy as a stale result. The old message promised a
+        # re-commit that is no longer possible.
+        raise MatchError("Commit expired — this round is lost")
     if not r.revealed:
         r.target_salt = secrets.token_hex(16)
         r.target_ms = float(secrets.randbelow(1500) + 1200)  # 1200-2700ms delay
@@ -371,7 +382,12 @@ def reveal_target(match: Match, address: str, round_index: int) -> dict[str, Any
         # round's commit + revealed target. Issued here so the client cannot
         # pre-generate it and no other player can reuse it.
         r.result_proof = _result_proof(
-            match.match_id, address.lower(), round_index, r.commit_hash, int(r.target_ms)
+            match.match_id,
+            address.lower(),
+            round_index,
+            r.commit_hash,
+            int(r.target_ms),
+            r.commit_salt,
         )
     return {
         "targetMs": r.target_ms,
@@ -387,6 +403,7 @@ def submit_result(
     round_index: int,
     measured_ms: float,
     result_proof: str = "",
+    rtt_ms: float | None = None,
 ) -> dict[str, Any]:
     """
     Validate one submitted time and store it for settlement. The submission
@@ -394,6 +411,15 @@ def submit_result(
     was never followed by an honest reveal cannot produce a valid result.
     """
     _ensure_active(match, address)
+    # Audit H1: record the player's best observed round trip BEFORE anything
+    # else, so a rejected submission still contributes its measurement.
+    if rtt_ms is not None:
+        if rtt_ms < 0:
+            raise MatchError("Invalid rtt: must not be negative")
+        me = address.lower()
+        current = match.min_rtt_ms.get(me)
+        if current is None or rtt_ms < current:
+            match.min_rtt_ms[me] = float(rtt_ms)
     rounds = match.rounds.setdefault(address.lower(), {})
     r = rounds.get(round_index)
     if r is None or not r.revealed:
@@ -403,7 +429,7 @@ def submit_result(
     # Audit #4: a stale round is DEAD — the player lost their chance. Without
     # this, an unplayed round survives all the way to the grace-window settle
     # and converts an opponent who simply stepped away into a forfeit loser.
-    if r.revealed_at and time.time() - r.revealed_at > ROUND_EXPIRY_SECONDS:
+    if r.revealed_at and timebase.now() - r.revealed_at > ROUND_EXPIRY_SECONDS:
         raise MatchError(
             f"Round expired — results must be submitted within "
             f"{ROUND_EXPIRY_SECONDS}s of the target appearing"
@@ -412,7 +438,7 @@ def submit_result(
     # stored when it carries the proof bound to this player's commit+reveal.
     if not result_proof or not hmac.compare_digest(result_proof, r.result_proof):
         raise MatchError("Invalid result proof for this round")
-    now = time.time()
+    now = timebase.now()
     reason = _validate_plausibility(match, r, measured_ms, now)
     r.result_ms = measured_ms
     r.submitted_at = now
@@ -465,29 +491,50 @@ def _ensure_active(match: Match, address: str) -> None:
         raise MatchError("Not a participant of this match")
 
 
-def _rank_time(r: Round | None) -> float | None:
-    """The ranking time for one player's round.
+def _rank_time(r: Round | None, min_rtt_ms: float | None = None) -> float | None:
+    """The ranking time for one player's round: the SERVER-OBSERVED reaction.
 
-    Audit #8 F-01: the server-OBSERVED reaction time (elapsed − target_ms)
-    is authoritative, because network latency can only ever inflate it. A
-    client that fabricates a 105ms claim while really reacting in 450ms
-    cannot outrank an honest 220ms player anymore — its OBSERVED time is
-    450ms and it loses the round. Falls back to the claim for legacy
-    documents written before observed_ms existed.
+    Audit #8 F-01: the server-observed reaction (elapsed − target_ms) is
+    authoritative, because network latency can only ever inflate it. A client
+    that fabricates a 105ms claim while really reacting in 450ms cannot outrank
+    an honest 220ms player — its observed time is 450ms.
+
+    Audit H1 (REVISED — the previous fix was an exploit). This used to subtract
+    half the player's minimum reported round trip. That number is
+    CLIENT-REPORTED: the server never measures the network's share of a round,
+    so the subtraction let a player report a large RTT on every round and be
+    credited up to MAX_COMPENSATION_MS — 150ms, decisive in a game whose whole
+    range is ~150–400ms. The old comment claimed "the minimum cannot be
+    inflated — the true value stays in the set"; there was no server-measured
+    value in the set to begin with, so the claim was false.
+
+    Fairness is now enforced where the server can act without being gameable:
+    the ping cap at queue time (`store.check_ping_cap`) and pairing by closest
+    connection (`store.choose_opponent`), so both players' network conditions are
+    comparable before their reactions are compared.
+
+    `min_rtt_ms` is accepted for call-site compatibility and observability; it no
+    longer affects the ranking.
     """
     if r is None or not r.valid or r.result_ms is None:
         return None
-    if r.observed_ms is not None:
-        return r.observed_ms
-    return r.result_ms
+    if r.observed_ms is None:
+        return r.result_ms
+    return r.observed_ms
 
 
-def _round_winner(mine: dict[int, Round], theirs: dict[int, Round], idx: int) -> str:
+def _round_winner(
+    mine: dict[int, Round],
+    theirs: dict[int, Round],
+    idx: int,
+    min_rtt_a: float | None = None,
+    min_rtt_b: float | None = None,
+) -> str:
     """'a' (mine wins) | 'b' (theirs wins) | '' (undecided) for one round."""
     ra = mine.get(idx)
     rb = theirs.get(idx)
-    va = _rank_time(ra)
-    vb = _rank_time(rb)
+    va = _rank_time(ra, min_rtt_a)
+    vb = _rank_time(rb, min_rtt_b)
     if va is None and vb is None:
         return ""
     if vb is None:
@@ -526,10 +573,12 @@ def _majority_reached(match: Match) -> bool:
     rounds_b = match.rounds.get(b, {}) or {}
     wins_needed = ROUNDS // 2 + 1
     wins_a = wins_b = 0
+    rtt_a = match.min_rtt_ms.get(a)
+    rtt_b = match.min_rtt_ms.get(b)
     for idx in range(ROUNDS):
         if not _round_decidable(rounds_a, rounds_b, idx):
             continue
-        w = _round_winner(rounds_a, rounds_b, idx)
+        w = _round_winner(rounds_a, rounds_b, idx, rtt_a, rtt_b)
         if w == "a":
             wins_a += 1
         elif w == "b":
@@ -554,9 +603,80 @@ def match_completed(match: Match) -> bool:
             # moment the joiner paired), not from queue entry — a match that
             # waited 9 minutes in a slow queue must not be instantly voided
             # (or instantly forfeitable) at its first round.
-            if time.time() - match.play_started_at() <= MATCH_SETTLE_GRACE_SECONDS:
+            if timebase.now() - match.play_started_at() <= MATCH_SETTLE_GRACE_SECONDS:
                 return False
     return True
+
+
+# Audit M7: a MAC over the settlement's identity, so the oracle can prove a
+# record came from THIS engine rather than from a caller that built a dict with
+# the right keys. The key is the same proof secret the round proofs use, so no
+# new secret is introduced.
+def stamp_settlement(record: dict[str, Any]) -> None:
+    """Stamp a settlement record as engine-produced (audit M7)."""
+    record["engineStamp"] = _settlement_stamp(record)
+
+
+def _settlement_stamp(record: dict[str, Any]) -> str:
+    payload = "|".join(
+        [
+            str(record.get("matchId", "")),
+            str(record.get("winner", "")),
+            str(record.get("loser", "")),
+            str(record.get("winnerTimeMs", "")),
+            str(record.get("loserTimeMs", "")),
+            str(record.get("status", "")),
+        ]
+    ).encode()
+    return hmac.new(_PROOF_SECRET, payload, hashlib.sha256).hexdigest()
+
+
+def settlement_is_stamped(record: dict[str, Any]) -> bool:
+    """True when the record carries a valid engine stamp (audit M7)."""
+    supplied = record.get("engineStamp")
+    if not isinstance(supplied, str) or not supplied:
+        return False
+    return hmac.compare_digest(supplied, _settlement_stamp(record))
+
+
+def settlement_record_for_resign(match: Match) -> dict[str, Any]:
+    """Rebuild a settlement record from a SETTLED match, stamped (audit M7).
+
+    The F-12 re-sign path used to build this dict by hand and hand it to
+    `sign_settlement` — which is exactly the hole M7 closes: a caller that can
+    build a dict with the right keys got a signature over real money. The record
+    is now reconstructed from the match the ENGINE owns, and stamped, so the
+    oracle can verify its provenance.
+
+    The values come from the stored envelope (the engine's own earlier output),
+    never from the caller.
+    """
+    envelope = match.signed_settlement or {}
+    record = {
+        "status": "settled",
+        "matchId": match.match_id,
+        "winner": match.winner,
+        "loser": envelope.get("loser", ""),
+        "winnerTimeMs": int(envelope.get("winnerTimeMs", 0)),
+        "loserTimeMs": int(envelope.get("loserTimeMs", 0)),
+        "validatedTimes": envelope.get("validatedTimes", {}),
+    }
+    stamp_settlement(record)
+    return record
+
+
+def apply_settlement_ratings(store: Any, result: dict[str, Any]) -> None:
+    """Update both players' ratings from a settled result (audit H23).
+
+    Kept OUT of `settle()` because that function is pure match logic with no
+    store handle, and because a VOID must not move anyone's rating: nobody won.
+    """
+    if result.get("status") != "settled":
+        return
+    winner = result.get("winner")
+    loser = result.get("loser")
+    if winner and loser:
+        store.apply_rating_result(winner, loser)
 
 
 def settle(match: Match) -> dict[str, Any]:
@@ -586,11 +706,13 @@ def settle(match: Match) -> dict[str, Any]:
     forfeit_a = forfeit_b = False
     times_a: list[float] = []
     times_b: list[float] = []
+    rtt_a = match.min_rtt_ms.get(a)
+    rtt_b = match.min_rtt_ms.get(b)
     for idx in range(ROUNDS):
         ra = rounds_a.get(idx)
         rb = rounds_b.get(idx)
-        va = _rank_time(ra)
-        vb = _rank_time(rb)
+        va = _rank_time(ra, rtt_a)
+        vb = _rank_time(rb, rtt_b)
         if va is not None:
             times_a.append(va)
         if vb is not None:
@@ -612,9 +734,61 @@ def settle(match: Match) -> dict[str, Any]:
         # exact tie: round awards nobody
 
     wins_needed = ROUNDS // 2 + 1  # 2 of 3
+
+    # Audit H24: an absent player forfeits the MATCH, not just the rounds they
+    # missed.
+    #
+    # The loop above awards a round to the present player only when the OTHER
+    # player submitted. A round where NEITHER submitted awards nobody — which
+    # conflates two very different situations:
+    #
+    #   1. both players were present and neither submitted (a mutual stall)
+    #   2. one player was present, played, and the other never showed
+    #
+    # In case 2 the present player cannot play the remaining rounds against
+    # nobody, so they finish 1-0, reach no majority, and the match VOIDS with
+    # both stakes refunded. The player who showed up and won got nothing; the
+    # one who never appeared got their stake back. Under D1 (real money) that
+    # makes abandoning a FREE OPTION — strictly better than losing.
+    #
+    # The principle: the player who showed up must not be punished for the
+    # opponent's absence.
+    submitted_a = sum(
+        1 for idx in range(ROUNDS)
+        if rounds_a.get(idx) is not None and rounds_a[idx].result_ms is not None
+    )
+    submitted_b = sum(
+        1 for idx in range(ROUNDS)
+        if rounds_b.get(idx) is not None and rounds_b[idx].result_ms is not None
+    )
+    if submitted_a > 0 and submitted_b == 0:
+        wins_a, wins_b = wins_needed, 0
+        forfeit_b = True
+    elif submitted_b > 0 and submitted_a == 0:
+        wins_a, wins_b = 0, wins_needed
+        forfeit_a = True
+
     if wins_a < wins_needed and wins_b < wins_needed:
-        match.status = "void"
-        return {"status": "void", "reason": "no round-win majority — stakes refund"}
+        # Audit H24, second half: the match cannot complete. Who benefits from a
+        # void? The player who is BEHIND — they recover a stake they were losing.
+        # So a void is a free option for the trailing player, and "just void it"
+        # is not a neutral default.
+        #
+        # The server cannot tell "A is waiting for B" from "both left": with
+        # equal submissions the only signal is who submitted last, which is
+        # noise. So the rule favours the LEADER, and the residual risk is that a
+        # leading player can abandon and still win — a weaker incentive than the
+        # current one, where a trailing player can always abandon and get their
+        # stake back.
+        if wins_a > wins_b:
+            wins_a = wins_needed
+        elif wins_b > wins_a:
+            wins_b = wins_needed
+        else:
+            # A genuine tie (0-0, or 1-1 with the decider unplayed): nobody is
+            # ahead, so nobody is punished. Both are refunded.
+            match.status = "void"
+            return {"status": "void", "reason": "no round-win majority — stakes refund"}
 
     winner = a if wins_a >= wins_needed else b
     loser = b if winner == a else a
@@ -638,8 +812,8 @@ def settle(match: Match) -> dict[str, Any]:
     loser_ms = int(round(min(loser_times)))
     match.winner = winner
     match.status = "settled"
-    match.settled_at = time.time()
-    return {
+    match.settled_at = timebase.now()
+    settled = {
         "status": "settled",
         "matchId": match.match_id,
         "winner": winner,
@@ -652,3 +826,6 @@ def settle(match: Match) -> dict[str, Any]:
         "winnerTimeMs": winner_ms,
         "loserTimeMs": loser_ms,
     }
+    # Audit M7: stamp it, so the oracle can prove this came from the engine.
+    stamp_settlement(settled)
+    return settled

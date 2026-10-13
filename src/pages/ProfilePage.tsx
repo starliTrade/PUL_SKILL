@@ -26,6 +26,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
+import { PendingPayoutCard } from '../components/PendingPayoutCard';
 import { ConnectWallet } from '../components/ConnectWallet';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import {
@@ -362,6 +363,9 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
               </div>
             </div>
           </div>
+
+          {/* Audit H17b: a deferred payout the player can claim */}
+          <PendingPayoutCard address={wallet.fullAddress || wallet.address} />
 
           {/* Seamless Integrated Progression Module */}
           <div className="mt-3.5 pt-3 border-t border-white/[0.04] relative z-10">

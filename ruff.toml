@@ -1,0 +1,37 @@
+# PULSAR — ruff configuration (plan item 0.4 / 8.21).
+#
+# Scope is deliberately narrow for now: correctness rules that catch real bugs
+# (undefined names, unused imports/variables, import order). Style-only rules
+# are added in phase 8 once the codebase is formatted, so this gate can be a
+# hard failure from day one instead of a permanently-red warning.
+target-version = "py311"
+line-length = 110
+exclude = [".venv", "node_modules", "contracts/lib", "contracts/out", "dist"]
+
+[lint]
+select = [
+    "F",   # pyflakes: undefined names, unused imports/vars — real bugs
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "I",   # import sorting
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear: likely bugs
+    "C4",  # comprehensions
+]
+ignore = [
+    "E501",  # line length is handled by the formatter, not the linter
+    "B008",  # FastAPI's Depends()/Query() in defaults is the framework idiom
+    # B904 (`raise ... from err`) is a diagnosability improvement, not a bug.
+    # It touches 8 error paths in api/main.py; deferred to plan item 8.21 so
+    # phase 0 stays infrastructure-only. Remove this line when 8.21 lands.
+    "B904",
+]
+
+[lint.per-file-ignores]
+# The legacy suites and probes deliberately manipulate sys.path before importing
+# from api/ — E402 is the intended pattern there, not a mistake.
+"scripts/*.py" = ["E402"]
+"tests/conftest.py" = ["E402"]
+
+[lint.isort]
+known-first-party = ["auth", "economy", "match_engine", "onchain", "oracle", "store"]

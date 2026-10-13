@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { usePulsarStore } from '../store/usePulsarStore';
-import { explorerAddressUrl } from '../lib/chain';
+import { CHAIN, TOKENS, explorerAddressUrl } from '../lib/chain';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
@@ -127,6 +127,16 @@ interface WalletItemDefinition {
   badgeType?: 'popular' | 'instant' | 'detected';
   logo: React.ReactNode;
   subtitle?: string;
+}
+
+// Audit M34: the label and the truncated address are DERIVED, so a testnet
+// build cannot claim to be mainnet.
+const TOKEN_LABEL = CHAIN.chainId === 137 ? 'USDT (Tether USD)' : 'Test USDT';
+
+function shortTokenAddress(): string {
+  const a = TOKENS.USDT;
+  if (!a || a.length < 12) return 'not configured';
+  return `${a.slice(0, 6)}...${a.slice(-4)}`;
 }
 
 export const ConnectWallet: React.FC<ConnectWalletProps> = ({
@@ -249,6 +259,10 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
   const handleCloseModal = () => {
     sounds.playClick();
     cancelPendingConnect();
+    // Audit M35: a cancelled handoff must not leave a spent URI behind for the
+    // next attempt to reuse. A WalletConnect URI is single-use.
+    wcUriRef.current = '';
+    realWeb3Manager.lastWcUri = '';
     setConnectingWalletId(null);
     setActiveHandoff(null);
     setErrorMessage(null);
@@ -320,7 +334,11 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
       return;
     }
 
-    const existingUri = wcUriRef.current || realWeb3Manager.lastWcUri || '';
+    // Audit M35: a WalletConnect URI is SINGLE-USE and short-lived. Reusing
+    // `lastWcUri` from a previous attempt shows a QR the wallet refuses, and
+    // the user cannot tell a stale QR from a broken app. Only a URI this
+    // component just produced is reused.
+    const existingUri = wcUriRef.current || '';
     const nativeScheme = existingUri ? getNativeSchemeUri(walletId, existingUri) : '';
     const deepLink = existingUri ? getWalletConnectDeepLink(walletId, existingUri) : '';
 
@@ -563,9 +581,9 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                     </div>
                     <div className="text-[10px] text-zinc-400 flex items-center gap-1.5 mt-0.5" style={{ direction: 'ltr' }}>
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block shadow-[0_0_6px_#34d399] animate-pulse" />
-                      <span className="font-mono text-[10px] text-zinc-300 font-medium">Polygon PoS</span>
+                      <span className="font-mono text-[10px] text-zinc-300 font-medium">{CHAIN.name}</span>
                       <span className="text-zinc-600">•</span>
-                      <span className="font-mono text-[9.5px] text-zinc-400">Chain 137</span>
+                      <span className="font-mono text-[9.5px] text-zinc-400">Chain {CHAIN.chainId}</span>
                     </div>
                   </div>
                 </div>
@@ -602,9 +620,20 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                 </div>
                 <div className="flex items-baseline justify-between mt-1.5" style={{ direction: 'ltr' }}>
                   <div>
+                    {/* Audit 2026-10-13 — HONESTY: `balanceUnknown` means the
+                        chain read has not succeeded, so `balance` is 0 by
+                        default, not a fact. The two gates respected this flag
+                        and the display did not: a funded player whose RPC was
+                        slow saw "$0.00 USDT" stated as truth. */}
                     <div className="text-xl font-bold font-mono text-emerald-300 tracking-tight" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
-                      ${wallet.balance.toFixed(2)}{' '}
-                      <span className="text-xs font-sans text-emerald-400 font-semibold">USDT</span>
+                      {wallet.balanceUnknown ? (
+                        <span className="text-zinc-400">—</span>
+                      ) : (
+                        <>
+                          ${wallet.balance.toFixed(2)}{' '}
+                          <span className="text-xs font-sans text-emerald-400 font-semibold">USDT</span>
+                        </>
+                      )}
                     </div>
                     <div className="text-[10px] font-medium text-zinc-400 mt-0.5 flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_4px_#34d399]"></span>
@@ -784,15 +813,15 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                 <div className="space-y-1.5 text-[11px] text-zinc-400 bg-white/[0.02] p-2.5 rounded-xl border border-white/[0.05]">
                   <div className="flex justify-between">
                     <span>Network</span>
-                    <span className="text-emerald-400 font-semibold font-mono">Polygon Mainnet (Chain 137)</span>
+                    <span className="text-emerald-400 font-semibold font-mono">{CHAIN.name} (Chain {CHAIN.chainId})</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Token</span>
-                    <span className="text-zinc-200 font-mono">USDT (Tether USD)</span>
+                    <span className="text-zinc-200 font-mono">{TOKEN_LABEL}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Token Contract</span>
-                    <span className="text-zinc-400 font-mono text-[10px]">0xc213...91bc</span>
+                    <span className="text-zinc-400 font-mono text-[10px]">{shortTokenAddress()}</span>
                   </div>
                 </div>
 

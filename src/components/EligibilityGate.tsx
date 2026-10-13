@@ -1,9 +1,15 @@
 /**
  * P2.3 — First-visit eligibility gate: 18+ confirmation and restricted-
- * jurisdiction check. Consent is stored locally; the client-side check is a
- * UX layer — the authoritative enforcement belongs to the deployment edge
- * (geo-blocking at the hosting/CDN layer) and to the game server, which must
- * refuse SIWE sessions from blocked regions (P2.5 runbook item).
+ * jurisdiction check.
+ *
+ * Audit M40 — HONESTY: this is a client-side SELF-DECLARATION and nothing
+ * more. Consent is one localStorage key, so clearing storage bypasses it, and
+ * there is NO server or edge enforcement: `api/` performs no geo lookup and no
+ * region is refused. The earlier header claimed the deployment edge and the
+ * game server enforced this — they do not, and a claim of enforcement the
+ * operator cannot defend is worse than no gate at all. Real enforcement
+ * (edge geo-blocking + a server-side region check) is a compliance work item,
+ * not a property of this component.
  */
 
 import React, { useState } from 'react';

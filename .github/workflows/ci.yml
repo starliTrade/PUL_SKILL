@@ -1,62 +1,189 @@
 name: CI
 
+# Plan item 0.13: CI runs the same gates as `bun run verify`, split across three
+# jobs so a failure names the area that broke:
+#   frontend   -> typecheck (tsc), and later vitest + playwright + axe
+#   game-server-> ruff, pytest (+coverage ratchet), legacy suites, Firestore emulator
+#   contracts  -> forge test, the "did tests actually run" guard, anvil chain tests
+# `bun run verify` remains the local entrypoint; it also auto-starts the
+# emulator and anvil, which CI starts explicitly.
 on:
   push:
     branches: [main]
   pull_request:
 
+concurrency:
+  # A superseded run on the same ref is cancelled: the newest commit is the one
+  # that matters, and the contract job is the slowest.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun tsc --noEmit
+      - name: Frontend unit tests (vitest) — plan item 0.9
+        run: bun run test:unit
 
   game-server:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install server deps (INCLUDING google-cloud-firestore + sqlite3)
+      - name: Install server deps (INCLUDING google-cloud-firestore)
         # sqlite3 is the Firestore STDLib fallback (google-cloud-firestore uses
         # it for local emulation); without it the fallback import fails and CI
         # silently exercises the memory store — the exact blind spot that let
         # the NameError/@firestore.transactional crash ship unnoticed.
+        #
+        # This step used to also run `apt-get install -y python3-sqlite3`, which
+        # does not exist on Ubuntu noble: the step exited 100 and the WHOLE
+        # game-server job (ruff, pytest, the coverage ratchet, the emulator
+        # suites) never ran. sqlite3 ships with the setup-python distribution,
+        # so assert it is importable rather than installing a package that is
+        # not there.
         run: |
-          pip install -r api/requirements.txt
-          pip install httpx
-          sudo apt-get update -y && sudo apt-get install -y python3-sqlite3
+          pip install -r api/requirements-dev.txt
+          python3 -c "import sqlite3; print('sqlite3', sqlite3.sqlite_version)"
+      - name: Lint (ruff) — plan item 0.4
+        run: python3 -m ruff check api scripts tests
+      - name: Start the Firestore emulator — plan item 0.7
+        # Without this, test_firestore_integration.py SKIPS and every Firestore
+        # bug ships unseen (audit C1/H3/H4 all live on this path). The runner
+        # ships a JDK, so only the emulator jar is needed.
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/firestore-emulator.jar \
+            https://storage.googleapis.com/firebase-preview-drop/emulator/cloud-firestore-emulator-v1.19.8.jar
+          nohup java -jar /tmp/firestore-emulator.jar --host=127.0.0.1 --port=8081 > /tmp/fsemu.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null "http://127.0.0.1:8081/"; then echo "emulator up"; exit 0; fi
+            sleep 1
+          done
+          echo "emulator failed to start"; tail -40 /tmp/fsemu.log; exit 1
+      # Audit HIGH-8: the coverage ratchet must measure the SAME thing here as it
+      # does in `scripts/verify.sh`. CI used to run `pytest --cov=api` alone,
+      # which measured 79.09% against a 79.0 floor — 0.09 points of headroom —
+      # while verify.sh measured pytest PLUS the legacy suites in one session
+      # (81%). A green `bun run verify` therefore did not imply a green CI, and a
+      # one-line regression failed CI while verify stayed green.
+      #
+      # The suites below run under ONE coverage session (`coverage run` then
+      # `--append`), exactly like verify.sh, and the ratchet is enforced by the
+      # final `coverage report` (`.coveragerc` sets fail_under; it may only ever
+      # go up). The chain-marked tests skip here (no anvil in this job) and run
+      # in the contracts job.
+      - name: Server tests under the coverage session — plan items 0.3, 0.12
+        env:
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8081
+          GCLOUD_PROJECT: demo-pulsar
+        run: |
+          set -euo pipefail
+          python3 -m coverage erase
+          python3 -m coverage run --source=api -m pytest -q
       - name: Protocol smoke tests (SIWE, commit-reveal, settlement, oracle, store roundtrip)
-        run: python3 scripts/test_game_server.py
+        # No emulator env here: `scripts/verify.sh` runs the legacy suites in
+        # MEMORY mode (only the pytest gate gets FIRESTORE_EMULATOR_HOST), and
+        # the coverage measurement must match. The FALLBACK step below exercises
+        # the `PULSAR_MATCH_STORE=firestore` degrade path explicitly.
+        run: python3 -m coverage run --append --source=api scripts/test_game_server.py
       - name: HTTP end-to-end tests (real FastAPI request layer)
-        run: python3 scripts/test_http_e2e.py
+        run: python3 -m coverage run --append --source=api scripts/test_http_e2e.py
       - name: Smoke tests again with the FALLBACK path forced (PULSAR_MATCH_STORE=firestore, no credentials)
         env:
           PULSAR_MATCH_STORE: firestore
-        run: python3 scripts/test_game_server.py
+        run: python3 -m coverage run --append --source=api scripts/test_game_server.py
       - name: Deposit gate + distributed rate limiter + matchmaking probe (audit #5)
-        run: python3 scripts/probe_a5.py
-      - name: Firestore integration suite (skips without credentials, runs in any env that has them)
+        run: python3 -m coverage run --append --source=api scripts/probe_a5.py
+      - name: Assert the server suite actually ran (audit HIGH-8)
+        # The contracts job has had this guard since CI-1; the game-server job
+        # had none, so a suite that collected nothing would still "pass".
+        run: |
+          set -euo pipefail
+          n="$(python3 -m pytest --collect-only -q 2>/dev/null | grep -c '::' || true)"
+          echo "server tests collected: $n"
+          test "$n" -ge 200
+      - name: Coverage ratchet over the WHOLE server suite — plan item 0.12
+        # The same measurement `bun run verify` enforces, so the two gates agree.
+        run: python3 -m coverage report --skip-covered
+      - name: Firestore integration suite against the REAL emulator (no longer skips)
+        env:
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8081
+          GCLOUD_PROJECT: demo-pulsar
         run: python3 scripts/test_firestore_integration.py
 
   contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: nightly
-      - name: Install forge-std (test dependency)
-        run: cd contracts && (test -d lib/forge-std || git clone --depth 1 https://github.com/foundry-rs/forge-std.git lib/forge-std)
+          # Pinned, not `nightly`: a floating toolchain makes a green run
+          # unreproducible and can break the suite without a repo change.
+          version: v1.8.5
+      # CI-1 fix: the contract suite imports BOTH forge-std (Test.sol) and
+      # OpenZeppelin (contracts/test/MockUSDT.sol -> ERC20.sol). Only forge-std
+      # used to be installed, so `forge test` failed to compile and the 21
+      # contract tests NEVER RAN in CI. The compile gate below hid it because
+      # compile_check.js re-shims MockUSDT with its own minimal ERC20.
+      # Versions are pinned for reproducibility; bump them deliberately.
+      - name: Install Solidity test dependencies (forge-std + OpenZeppelin)
+        run: |
+          set -euo pipefail
+          cd contracts
+          test -d lib/forge-std || git clone --depth 1 --branch v1.9.7 \
+            https://github.com/foundry-rs/forge-std.git lib/forge-std
+          test -d lib/openzeppelin-contracts || git clone --depth 1 --branch v5.7.0 \
+            https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts
+          # Fail loudly if a clone silently produced nothing (the failure mode
+          # that let this job look configured while never compiling).
+          test -f lib/forge-std/src/Test.sol
+          test -f lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol
       - name: forge test (includes struct-layout + fee pins vs the server decoder)
+        # Audit 2026-10-13: `contracts/foundry.toml` defines a `[profile.ci]` with
+        # larger fuzz/invariant budgets, but this step never selected it, so CI
+        # ran the DEFAULT budgets and the documented profile was dead config.
+        env:
+          FOUNDRY_PROFILE: ci
         run: cd contracts && forge test -vvv
+      - name: Assert the contract suite actually ran (CI-1 regression guard)
+        # A green `forge test` that ran zero tests is the exact failure this
+        # workflow shipped with. Count the executed tests explicitly.
+        run: |
+          set -euo pipefail
+          cd contracts
+          out="$(forge test --json 2>/dev/null || true)"
+          ran="$(printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(len(v.get("test_results",{})) for v in d.values()))')"
+          echo "contract tests executed: $ran"
+          # Audit 2026-10-13: the floor was 21 while the suite has ~81 tests, so a
+          # 60-test regression still passed. Keep it near the real count.
+          test "$ran" -ge 75
+      # Plan item 0.8: the settlement digest / decoder / Solidity contract are a
+      # three-way agreement that unit tests cannot verify. Run the real money
+      # path against a local EVM.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install server deps for the chain gate
+        run: pip install -r api/requirements-dev.txt
+      - name: Start anvil + deploy the escrow
+        run: bash scripts/start_anvil.sh --bg
+      - name: "Chain tests (real EVM: create -> join -> settle with an oracle signature)"
+        run: python3 -m pytest -q -m chain
       - name: Contract compile gate (solc 0.8.20, paris + shanghai)
         run: bun run test:contract

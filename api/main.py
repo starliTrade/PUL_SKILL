@@ -23,30 +23,42 @@ Security model:
 
 from __future__ import annotations
 
+import hmac
 import os
+import re
 import sys
 import threading
 import time
 from typing import Any
 
+import timebase
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import auth as _auth_module
 import economy
-from auth import issue_nonce, issue_session, verify_session, verify_siwe
-from match_engine import MatchError, match_completed
-from oracle import sign_settlement
-from store import create_store, install_persistence
 
 # Single source of truth for the chain this deployment runs on. The SIWE
 # statement, the oracle digest and the client (VITE_CHAIN_ID → CHAIN.chainId)
 # must all agree — the audit regression was main.py hardcoding 137 while
 # auth.py verified against 80002, so signing the server's OWN message 401'd.
 import onchain
+
+try:  # optional dependency — absent until Firestore credentials exist
+    from google.cloud import firestore as _gcf
+except Exception:  # pragma: no cover - local dev without the SDK
+    _gcf = None  # type: ignore[assignment]
+
+import metrics
+
+import oracle
 from auth import EXPECTED_CHAIN_ID as _CHAIN_ID
 from auth import NONCE_WINDOW_SECONDS as _NONCE_WINDOW
+from auth import issue_nonce, issue_session, verify_session, verify_siwe
+from match_engine import MATCH_TIMEOUT_SECONDS, MatchError, match_completed
+from oracle import sign_settlement
+from store import create_store, install_persistence
 
 # --- Distributed rate limiting (audit #5, item 8) ----------------------------
 # The audit asked for distributed limiting; there was NO limiter at all. This
@@ -54,6 +66,10 @@ from auth import NONCE_WINDOW_SECONDS as _NONCE_WINDOW
 # fallback for memory mode. Applied only to expensive/abusable endpoints.
 _rl_lock = threading.Lock()
 _rl_window: dict[str, list[float]] = {}
+# Audit M16: the in-process fallback window is keyed by bucket+address and was
+# never pruned, so it grew by one entry per IP/address ever seen. Past this cap
+# the quiet windows are dropped (see `_rl_check`).
+_RL_WINDOW_MAX_KEYS = 10_000
 RL_WINDOW_SECONDS = 60.0
 RL_QUEUE_MAX = 40        # queue calls per minute per address (audit #6 C3:
                          # the client's 2.5s poll = 24/min; 20/min kicked
@@ -68,6 +84,12 @@ RL_CLAIM_MAX = 10        # claim calls per minute per address (audit #10 #7:
                          # CPU work; unthrottled it was a cheap DoS surface)
 RL_ROUND_MAX = 60        # target reveals + result submissions per minute per
 RL_USERNAME_LOOKUP_MAX = 60  # GET /api/username/{name} per minute per IP
+RL_PLAYER_STATS_MAX = 60     # GET /api/player/{addr}/stats per minute per address
+# Audit 2026-10-13: how long a rate-limit document may live. The window is 60s;
+# an hour of slack means a TTL policy can never delete a row that is still being
+# counted, while keeping the collection bounded.
+RL_DOC_TTL_SECONDS = 3600
+RL_CHALLENGES_MAX = 60       # GET /api/challenges per minute per address
                          # (audit #11 H3: without this the registry is
                          # enumerable — every possible name probed for free)
                          # address — hot endpoints that each trigger store work
@@ -122,60 +144,258 @@ def _rl_check_ip(bucket: str, request: Request, limit: int) -> None:
     _rl_check(bucket, f"{ip}|{socket_ip}" if hops and ip != socket_ip else ip, limit)
 
 
+# Audit C1 — fallback observability. The limiter degrades to the in-process
+# window when Firestore is unreachable (availability beats a hard 500 on a hot
+# path), but a silent downgrade is how the original bug survived: the
+# "distributed" limiter never worked and nothing said so. Every fallback is
+# counted and surfaced on /api/health.
+_rl_fallback_count = 0
+_rl_fallback_last: dict[str, Any] = {}
+# Phase 6.1: the DENOMINATOR. A fallback count with no total says nothing about
+# how often the limiter is degraded relative to traffic.
+_rl_attempts = 0
+
+
+def _rl_note_fallback(exc: BaseException) -> None:
+    global _rl_fallback_count
+    _rl_fallback_count += 1
+    _rl_fallback_last.clear()
+    _rl_fallback_last.update({"error": repr(exc)[:200], "at": int(timebase.now())})
+    print(
+        f"[ratelimit] Firestore limiter unavailable — using the in-process window: {exc!r}",
+        file=sys.stderr,
+    )
+
+
+def _rl_expiry(now_ms: int) -> Any:
+    """The TTL stamp for a rate-limit document (audit 2026-10-13).
+
+    Returns a `datetime` (what Firestore's TTL policy requires) when the SDK is
+    available, and a plain epoch second otherwise so the field is still written
+    and testable without the SDK.
+    """
+    expires_at = (now_ms // 1000) + RL_DOC_TTL_SECONDS
+    try:
+        from datetime import UTC, datetime
+
+        return datetime.fromtimestamp(expires_at, tz=UTC)
+    except Exception:  # pragma: no cover - datetime is stdlib
+        return expires_at
+
+
 def _rl_check(bucket: str, address: str, limit: int) -> None:
     """Count one hit for (bucket, address) and refuse when over `limit`.
+
+    Phase 6.1: every call increments `_rl_attempts`, so the fallback rate on
+    /api/metrics has a denominator.
 
     Firestore mode uses a transactional read-modify-write on a rate_limits
     document so EVERY replica enforces the SAME window; memory mode is
     per-process. A Firestore outage degrades to in-process limiting instead of
     taking the endpoint down (fail-open for availability, never for money —
     the deposit gate below is fail-closed)."""
+    global _rl_attempts
+    _rl_attempts += 1
     fs = getattr(store, "_fs_store", None)
     if fs is not None:  # audit #7 R3: decoupled from onchain.escrow_configured()
         try:
             doc = fs.db.collection("rate_limits").document(f"rl:{bucket}:{address.lower()}")
-            now_ms = int(time.time() * 1000)
+            now_ms = int(timebase.now_ms())
             window_ms = int(RL_WINDOW_SECONDS * 1000)
 
             def _incr(txn: Any) -> dict[str, int]:
-                # Audit #10 (item 1): this used to `return int(d["count"])` while
-                # the caller read `d["reset_at"]` from the OUTER scope — a
-                # guaranteed NameError (d is local to _incr), swallowed by the
-                # broad except below, so the Firestore limiter NEVER 429'd and
-                # every deployment silently degraded to per-process limiting.
                 snap = doc.get(transaction=txn)
                 d = snap.to_dict() or {"count": 0, "reset_at": 0}
                 if now_ms >= int(d.get("reset_at", 0)):
                     d = {"count": 1, "reset_at": now_ms + window_ms}
                 else:
                     d = {"count": int(d.get("count", 0)) + 1, "reset_at": int(d["reset_at"])}
+                # Audit 2026-10-13: nothing ever deleted these documents, so the
+                # collection grew by one row per (bucket, address) FOREVER — an
+                # unbounded storage cost on the hottest path. `expiresAt` is the
+                # field a Firestore TTL policy deletes on; the policy itself is a
+                # console/deploy step (see docs/DEPLOYMENT.md §3c).
+                d["expiresAt"] = _rl_expiry(now_ms)
                 txn.set(doc, d)
                 return {"count": int(d["count"]), "reset_at": int(d["reset_at"])}
 
-            txn = fs.db.transaction()
-            win = _incr(txn)  # plain callable: Firestore retries conflicts itself
+            # Audit C1: this used to call `_incr(txn)` as a plain function. A
+            # `Transaction` from `db.transaction()` is NOT begun — only the
+            # `@transactional` decorator calls `_begin()` — so the first
+            # `doc.get(transaction=txn)` raised ValueError(INACTIVE_TXN), the
+            # broad `except Exception: pass` swallowed it, and every deployment
+            # silently fell back to per-process limiting. The decorator begins,
+            # runs, and COMMITS the transaction (nothing else calls commit()).
+            #
+            # NB: the decorator comes from the firestore MODULE. `store._firestore`
+            # is a DurableMatchStore *instance* attribute holding a Client, which
+            # has no `transactional` — reading it here raised AttributeError.
+            if _gcf is None:
+                raise RuntimeError("google-cloud-firestore is required for the distributed limiter")
+            win = _gcf.transactional(_incr)(fs.db.transaction())
+
             if win["count"] > limit:
                 raise _rate_limited((win["reset_at"] - now_ms) / 1000.0)
             return
         except HTTPException:
             raise
-        except Exception:
-            pass  # Firestore hiccup → fall through to in-process limiting
+        except Exception as exc:
+            # Narrow by intent, not by type-blindness: a transient backend
+            # problem degrades to the in-process window, but a programming
+            # error (the INACTIVE_TXN class above) must surface as a 500 rather
+            # than quietly disabling the distributed limiter again.
+            if not _is_transient_backend_error(exc):
+                raise
+            _rl_note_fallback(exc)
+            # fall through to the in-process window
     with _rl_lock:
         key = f"{bucket}:{address.lower()}"
-        now = time.time()
+        now = timebase.now()
         hits = [t for t in _rl_window.get(key, []) if now - t < RL_WINDOW_SECONDS]
         hits.append(now)
         _rl_window[key] = hits
+        # Audit M16: a key was never removed, so the map grew by one entry per
+        # IP/address ever seen. Past the cap, drop the quiet windows first (a
+        # key whose newest hit is older than the window is indistinguishable
+        # from absent), then the oldest ones — a hard bound, because an
+        # unbounded fallback map is a leak an attacker can drive.
+        if len(_rl_window) > _RL_WINDOW_MAX_KEYS:
+            for stale in [k for k, v in _rl_window.items() if not v or now - v[-1] >= RL_WINDOW_SECONDS]:
+                _rl_window.pop(stale, None)
+            overflow = len(_rl_window) - _RL_WINDOW_MAX_KEYS
+            if overflow > 0:
+                for oldest, _ in sorted(_rl_window.items(), key=lambda kv: kv[1][-1])[:overflow]:
+                    _rl_window.pop(oldest, None)
         if len(hits) > limit:
             raise _rate_limited(RL_WINDOW_SECONDS - (now - hits[0]))
+
+
+def _is_transient_backend_error(exc: BaseException) -> bool:
+    """True for backend/transport failures the in-process window can cover.
+
+    Everything else (ValueError, TypeError, AttributeError, ...) is a bug in
+    this module and must not be converted into a silent downgrade — that is
+    precisely how audit C1 stayed invisible for the life of the project.
+    """
+    if isinstance(exc, OSError | TimeoutError | ConnectionError):
+        return True
+    try:
+        from google.api_core import exceptions as gexc  # noqa: PLC0415
+
+        return isinstance(exc, gexc.GoogleAPIError)
+    except Exception:  # pragma: no cover — google-api-core missing
+        return False
+
+
+# --- Lazy sweep throttle (audit H9) ------------------------------------------
+# `/api/queue` is the hottest endpoint (the client polls every 2.5s) and every
+# poll ran the expiry sweep plus the stale-settlement re-sign, which between
+# them issue three whole-collection scans. The sweep is a maintenance task, not
+# part of answering the request, so it runs at most once per window.
+SWEEP_MIN_INTERVAL_SECONDS = 15.0
+_last_sweep_at = 0.0
+_sweep_failures: dict[str, int] = {"sweep_expired": 0, "resign": 0, "total": 0}
+_sweep_last_error: dict[str, Any] = {}
+
+
+def _reset_sweep_clock() -> None:
+    """Test seam: force the next poll to sweep."""
+    global _last_sweep_at
+    _last_sweep_at = 0.0
+
+
+def _sweep_due() -> bool:
+    """True when the maintenance sweep may run again (audit H9)."""
+    global _last_sweep_at
+    now = timebase.now()
+    if now - _last_sweep_at < SWEEP_MIN_INTERVAL_SECONDS:
+        return False
+    _last_sweep_at = now
+    return True
+
+
+def _note_sweep_failure(where: str, exc: BaseException) -> None:
+    """A silent sweep failure looks exactly like a working one (audit H9).
+
+    The durable re-sign sweep (the F-12 prize rescue) can be dead in production
+    because a missing composite index raises and the old `except: pass` hid it.
+    Count it and surface it on /api/health.
+    """
+    _sweep_failures[where] = _sweep_failures.get(where, 0) + 1
+    _sweep_failures["total"] += 1
+    _sweep_last_error.clear()
+    _sweep_last_error.update(
+        {"where": where, "error": repr(exc)[:200], "at": int(timebase.now())}
+    )
+    print(f"[sweep] {where} failed: {exc!r}", file=sys.stderr)
+
+
+def sweep_health() -> dict[str, Any]:
+    return {
+        "minIntervalSeconds": SWEEP_MIN_INTERVAL_SECONDS,
+        "lastRunAt": int(_last_sweep_at),
+        "failures": dict(_sweep_failures),
+        "lastError": dict(_sweep_last_error),
+    }
+
+
+# Audit H19: the contract's permissionless refund opens at
+# MATCH_TIMEOUT + REFUND_GRACE, not at MATCH_TIMEOUT. User-facing copy must
+# state the real window or a player follows the instruction and gets a revert.
+REFUND_GRACE_SECONDS = 10 * 60  # == PulsarEscrow.REFUND_GRACE
+REFUND_HORIZON_SECONDS = MATCH_TIMEOUT_SECONDS + REFUND_GRACE_SECONDS
 
 
 # Joiner-deposit timeout (audit #5, item 3): if the joiner's stake never lands
 # on-chain within this window after matchmaking, the match is voided so the
 # creator can refund (refundTimeoutMatch) instead of being locked for the
-# 30-minute on-chain refund horizon.
+# on-chain refund horizon (MATCH_TIMEOUT + REFUND_GRACE).
 DEPOSIT_TIMEOUT_SECONDS = 300.0
+
+
+def _gate_or_void(match_id: str) -> None:
+    """Run the on-chain deposit gate BEFORE the store lock is taken (audit H10).
+
+    The gate is a blocking network read (up to RPC_TIMEOUT_SECONDS = 5) and the
+    in-memory store holds ONE global lock for every match, so calling it from
+    inside `store.update`'s mutate serialized every commit / reveal / submit /
+    settle in the process — a single slow RPC stalled all matchmaking. On
+    Firestore it also held an open transaction across socket I/O.
+
+    Safe to run on a snapshot: the gate's inputs (`stake`, `players`) are
+    immutable after activation, and the on-chain state is external anyway.
+
+    Raises 409 when the round must be refused, and persists the void when the
+    on-chain duel is provably a different match.
+    """
+    if not onchain.escrow_configured():
+        return  # practice / unconfigured dev — gate inactive
+    snapshot = store.get(match_id)
+    gate = _verify_deposits_or_void(snapshot)
+    if not gate:
+        return
+    if gate.get("void"):
+        _persist_void(match_id)
+    raise HTTPException(status_code=409, detail=gate["reason"])
+
+
+def _persist_void(match_id: str) -> None:
+    """Persist a gate void decision in its own short transaction (audit H10)."""
+
+    def _void(m: Any, eng: Any) -> None:
+        # Audit 2026-10-13: this set `void` unconditionally. If a concurrent
+        # replica settled the match between the gate's snapshot and this write,
+        # the status flipped settled -> void while the signed envelope survived —
+        # the ledger then skipped a settlement the chain had already paid.
+        if m.status in ("settled", "void"):
+            return None
+        m.status = "void"
+        return None
+
+    try:
+        store.update(match_id, _void)
+    except (MatchError, HTTPException):
+        pass  # the 409 below is the caller-visible outcome either way
 
 
 def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
@@ -194,7 +414,7 @@ def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
         participants (depositing from a different wallet then playing as
         another one makes the winner unpayable — the contract rejects a
         winner that is not player1/player2, so the honest player would burn
-        30 minutes of locked stake on an unwinnable match).
+        the full refund horizon of locked stake on an unwinnable match).
     Also voids the server-side match when the joiner's deposit never arrives
     (audit #8 F-05: the deposit timeout counts from ACTIVATION, not queue
     entry)."""
@@ -208,16 +428,30 @@ def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
         )
     if info.get("status") == onchain.STATUS_ACTIVE:
         # F-03: stake amount + participants must match the server's match
-        # (single source of truth: onchain.verify_deposit — probe-testable).
-        if not onchain.verify_deposit(info, m.stake, m.players):
-            m.status = "void"
+        # (single source of truth: onchain.deposit_verdict — probe-testable).
+        #
+        # Audit C2: UNKNOWN (the chain could not be read) is NOT a mismatch. It
+        # must refuse the round, never void the match — voiding on a transient
+        # RPC failure destroys a live duel and costs the winner their prize.
+        verdict = onchain.deposit_verdict(info, m.stake, m.players)
+        if verdict is onchain.DepositVerdict.UNKNOWN:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "On-chain duel state cannot be verified right now — retry shortly. "
+                    "The match is untouched."
+                ),
+            )
+        if verdict is onchain.DepositVerdict.MISMATCH:
+            # Audit H10: do NOT mutate here — this runs outside the store
+            # transaction now, so the caller persists the void explicitly.
             return {
                 "void": True,
                 "reason": (
                     "On-chain duel does not match this match (stake or "
                     "participants differ) — the match is void. Both stakes "
-                    "refund via refundTimeoutMatch after the 30-minute escrow "
-                    "timeout."
+                    "refund via refundTimeoutMatch after the escrow timeout "
+                    "(MATCH_TIMEOUT + REFUND_GRACE)."
                 ),
             }
         return None  # both stakes locked AND the duel is genuinely this match — play on
@@ -226,8 +460,8 @@ def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
         # joiner paired), not from queue entry — a long-queued match must not
         # be voided the moment it finally pairs.
         clock_origin = m.play_started_at()
-        if time.time() - clock_origin > DEPOSIT_TIMEOUT_SECONDS:
-            m.status = "void"
+        if timebase.now() - clock_origin > DEPOSIT_TIMEOUT_SECONDS:
+            # Audit H10: the caller persists the void (see _gate_or_void).
             # H4 — honest money-UX: the contract only releases refunds at
             # createdAt + MATCH_TIMEOUT (30 min). Saying "refundable now" sends
             # players into a revert for ~25 minutes. State the real window.
@@ -236,7 +470,7 @@ def _verify_deposits_or_void(m: Any) -> dict[str, Any] | None:
                 "reason": (
                     "Opponent stake deposit timed out — the match is void. The "
                     "creator's stake becomes refundable on-chain via "
-                    "refundTimeoutMatch after the 30-minute escrow timeout."
+                    "refundTimeoutMatch after the escrow timeout (MATCH_TIMEOUT + REFUND_GRACE)."
                 ),
             }
     raise HTTPException(
@@ -260,7 +494,7 @@ def _siwe_message(address: str, nonce: str, domain: str) -> str:
 
     window = _auth_module.nonce_window(nonce) or 0
     issued_at = _dt.datetime.fromtimestamp(
-        window * _NONCE_WINDOW, tz=_dt.timezone.utc
+        window * _NONCE_WINDOW, tz=_dt.UTC
     ).isoformat()
     return (
         f"{domain} wants you to sign in with your Polygon account:\n"
@@ -277,39 +511,56 @@ def _siwe_message(address: str, nonce: str, domain: str) -> str:
 
 app = FastAPI(title="PULSAR Game Server", version="1.1.1")
 
-# Audit #8 F-09 — production configuration is MANDATORY, not optional. When
-# the deployment looks like production (PULSAR_ENV=production), missing
-# ALLOWED_DOMAIN / CORS_ALLOW_ORIGINS / ESCROW_ADDRESS / ESCROW_RPC_URL must
-# fail startup instead of silently running with a Host-derived SIWE domain,
-# Audit #10 (item 2): the "deployment looks like production" check used to
-# be PULSAR_ENV == "production" EXACTLY — one typo ("prod", "Production ",
-# "main") or a staging box that simply forgot the var switched every
-# safeguard off (fail-open configuration). Now ANY of these implies a
-# deployment that must not run with insecure defaults:
-#   - PULSAR_ENV set to anything production-like (prod/production/main/release),
-#   - PULSAR_ENV unset but a deployment marker present (K_SERVICE, PORT-bound
-#     hosting with RENDER/TRIGGER/etc.),
-#   - a real ESCROW_ADDRESS configured (money mode — the gate must not be
-#     silently absent).
-# Plain local dev (no env at all) still boots without configuration.
-_prodlike_values = {"prod", "production", "main", "release", "staging"}
-_pulsar_env = os.environ.get("PULSAR_ENV", "").strip().lower()
-_deploy_markers = ("K_SERVICE", "K_REVISION", "RENDER", "FLY_MACHINE_ID", "DYNO")
-_is_deployed = any(os.environ.get(marker) for marker in _deploy_markers)
-_prod_like = _pulsar_env in _prodlike_values or _is_deployed
+# Audit H6 — production configuration is MANDATORY, and the default is INVERTED.
+#
+# History, because the comments here used to describe three different policies:
+#   - audit #8 F-09: fail startup when the deployment "looks like production";
+#   - audit #10 item 2: that check was `PULSAR_ENV == "production"` EXACTLY, so
+#     one typo ("prod", "Production ") switched every safeguard off;
+#   - audit H6: even the widened version only fired for a fixed set of
+#     PULSAR_ENV strings or one of five platform markers, so a self-hosted
+#     Docker/VM deployment with neither ran with no required-env enforcement,
+#     wildcard CORS, no TrustedHost middleware and a Host-derived SIWE domain.
+#
+# The policy now: EVERY environment is production-like unless it explicitly
+# opts out with PULSAR_ENV=dev. Forgetting to set a variable must not disable
+# the safeguards. See `_is_prod_like` / `_missing_production_env`.
+#
+# Now: EVERY environment is production-like unless it explicitly opts out with
+# PULSAR_ENV=dev. Forgetting to set a variable must not disable the safeguards.
+_LOCAL_ENV_VALUES = {"dev", "development", "test", "local"}
+_DEPLOY_MARKERS = ("K_SERVICE", "K_REVISION", "RENDER", "FLY_MACHINE_ID", "DYNO")
+REQUIRED_PRODUCTION_ENV = (
+    "ALLOWED_DOMAIN",
+    "CORS_ALLOW_ORIGINS",
+    "ESCROW_ADDRESS",
+    "ESCROW_RPC_URL",
+    "ORACLE_SIGNING_SECRET",
+    "ORACLE_PRIVATE_KEY",
+    # Audit 2026-10-13: this was missing, and both `auth` and `oracle` default it
+    # to 80002 (Amoy). A production deployment that forgot it would sign SIWE
+    # statements and settlement digests for a TESTNET while the escrow is on
+    # Polygon — the failure is a rejected signature, and the only signal was an
+    # env var the gate did not require.
+    "ORACLE_CHAIN_ID",
+)
+
+
+def _is_prod_like(environ: Any) -> bool:
+    """True when this process must not run with insecure defaults (audit H6)."""
+    if str(environ.get("PULSAR_ENV", "")).strip().lower() in _LOCAL_ENV_VALUES:
+        return False
+    return True
+
+
+def _missing_production_env(environ: Any) -> list[str]:
+    """The required variables this deployment has not set (audit H6)."""
+    return [name for name in REQUIRED_PRODUCTION_ENV if not environ.get(name)]
+
+
+_prod_like = _is_prod_like(os.environ)
 if _prod_like:
-    _missing = [
-        name
-        for name in (
-            "ALLOWED_DOMAIN",
-            "CORS_ALLOW_ORIGINS",
-            "ESCROW_ADDRESS",
-            "ESCROW_RPC_URL",
-            "ORACLE_SIGNING_SECRET",
-            "ORACLE_PRIVATE_KEY",
-        )
-        if not os.environ.get(name)
-    ]
+    _missing = _missing_production_env(os.environ)
     if _missing:
         raise RuntimeError(
             "Production-like deployment requires these env vars to be set: "
@@ -413,6 +664,244 @@ ROUNDS = engine.ROUNDS
 
 
 
+@app.middleware("http")
+async def _record_metrics(request: Request, call_next: Any) -> Any:
+    """Time every request for /api/metrics (phase 6.1).
+
+    Uses the ROUTE TEMPLATE FastAPI resolved, not the raw path, so per-match ids
+    do not each become their own entry. `/api/metrics` itself is skipped:
+    otherwise every scrape perturbs the numbers it reports.
+    """
+    started = time.perf_counter()
+    response = await call_next(request)
+    route = request.scope.get("route")
+    path = getattr(route, "path", None) or request.url.path
+    if path != "/api/metrics":
+        metrics.observe_request(request.method, path, (time.perf_counter() - started) * 1000.0)
+    return response
+
+
+# --- admin tooling (phase 6.3 / G9) -------------------------------------------
+#
+# Gated by a SEPARATE secret, not a session token: a session token belongs to a
+# player, and a player must never be able to void their opponent's match.
+# If the secret is UNSET the routes are DISABLED, not open — an unconfigured
+# deployment must fail closed.
+_ADMIN_SECRET = os.environ.get("PULSAR_ADMIN_SECRET", "").strip()
+
+
+class AdminActionRequest(BaseModel):
+    # An unaudited money-moving action is worse than no action: the record must
+    # say WHY, not just who.
+    reason: str = Field(min_length=3, max_length=500)
+
+
+def _admin_get_match(match_id: str) -> Any:
+    """Fetch a match for an admin route, or None.
+
+    `store.get` RAISES `MatchError("Match not found")` rather than returning
+    None, so a missing match would surface as a 500 instead of a 404.
+    """
+    try:
+        return store.get(match_id)
+    except MatchError:
+        return None
+
+
+def _require_admin(request: Request) -> None:
+    """Refuse unless the admin secret matches. Fails CLOSED when unset."""
+    if not _ADMIN_SECRET:
+        raise HTTPException(status_code=404, detail="Not found")
+    supplied = request.headers.get("X-Admin-Secret", "")
+    if not supplied or not hmac.compare_digest(supplied, _ADMIN_SECRET):
+        raise HTTPException(status_code=403, detail="Admin credential required")
+
+
+@app.get("/api/admin/match/{match_id}")
+def admin_inspect_match(match_id: str, request: Request) -> dict[str, Any]:
+    """Full match state for an operator (phase 6.3)."""
+    _require_admin(request)
+    if not re.fullmatch(r"[0-9a-f]{32}", match_id):
+        raise HTTPException(status_code=422, detail="Invalid match id")
+    m = _admin_get_match(match_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="Match not found")
+    return {
+        "matchId": m.match_id,
+        "status": m.status,
+        "stake": m.stake,
+        "players": list(m.players),
+        "creator": m.creator,
+        "joiner": m.joiner,
+        "winner": m.winner,
+        "createdAt": m.created_at,
+        "activatedAt": m.activated_at,
+        "settledAt": m.settled_at,
+        "minRttMs": dict(m.min_rtt_ms),
+        "hasSignature": m.signed_settlement is not None,
+        "rounds": {
+            addr: {
+                str(idx): {
+                    "committed": bool(r.commit_hash),
+                    "revealed": r.revealed,
+                    "submitted": r.result_ms is not None,
+                    "valid": r.valid,
+                    "rejectReason": r.reject_reason,
+                }
+                for idx, r in sorted(rounds.items())
+            }
+            for addr, rounds in m.rounds.items()
+        },
+    }
+
+
+@app.get("/api/admin/players")
+def admin_player_search(request: Request, q: str = "") -> dict[str, Any]:
+    """Find a player's matches by address (phase 6.3).
+
+    The query must be a full address: free text would be an unbounded Firestore
+    scan, which is both slow and a cost amplifier.
+    """
+    _require_admin(request)
+    if not re.fullmatch(r"0x[0-9a-fA-F]{40}", q or ""):
+        raise HTTPException(status_code=422, detail="Query must be a full 0x address")
+    addr = q.lower()
+    # The durable store exposes the idempotency map through its memory
+    # backend; there is no top-level attribute (found by the admin tests).
+    live = getattr(store, "player_match", None) or store.memory.player_match.get(addr)
+    matches = []
+    if live:
+        m = _admin_get_match(live)
+        if m is not None:
+            matches.append({"matchId": m.match_id, "status": m.status, "stake": m.stake})
+    return {"address": addr, "matches": matches}
+
+
+@app.post("/api/admin/match/{match_id}/void")
+def admin_force_void(match_id: str, body: AdminActionRequest, request: Request) -> dict[str, Any]:
+    """Void a match that cannot complete, refunding both (phase 6.3)."""
+    _require_admin(request)
+    if not re.fullmatch(r"[0-9a-f]{32}", match_id):
+        raise HTTPException(status_code=422, detail="Invalid match id")
+    m = _admin_get_match(match_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if m.status in ("settled", "void"):
+        raise HTTPException(status_code=409, detail=f"Match is already {m.status}")
+
+    # Audit 2026-10-13: this mutated the object and called `store.put` — a blind
+    # `set` OUTSIDE the store transaction, so a concurrent participant settle
+    # could be clobbered (a settled match overwritten to void while its signed
+    # envelope survived). Route it through `store.update`, which is the one
+    # serialized read-modify-write, and re-check the status INSIDE it.
+    def _void(match: Any, _eng: Any) -> str:
+        if match.status in ("settled", "void"):
+            return match.status
+        match.status = "void"
+        return "void"
+
+    outcome = store.update(match_id, _void)
+    if outcome != "void":
+        raise HTTPException(status_code=409, detail=f"Match is already {outcome}")
+    print(
+        f"[admin] force-void {match_id} reason={body.reason!r}",
+        file=sys.stderr,
+    )
+    return {"matchId": match_id, "status": "void", "reason": body.reason}
+
+
+@app.post("/api/admin/match/{match_id}/settle")
+def admin_force_settle(match_id: str, body: AdminActionRequest, request: Request) -> dict[str, Any]:
+    """Settle a match the engine considers complete (phase 6.3)."""
+    _require_admin(request)
+    if not re.fullmatch(r"[0-9a-f]{32}", match_id):
+        raise HTTPException(status_code=422, detail="Invalid match id")
+    m = _admin_get_match(match_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="Match not found")
+
+    # Audit 2026-10-13: this settled the object and called `store.put` — a blind
+    # `set` outside the store transaction, racing a concurrent participant
+    # settle. `_settle_once` is the ONE transactional settlement body (settle →
+    # sign → attach, plus the rating update); the admin path now uses it, so the
+    # two cannot diverge and the write is serialized.
+    try:
+        signed = store.update(match_id, _settle_once)
+    except MatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _ledger_settlement(match_id)
+    print(
+        f"[admin] force-settle {match_id} reason={body.reason!r}",
+        file=sys.stderr,
+    )
+    return {"matchId": match_id, "reason": body.reason, "settlement": signed}
+
+
+class DisputeRequest(BaseModel):
+    matchId: str = Field(pattern=r"^[0-9a-f]{32}$")
+    # Bounded: an unbounded field is a way to fill the database.
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+@app.post("/api/dispute")
+def report_dispute(body: DisputeRequest, request: Request) -> dict[str, Any]:
+    """Report a match for review (phase 6.4 / G8).
+
+    A report is a REQUEST FOR REVIEW, not an action: this handler never touches
+    match state or the money path. The reporter cannot change the outcome, and
+    the test asserts that by inspecting this function's source.
+
+    Only a participant may report. Anyone else reporting a match they were not in
+    is noise at best and harassment at worst.
+    """
+    address = _auth(request)
+    m = _admin_get_match(body.matchId)
+    if m is None:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if address.lower() not in m.players:
+        # 404 rather than 403: a non-participant should not learn that the match
+        # exists.
+        raise HTTPException(status_code=404, detail="Match not found")
+
+    report = {
+        "matchId": body.matchId,
+        "reporter": address.lower(),
+        "reason": body.reason,
+        "at": int(timebase.now()),
+        "status": m.status,
+    }
+    # Stored under the match so an operator inspecting it finds the report
+    # alongside the state it is about.
+    store.record_dispute(body.matchId, report)
+    print(
+        f"[dispute] {body.matchId} from {address.lower()}: {body.reason[:120]!r}",
+        file=sys.stderr,
+    )
+    return {"ok": True, "matchId": body.matchId, "received": report["at"]}
+
+
+@app.get("/api/metrics")
+def metrics_endpoint() -> dict[str, Any]:
+    """Operational metrics (phase 6.1).
+
+    Answers "how well", where /api/health answers "is it up". Per-process: with
+    N replicas each reports its own, and aggregating them is the monitoring
+    system's job rather than the server's.
+    """
+    body = metrics.snapshot()
+    # Fold in the counters that already live in main, so there is ONE place to
+    # scrape rather than two.
+    body["rateLimit"] = {
+        "fallbacks": _rl_fallback_count,
+        "fallbackRate": (
+            round(_rl_fallback_count / _rl_attempts, 4) if _rl_attempts else None
+        ),
+        "attempts": _rl_attempts,
+        "lastFallback": dict(_rl_fallback_last),
+    }
+    return body
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {
@@ -428,14 +917,70 @@ def health() -> dict[str, Any]:
         "chainId": _CHAIN_ID,
         "escrowConfigured": onchain.escrow_configured(),
         "prodLike": _prod_like,
+        # Audit C1: the distributed limiter silently degraded to a per-process
+        # window for the life of the project. Expose which backend is actually
+        # enforcing and how often it fell back, so a dead distributed limiter is
+        # visible in monitoring instead of being discovered during an incident.
+        # Audit H9: a dead sweep (e.g. a missing composite index) must be
+        # visible in monitoring, not discovered when a prize goes unclaimed.
+        "sweep": sweep_health(),
+        # Audit 6.2: the three questions an operator asks during an incident and
+        # could not previously answer from the server. No secret and no URL:
+        # this endpoint is unauthenticated, so anything here is public.
+        "rpc": {
+            "configured": bool(os.environ.get("ESCROW_RPC_URL")),
+            "reachable": onchain.chain_reachable(),
+            "chainId": onchain.rpc_chain_id(),
+        },
+        "tokenDecimals": onchain.token_decimals(),
+        # Public by design: it is in every settlement packet. An operator needs
+        # it to confirm the deployed contract trusts the key we hold.
+        "oracleAddress": oracle.oracle_address(),
+        "rateLimit": {
+            "backend": "firestore" if getattr(store, "_fs_store", None) is not None else "memory",
+            "fallbacks": _rl_fallback_count,
+            "lastFallback": dict(_rl_fallback_last),
+        },
     }
 
 
 def _request_domain(request: Request) -> str:
-    override = os.environ.get("ALLOWED_DOMAIN", "")
+    """The SIWE domain this server issues statements for (audit H7).
+
+    The nonce MAC and the canonical message are both bound to this value, so
+    taking it from the request's `Host` header let an attacker choose the domain
+    the server issued and accepted statements for — the phishing resistance the
+    design claims, removed by a header.
+
+    Resolution order:
+      1. ALLOWED_DOMAIN (the configured public host) — always wins;
+      2. PUBLIC_HOST — the explicit fallback for a deployment that has not set
+         ALLOWED_DOMAIN yet;
+      3. the Host header, ONLY when the escrow is unconfigured (local dev, where
+         there is no money and no real domain to protect).
+    """
+    override = os.environ.get("ALLOWED_DOMAIN", "").strip()
     if override:
         return override
+    public_host = os.environ.get("PUBLIC_HOST", "").strip()
+    if public_host:
+        return public_host
+    if onchain.escrow_configured():
+        # Money mode with no configured domain: refuse to invent one from a
+        # client-controlled header.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Server misconfigured: ALLOWED_DOMAIN (or PUBLIC_HOST) must be set "
+                "when the escrow is configured."
+            ),
+        )
     return request.headers.get("host", "localhost")
+
+
+def _is_address(value: str) -> bool:
+    """A full lowercase-or-mixed-case EVM address (audit M27)."""
+    return bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", value or ""))
 
 
 def _auth(request: Request) -> str:
@@ -459,6 +1004,14 @@ class VerifyRequest(BaseModel):
 
 class QueueRequest(BaseModel):
     stake: float
+    # Audit H1: the ping cap needs the round trip AT QUEUE TIME. It was only
+    # sent with the round result, so the cap was unreachable from HTTP and the
+    # gate existed only in the unit tests.
+    rttMs: float | None = Field(default=None, ge=0, le=10_000)
+    # Audit M27: a friend challenge names the address it is reserved for. The
+    # match is not offered to anyone else, and it is satisfied when that
+    # address queues (naming the challenger, or simply queueing).
+    opponent: str | None = Field(default=None, max_length=42)
 
 
 class CommitRequest(BaseModel):
@@ -482,6 +1035,12 @@ class ResultRequest(BaseModel):
     # it the stored result was disconnected from its commit (any 90ms claim
     # after any commit was accepted).
     resultProof: str = ""
+    # Audit H1: the client's measured round trip, used to compensate the
+    # server-observed reaction for network distance. Optional so an older client
+    # still plays (uncompensated) rather than failing; bounded so an absurd
+    # report cannot be used to farm compensation — the engine keeps the MINIMUM
+    # across the match anyway.
+    rttMs: float | None = Field(default=None, ge=0, le=10_000)
 
 
 class ClaimRequest(BaseModel):
@@ -523,24 +1082,80 @@ def auth_verify(body: VerifyRequest, request: Request) -> dict[str, str]:
     return {"token": issue_session(recovered), "address": recovered}
 
 
+@app.post("/api/auth/logout")
+def auth_logout(request: Request) -> dict[str, bool]:
+    """Revoke the caller's session (audit H22).
+
+    `auth.revoke_session()` existed but was reachable from nowhere, so a leaked
+    token stayed valid for its full 2h TTL. This is the endpoint that makes the
+    F-06 mitigation real. Revocation is per-jti, so logging out one device does
+    not sign the user out everywhere.
+    """
+    header = request.headers.get("authorization", "")
+    if not header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = header.removeprefix("Bearer ").strip()
+    if not verify_session(token):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    jti = _auth_module.session_jti(token)
+    if jti:
+        _auth_module.revoke_session(jti)
+    return {"ok": True}
+
+
 @app.post("/api/queue")
 def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     address = _auth(request)
     _rl_check("queue", address, RL_QUEUE_MAX)
     if body.stake not in ALLOWED_STAKES:
         raise HTTPException(status_code=400, detail="Invalid stake")
-    store.sweep_expired()
-    # Audit #10 (item 5): also refresh settled matches whose signed envelope
-    # expired while both clients were offline (sweep-driven F-12 re-sign).
-    _resign_stale_settlements()
+    # Audit M27: a friend challenge is a reservation for one address. Validate
+    # it here so a malformed value cannot create a match nobody can ever join.
+    challenge_target = (body.opponent or "").strip().lower()
+    if challenge_target:
+        if not _is_address(challenge_target):
+            raise HTTPException(status_code=400, detail="Invalid opponent address")
+        if challenge_target == address.lower():
+            raise HTTPException(status_code=400, detail="You cannot challenge yourself")
+    # Audit H9: the sweep is maintenance, not part of answering this request —
+    # it runs at most once per SWEEP_MIN_INTERVAL_SECONDS instead of on every
+    # poll (three whole-collection scans per poll on the hottest endpoint).
+    if _sweep_due():
+        # Audit H8: the sweep no longer voids ACTIVE matches past their play
+        # expiry — by then the grace window has passed, so they are forfeit
+        # settlements, not abandonments. It hands them back; we finalize here.
+        try:
+            for due in store.sweep_expired():
+                _finalize_if_due(due)
+        except Exception as exc:
+            # Never break matchmaking, but never hide it either (audit H9).
+            _note_sweep_failure("sweep_expired", exc)
+        # Audit #10 (item 5): refresh settled matches whose signed envelope
+        # expired while both clients were offline (sweep-driven F-12 re-sign).
+        try:
+            _resign_stale_settlements()
+        except Exception as exc:
+            _note_sweep_failure("resign", exc)
     # Audit #8 F-13: durable idempotency — check Firestore for a live match
     # containing this address BEFORE enqueueing, so a re-poll that lands on a
     # different replica (or a recycled process) cannot mint an orphan match
     # the client might fund twice.
     live = store.player_live_match(address)
-    if live is not None and live.stake == body.stake:
-        return live.public_view(for_address=address)
-    match = store.enqueue(address, body.stake)
+    if live is not None:
+        if live.stake == body.stake:
+            return live.public_view(for_address=address)
+        # Audit M14: falling through to `enqueue` returned the SAME live match
+        # (enqueue is idempotent), so a player who asked for 5 USDT silently got
+        # their live 1 USDT match back and the UI showed a stake they never
+        # chose. Refuse, and say why.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"You already have a live match at {live.stake:g} USDT. "
+                f"Finish or leave it before queueing at {body.stake:g}."
+            ),
+        )
+    match = store.enqueue(address, body.stake, body.rttMs, challenge_target or None)
     return match.public_view(for_address=address)
 
 
@@ -557,6 +1172,15 @@ def match_view(match_id: str, request: Request) -> dict[str, Any]:
     # Any participant polling the view finalizes a due match (completed, or
     # grace window passed) and immediately receives the authoritative status.
     _finalize_if_due(match)
+    # Audit M10: the finalizer settles through `store.update`, whose
+    # read-modify-write is ISOLATED on Firestore — the object read above does
+    # not carry the settlement it just produced. Re-read so the view reflects
+    # the status we just created; otherwise a poll that settled the match
+    # answers "active", and the client's refresh recovery branches on that.
+    try:
+        match = store.get(match_id)
+    except MatchError:
+        pass
     return match.public_view(for_address=address)
 
 
@@ -578,16 +1202,15 @@ def round_commit(body: CommitRequest, request: Request) -> dict[str, Any]:
         # (read-modify-write) so concurrent replicas cannot clobber rounds.
         # Audit-#5 gate: the escrow must hold BOTH stakes (read directly from
         # the chain) before any round is accepted — fail-closed.
-        def _mutate(m: Any, eng: Any) -> dict[str, Any] | None:
-            gate = _verify_deposits_or_void(m)
-            if gate:
-                return gate
+        # Audit H10: the gate runs BEFORE store.update — it is network I/O and
+        # must not be inside the lock.
+        _gate_or_void(body.matchId)
+
+        def _mutate(m: Any, eng: Any) -> None:
             eng.commit_intent(m, address, body.roundIndex, body.intentHash)
             return None
 
-        gate = store.update(body.matchId, _mutate)
-        if gate and gate.get("void"):
-            raise HTTPException(status_code=409, detail=gate["reason"])
+        store.update(body.matchId, _mutate)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {"ok": True}
@@ -600,10 +1223,10 @@ def round_target(body: TargetRequest, request: Request) -> dict[str, Any]:
     try:
         # Same fail-closed deposit gate: revealing the target before the
         # escrow holds both stakes lets a stakeless client stall the duel.
+        # Audit H10: gate outside the lock (network I/O).
+        _gate_or_void(body.matchId)
+
         def _mutate(m: Any, eng: Any) -> dict[str, Any]:
-            gate = _verify_deposits_or_void(m)
-            if gate:
-                raise MatchError(gate["reason"])
             return eng.reveal_target(m, address, body.roundIndex)
 
         return store.update(body.matchId, _mutate)
@@ -620,14 +1243,17 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
         # authoritative document, then (when it completes the match) settled
         # and signed in the SAME transaction so no concurrent writer can
         # wedge the match between settle and sign.
+        # Audit H10: gate outside the lock (network I/O).
+        _gate_or_void(body.matchId)
+
         def _mutate(m: Any, eng: Any) -> dict[str, Any]:
-            gate = _verify_deposits_or_void(m)
-            if gate:
-                raise MatchError(gate["reason"])
-            res = eng.submit_result(m, address, body.roundIndex, body.measuredMs, body.resultProof)
+            res = eng.submit_result(
+                m, address, body.roundIndex, body.measuredMs, body.resultProof, rtt_ms=body.rttMs
+            )
             if m.status == "active" and eng.match_completed(m):
                 try:
                     result = eng.settle(m)
+                    engine.apply_settlement_ratings(store, result)
                 except MatchError:
                     result = None
                 if result and result.get("status") == "settled":
@@ -636,16 +1262,38 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
                     # here (the client requests /settle only to FETCH the
                     # stored envelope, which replays without ledgering) — so
                     # the economy ledger must be written in THIS path too.
-                    # record_settlement is best-effort and idempotent
-                    # (settlementId), so the later replay path can never
-                    # double-count.
-                    economy.record_settlement(m)
+                    #
+                    # Audit H4: SIGNAL it, do not do it. `record_settlement`
+                    # performs its own Firestore writes, so calling it from
+                    # inside this mutate committed a ledger row independently of
+                    # the match transaction — a rolled-back settlement left a
+                    # ledger row behind. It runs after store.update returns.
+                    res["_ledger_pending"] = True
             return res
 
         res = store.update(body.matchId, _mutate)
+        if res.pop("_ledger_pending", False):
+            _ledger_settlement(body.matchId)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return res
+
+
+def _ledger_settlement(match_id: str) -> None:
+    """Write the economy ledger AFTER the match transaction has committed.
+
+    Audit H4: this used to run inside the store transaction, so a settlement
+    that was rolled back still produced a ledger row. Reading the committed
+    match here also means the ledger records what was actually persisted rather
+    than the in-transaction object. `record_settlement` is idempotent
+    (settlementId gate), so calling it on a replay is a no-op.
+    """
+    try:
+        match = store.get(match_id)
+    except MatchError:
+        return
+    if match.status == "settled":
+        economy.record_settlement(match)
 
 
 def _attach_signed_envelope(m: Any, result: dict[str, Any]) -> dict[str, Any]:
@@ -660,9 +1308,17 @@ def _attach_signed_envelope(m: Any, result: dict[str, Any]) -> dict[str, Any]:
         # clamped to activation + contract MATCH_TIMEOUT.
         envelope = sign_settlement(result, matchish=m)
     except Exception:
+        # Phase 6.1: a failing oracle means winners cannot claim, and from
+        # outside it looks identical to a quiet period. Count it.
+        metrics.note_signature(False)
         m.status, m.winner, m.settled_at, m.signed_settlement = saved
         raise
+    metrics.note_signature(True)
+    metrics.note_match_settled()
     envelope["roundWins"] = result.get("roundWins", {})
+    # Audit 2026-10-13: the ledger reads `forfeits` off this envelope; without
+    # the copy it recorded every duel as non-forfeit.
+    envelope["forfeits"] = result.get("forfeits", {})
     m.signed_settlement = {"status": "settled", **envelope}
     return dict(m.signed_settlement)
 
@@ -682,7 +1338,7 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
     if m.status == "settled" and m.signed_settlement:
         envelope = dict(m.signed_settlement)
         deadline = int(envelope.get("deadline", 0) or 0)
-        if deadline and time.time() < deadline:
+        if deadline and timebase.now() < deadline:
             return envelope  # still spendable — replay as-is
         # F-12 re-sign: result unchanged, fresh deadline + nonce.
         # Audit #10 (item 5): the re-sign is clamped to activation + contract
@@ -690,15 +1346,11 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
         # signature can pay (sign_settlement raises and the stale envelope
         # is returned; the refund path is the only money exit left).
         try:
+            # Audit M7: the record is rebuilt by the ENGINE from the match it
+            # owns and stamped, rather than hand-built here — a caller that can
+            # build a dict with the right keys must not get a signature.
             fresh = sign_settlement(
-                {
-                    "status": "settled",
-                    "matchId": m.match_id,
-                    "winner": m.winner,
-                    "winnerTimeMs": int(envelope.get("winnerTimeMs", 0)),
-                    "loserTimeMs": int(envelope.get("loserTimeMs", 0)),
-                    "validatedTimes": envelope.get("validatedTimes", {}),
-                },
+                engine.settlement_record_for_resign(m),
                 matchish=m,
             )
         except Exception:
@@ -712,19 +1364,24 @@ def _settle_once(m: Any, eng: Any) -> dict[str, Any]:
             "status": "void",
             "reason": (
                 "Match was voided — each stake refunds on-chain via "
-                "refundTimeoutMatch after the 30-minute escrow timeout."
+                f"refundTimeoutMatch after the {int(REFUND_HORIZON_SECONDS // 60)}-minute escrow timeout."
             ),
         }
     try:
         result = eng.settle(m)
+        engine.apply_settlement_ratings(store, result)
     except MatchError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        # Audit M9: this body runs INSIDE `store.update`'s mutate — on Firestore,
+        # inside a transaction. Raising the web framework's exception there
+        # couples the persistence layer to HTTP and hands it an error it cannot
+        # classify. Raise the engine's own error; the endpoint translates it.
+        raise MatchError(str(e)) from e
     if result.get("status") == "settled":
         envelope = _attach_signed_envelope(m, result)
-        # C5 — economy ledger: the settlement is a FACT; the ledger (Admin
-        # SDK, bypassing the client-blocking security rules) is the writer the
-        # firestore.rules comment anticipated. Best-effort — never blocks.
-        economy.record_settlement(m)
+        # Audit H4: the ledger write moved OUT of this mutate. It used to run
+        # here, inside the store transaction, so a rolled-back settlement still
+        # produced a ledger row. The callers now ledger after store.update
+        # returns (see _ledger_settlement).
         return envelope
     return {"status": "void", "reason": result.get("reason", "stakes refund")}
 
@@ -738,7 +1395,9 @@ def _finalize_if_due(match: Any) -> None:
         return
     try:
         store.update(match.match_id, _settle_once)
-    except (MatchError, HTTPException):
+        _ledger_settlement(match.match_id)
+    except MatchError:
+        # Audit M9: the settlement body raises only domain errors now.
         pass
 
 
@@ -765,21 +1424,25 @@ def _resign_stale_settlements() -> None:
             if m.status != "settled" or not m.signed_settlement:
                 continue
             deadline = int(m.signed_settlement.get("deadline", 0) or 0)
-            if not deadline or time.time() < deadline:
+            if not deadline or timebase.now() < deadline:
                 continue  # still spendable / never signed
-            if time.time() >= engine.settlement_deadline(m):
+            if timebase.now() >= engine.settlement_deadline(m):
                 continue  # past the on-chain horizon — only refund applies
             try:
                 store.update(mid, _settle_once)
-            except (MatchError, HTTPException):
+                _ledger_settlement(mid)
+            except MatchError:
+                # Audit M9: the settlement body raises only domain errors now.
                 pass
         for m in store.sweep_stale_settlements():
             deadline = int((m.signed_settlement or {}).get("deadline", 0) or 0)
-            if deadline and time.time() >= engine.settlement_deadline(m):
+            if deadline and timebase.now() >= engine.settlement_deadline(m):
                 continue  # past the on-chain horizon — only refund applies
             try:
                 store.update(m.match_id, _settle_once)
-            except (MatchError, HTTPException):
+                _ledger_settlement(m.match_id)
+            except MatchError:
+                # Audit M9: the settlement body raises only domain errors now.
                 pass
     except Exception:
         pass  # observability nicety — must never break matchmaking
@@ -806,7 +1469,14 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
     # players on different backend replicas can no longer produce two
     # different signatures; the transaction serializes them and the loser of
     # the race replays the ONE stored proof.
-    envelope = store.update(match_id, _settle_once)
+    try:
+        envelope = store.update(match_id, _settle_once)
+    except MatchError as e:
+        # Audit M9: the domain error raised by the settlement body maps to the
+        # same 409 the store used to raise itself. The translation lives here,
+        # at the HTTP boundary, instead of inside the persistence layer.
+        raise HTTPException(status_code=409, detail=str(e))
+    _ledger_settlement(match_id)
     return envelope
 
 
@@ -836,6 +1506,12 @@ def claim_match(match_id: str, body: ClaimRequest, request: Request) -> dict[str
     except MatchError as e:
         raise HTTPException(status_code=404, detail=str(e))
     winner = (getattr(match, "winner", "") or "").lower()
+    # Audit M11: the on-chain check below proves the TX settled this match and
+    # paid `winner` — it says nothing about who is CALLING. Without this, the
+    # loser could POST a claim and have `onChain: true` recorded against the
+    # match, so the ledger says the wrong player claimed.
+    if not winner or address.lower() != winner:
+        raise HTTPException(status_code=403, detail="Only the winner may claim")
     verified = onchain.verify_settlement_tx(body.txHash, match_id, winner)
     if not verified:
         return {
@@ -892,14 +1568,12 @@ def username_claim(body: UsernameRequest, request: Request) -> dict[str, Any]:
     _rl_check("username", address, 10)
     tag = _clean_username(body.username)
     normalized = tag.lower()
-    db = None
-    try:
-        import store as _store_mod
+    # Audit CRITICAL-1: `getattr(store, "_fs_store")` is a MODULE attribute that
+    # never exists (`_fs_store` is an instance attribute of DurableMatchStore),
+    # so this endpoint answered 503 for every caller in production.
+    import store as _store_mod
 
-        db = getattr(_store_mod, "_fs_store", None)
-        db = db.db if db is not None else None
-    except Exception:
-        db = None
+    db = _store_mod.durable_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Username registry requires the durable store (Firestore)")
 
@@ -942,24 +1616,75 @@ def username_claim(body: UsernameRequest, request: Request) -> dict[str, Any]:
 
 @app.get("/api/username/{name}")
 def username_lookup(name: str, request: Request) -> dict[str, Any]:
-    _auth(request)  # must hold a session; reads stay public via Firestore
+    # Must hold a session: the registry is the server's, and the response must
+    # not be an anonymous enumeration oracle.
+    _auth(request)
     # Audit #11 H3: session auth alone does not stop name enumeration (a
     # script can hold one valid session). IP-keyed cap keeps the check cheap
     # for the UI (a couple of calls per claim) while throttling crawlers.
     _rl_check_ip("username_lookup", request, RL_USERNAME_LOOKUP_MAX)
     normalized = name.strip().lower()
-    db = None
-    try:
-        import store as _store_mod
+    # Audit CRITICAL-1: `getattr(store, "_fs_store")` is a MODULE attribute that
+    # never exists (`_fs_store` is an instance attribute of DurableMatchStore),
+    # so this endpoint answered 503 for every caller in production.
+    import store as _store_mod
 
-        db = getattr(_store_mod, "_fs_store", None)
-        db = db.db if db is not None else None
-    except Exception:
-        db = None
+    db = _store_mod.durable_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Username registry requires the durable store (Firestore)")
     snap = db.collection("usernames").document(normalized).get()
     if not snap.exists:
         return {"available": True, "username": normalized}
-    owner = (snap.to_dict() or {}).get("address", "")
-    return {"available": False, "username": normalized, "taken": True, "owner": owner.lower()}
+    owner = ((snap.to_dict() or {}).get("address") or "").lower()
+    # Audit M12 (2026-10-13): this returned `owner` — the wallet address of
+    # whoever holds the name. The finding was marked fixed in phase 6.10 and was
+    # not: any session holder could enumerate names and map them to addresses.
+    # The caller learns only whether the name is theirs.
+    caller = _auth(request)
+    if owner and owner == caller.lower():
+        return {"available": True, "username": normalized, "alreadyOwned": True}
+    return {"available": False, "username": normalized, "taken": True}
+
+
+@app.get("/api/player/{address}/stats")
+def player_stats(address: str, request: Request) -> dict[str, Any]:
+    """Server-authoritative progression for a player (audit M31).
+
+    Wins/XP/level/streak used to live entirely in the client's localStorage:
+    any player could edit them, and the documented streak bonus could never
+    fire because `winStreak` was never passed to the XP calculation. This is
+    the ledger's view of the same numbers.
+
+    When the ledger is unavailable the response says `available: false` instead
+    of reporting zeros — a zero that means "no data" and a zero that means "no
+    wins" must not look the same to the client.
+    """
+    caller = _auth(request)
+    addr = (address or "").strip().lower()
+    if not _is_address(addr):
+        raise HTTPException(status_code=400, detail="Invalid address")
+    # Keyed by the CALLER, not the requested address: keying on the target let
+    # one caller spend a victim's budget and 429 that victim's own reads.
+    _rl_check("player_stats", caller, RL_PLAYER_STATS_MAX)
+    stats = economy.player_stats(addr)
+    if stats is None:
+        return {"available": False}
+    return {"available": True, **stats}
+
+
+@app.get("/api/challenges")
+def list_challenges(request: Request) -> dict[str, Any]:
+    """Challenges waiting for the CALLER (audit M27 closure).
+
+    A reservation the target cannot discover is a duel that never happens: the
+    challenged player used to learn about it only by queueing for something
+    else. This is the read side of `POST /api/queue {opponent}`.
+    """
+    address = _auth(request)
+    _rl_check("challenges", address, RL_CHALLENGES_MAX)
+    try:
+        challenges = store.pending_challenges(address)
+    except Exception as exc:
+        _note_sweep_failure("pending_challenges", exc)
+        return {"available": False, "challenges": []}
+    return {"available": True, "challenges": challenges}

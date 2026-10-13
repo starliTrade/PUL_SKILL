@@ -1,3 +1,5 @@
+import { sha256Hex } from './sha256';
+
 /**
  * P2.1 — Typed bridge to the authoritative PULSAR game server (api/).
  *
@@ -68,6 +70,33 @@ const persistSession = (s: ServerSession): void => {
     localStorage.setItem(SESSION_KEY, JSON.stringify(s));
   } catch {
     // storage unavailable — session stays in-memory for this page load
+  }
+};
+
+/**
+ * Revoke the server session and drop it locally (audit H22b).
+ *
+ * H22 added `POST /api/auth/logout` so a stolen bearer token cannot stay valid
+ * for its full 2h TTL. Nothing called it, so disconnecting the wallet dropped
+ * the LOCAL session while the token stayed live server-side.
+ *
+ * The local session is cleared even when the request fails: the player asked to
+ * disconnect, and a network error must not leave them holding a session they
+ * cannot get rid of. The token then expires on its own TTL.
+ */
+export const logoutServerSession = async (): Promise<void> => {
+  const session = loadServerSession();
+  if (!session) return;
+
+  try {
+    await fetch(`${SERVER_URL}/api/auth/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${session.token}` },
+    });
+  } catch {
+    // Offline or the server is down — the local clear below still happens.
+  } finally {
+    clearServerSession();
   }
 };
 
@@ -226,12 +255,110 @@ export interface MatchView {
   }[];
 }
 
-/** Enter the matchmaking queue for a stake. Resolves when paired (server side). */
-export const queueForMatch = (session: ServerSession, stake: number): Promise<MatchView> =>
-  request<MatchView>("/api/queue", { stake }, session);
+/**
+ * Enter the matchmaking queue for a stake. Resolves when paired (server side).
+ *
+ * Audit M27: `opponent` is the address a friend challenge is reserved for. The
+ * server will not offer that match to anyone else, and it is satisfied when the
+ * named address queues. Omit it for ordinary matchmaking.
+ */
+export const queueForMatch = (
+  session: ServerSession,
+  stake: number,
+  rttMs?: number,
+  opponent?: string
+): Promise<MatchView> =>
+  // Audit H1: the ping cap is evaluated at queue time.
+  request<MatchView>("/api/queue", { stake, rttMs, opponent }, session);
 
 export const getMatch = (session: ServerSession, matchId: string): Promise<MatchView> =>
   request<MatchView>(`/api/match/${encodeURIComponent(matchId)}`, undefined, session, "GET");
+
+/** A player's server-authoritative progression (audit M31). */
+export interface PlayerStats {
+  wins: number;
+  losses: number;
+  voids: number;
+  totalMatches: number;
+  xp: number;
+  level: number;
+  winStreak: number;
+  bestReactionMs: number;
+  avgReactionMs: number;
+  lastXpAwarded?: number;
+}
+
+export type PlayerStatsResponse = ({ available: true } & PlayerStats) | { available: false };
+
+/**
+ * Read the ledger's view of a player's progression (audit M31).
+ *
+ * `available: false` means the ledger could not answer. The caller must fall
+ * back to its local estimate — reporting zeros as facts would tell a player
+ * with a hundred wins that they have never played.
+ */
+export const fetchPlayerStats = (
+  session: ServerSession,
+  address: string
+): Promise<PlayerStatsResponse> =>
+  request<PlayerStatsResponse>(
+    `/api/player/${encodeURIComponent(address)}/stats`,
+    undefined,
+    session,
+    "GET"
+  );
+
+/** A friend challenge waiting for the caller (audit M27 closure). */
+export interface PendingChallenge {
+  matchId: string;
+  address: string;
+  stake: number;
+}
+
+export interface PendingChallengesResponse {
+  available: boolean;
+  challenges: PendingChallenge[];
+}
+
+/**
+ * Who is waiting for the caller (audit M27 closure).
+ *
+ * A reservation the target cannot discover is a duel that never happens. This
+ * is the read side of `queueForMatch(..., opponent)`.
+ */
+export const fetchPendingChallenges = (session: ServerSession): Promise<PendingChallengesResponse> =>
+  request<PendingChallengesResponse>("/api/challenges", undefined, session, "GET");
+
+/**
+ * Ask the SERVER whether a username is free (audit M12, 2026-10-13).
+ *
+ * The registry endpoint existed and was tested but nothing called it, so the
+ * authoritative check (and its rate limit) protected nothing. The response
+ * deliberately does NOT include the owner's address — only whether the name is
+ * free, taken, or already yours.
+ */
+export const checkUsername = (
+  session: ServerSession,
+  name: string
+): Promise<{ available: boolean; username: string; taken?: boolean; alreadyOwned?: boolean }> =>
+  request("/api/username/" + encodeURIComponent(name), undefined, session, "GET");
+
+/**
+ * Report a match for operator review (phase 6.4 / G8).
+ *
+ * Audit 2026-10-13: the endpoint existed, was tested, and had NO client path —
+ * a player could not file the report the feature is named for. This is the
+ * H22b class again (a mechanism in one layer with no consumer in another).
+ *
+ * A report is a request for review: it never touches match state or the money
+ * path, and only a participant may file one.
+ */
+export const reportDispute = (
+  session: ServerSession,
+  matchId: string,
+  reason: string
+): Promise<{ ok: boolean; matchId: string }> =>
+  request<{ ok: boolean; matchId: string }>("/api/dispute", { matchId, reason }, session);
 
 export const commitRound = (
   session: ServerSession,
@@ -264,9 +391,37 @@ export const submitRoundResult = (
   matchId: string,
   roundIndex: number,
   measuredMs: number,
-  resultProof?: string
+  resultProof?: string,
+  rttMs?: number
 ): Promise<SubmitResult> =>
-  request("/api/round/result", { matchId, roundIndex, measuredMs, resultProof }, session);
+  // Audit H1: `rttMs` lets the server compensate the reaction it observed for
+  // network distance. Without it the ranking is `observed`, which latency can
+  // only inflate — so the player nearer the server wins ties they did not earn.
+  request("/api/round/result", { matchId, roundIndex, measuredMs, resultProof, rttMs }, session);
+
+/**
+ * Measure the round trip to the game server (audit H1).
+ *
+ * The server keeps the MINIMUM across the match, so an inflated report buys
+ * nothing and a deflated one only reduces the player's own compensation. This
+ * is a best-effort measurement: a failure returns `undefined` and the round is
+ * submitted uncompensated rather than not at all.
+ */
+export const measureServerRttMs = async (session: ServerSession): Promise<number | undefined> => {
+  if (!gameServerConfigured()) return undefined;
+  try {
+    const started = performance.now();
+    const res = await fetch(`${SERVER_URL}/api/health`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${session.token}` },
+    });
+    if (!res.ok) return undefined;
+    await res.json();
+    return Math.round(performance.now() - started);
+  } catch {
+    return undefined;
+  }
+};
 
 export interface SettledMatch {
   matchId: string;
@@ -313,10 +468,21 @@ export const claimUsername = (session: ServerSession, username: string): Promise
  */
 export const matchIdToBytes32 = async (matchId: string): Promise<string> => {
   const data = new TextEncoder().encode(matchId);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return (
-    "0x" + Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("")
-  );
+  // Audit M38: `crypto.subtle` exists ONLY in a secure context — HTTPS or
+  // localhost. On a plain-HTTP deployment it is undefined, so this threw and
+  // took the WHOLE on-chain deposit flow with it: no duel could be created or
+  // joined, and the player saw an opaque "cannot read property of undefined".
+  //
+  // The hash is a pure function of the match id and must not depend on the
+  // page's transport security. See `./sha256` for why this is a local
+  // implementation rather than `ethers.sha256`.
+  if (typeof crypto !== "undefined" && crypto.subtle) {
+    const digest = await crypto.subtle.digest("SHA-256", data);
+    return (
+      "0x" + Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("")
+    );
+  }
+  return sha256Hex(data);
 };
 
 // --- Health -------------------------------------------------------------------

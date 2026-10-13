@@ -32,6 +32,7 @@ import { XPSystem, XPSummary } from '../lib/xpSystem';
 import {
   gameServerConfigured,
   ensureSession,
+  measureServerRttMs,
   queueForMatch,
   commitRound,
   revealRoundTarget,
@@ -43,14 +44,15 @@ import {
   type ServerSession,
   type MatchView,
 } from '../lib/gameServerClient';
-import { settleDuel as settleDuelOnChain, refundTimeoutMatch, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState } from '../lib/escrowFlow';
-import { isEscrowConfigured, CHAIN, TOKENS, ECONOMY } from '../lib/chain';
+import { settleDuel as settleDuelOnChain, refundTimeoutMatch, escrowStatus, approveUsdt, createDuel, joinDuel, getDuelState, getTokenDecimals, findSettlementTx } from '../lib/escrowFlow';
+import { isEscrowConfigured, CHAIN, TOKENS, ECONOMY, REFUND_OPENS_AFTER_MINUTES } from '../lib/chain';
 import { ethers } from 'ethers';
-import { realWeb3Manager } from '../lib/realWeb3';
+import { realWeb3Manager, ACTIVE_RANKED_MATCH_KEY } from '../lib/realWeb3';
 import { reportError } from '../lib/monitoring';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { ConnectWallet } from '../components/ConnectWallet';
 import { DuelCertificateModal } from '../components/DuelCertificateModal';
+import { DisputeReportButton } from '../components/DisputeReportButton';
 import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
@@ -59,15 +61,22 @@ interface ReactionGamePageProps {
   onNavigate: (path: string) => void;
   opponentName?: string;
   stakeAmount?: number;
+  /**
+   * Audit M27: the address of the player this duel was challenged to, when the
+   * page was opened from a friend challenge. Matchmaking reserves the duel for
+   * that address instead of pairing the next stranger.
+   */
+  challengeOpponent?: string;
 }
 
 export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   onNavigate,
   opponentName,
   stakeAmount = 1,
+  challengeOpponent,
 }) => {
   const { t } = useLanguage();
-  const { wallet, recordMatch } = usePulsarStore();
+  const { wallet, stats, recordMatch } = usePulsarStore();
 
   const [phase, setPhase] = useState<GamePhase>('human-verify');
   const [countdown, setCountdown] = useState<number>(3);
@@ -83,6 +92,56 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   // Practice mode (stake 0) never touches the server.
   const [serverMatch, setServerMatch] = useState<MatchView | null>(null);
   const [serverSession, setServerSession] = useState<ServerSession | null>(null);
+  /**
+   * Audit H11 — the CURRENT match/session, readable from any closure.
+   *
+   * `restoreBo3FromServer` is a `useCallback(..., [])`, so it captures the FIRST
+   * render's `finishServerMatch` — whose captured `serverSession`/`serverMatch`
+   * are both null, making the whole refresh-recovery path a silent no-op. The
+   * winner's client then never submits `settleDuel` after a reload and the prize
+   * waits out the refund horizon.
+   *
+   * Refs are the fix: they are read at CALL time, so the closure identity stops
+   * mattering.
+   */
+  const serverMatchRef = useRef<MatchView | null>(null);
+  const serverSessionRef = useRef<ServerSession | null>(null);
+  /**
+   * Set the state AND the ref together.
+   *
+   * An effect-based sync is not enough: `restoreBo3FromServer` runs
+   * synchronously inside `recoverServerMatch`, immediately after
+   * `applyServerMatch(view)` — before React has committed the render and before
+   * any effect has run. The ref would still be null and the recovery would
+   * no-op again, just for a different reason.
+   */
+  const applyServerMatch = useCallback((view: MatchView | null) => {
+    serverMatchRef.current = view;
+    setServerMatch(view);
+  }, []);
+  const applyServerSession = useCallback((session: ServerSession | null) => {
+    serverSessionRef.current = session;
+    setServerSession(session);
+  }, []);
+  /**
+   * Audit HIGH-5 — the wallet and the stake, readable from any closure.
+   *
+   * `restoreBo3FromServer` is a `useCallback(..., [])`, so it holds the FIRST
+   * render's `finishServerMatch`. On a reload the store's account is empty on
+   * that render (`restoreSession()` is async), so `wallet.fullAddress` was `''`
+   * and `iWon` was false for everyone: a reloaded WINNER was recorded and shown
+   * as a loser. H11 moved `serverSession`/`serverMatch` to refs and left these
+   * two captured.
+   *
+   * Assigned DURING render, not in an effect: by the time the player taps, the
+   * page has re-rendered with the loaded wallet, and a render-time assignment is
+   * already visible to the closure. (An effect-based sync is one commit late —
+   * the same trap H11 documented.)
+   */
+  const walletRef = useRef(wallet);
+  walletRef.current = wallet;
+  const currentStakeRef = useRef(currentStake);
+  currentStakeRef.current = currentStake;
   const [serverError, setServerError] = useState<string>('');
   const [settlementTxHash, setSettlementTxHash] = useState<string>('');
   // P0-fix: keep the last server-signed proof + action feedback so a failed
@@ -131,6 +190,11 @@ function isWalletCancel(msg: string): boolean {
   const waitTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const roundTransitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Audit M29: these two were untracked — the progress interval lived in a
+  // local variable (so the unmount effect could not clear it) and the
+  // early-click timeout had no ref at all.
+  const verifyProgressIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const earlyClickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const trajectoryRef = useRef<MouseTrajectoryPoint[]>([]);
   const reactionTimeRef = useRef<number>(0);
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
@@ -140,6 +204,22 @@ function isWalletCancel(msg: string): boolean {
   // P0-fix (audit #2): per-round proof from the reveal step. Every result
   // submission must carry it — the server rejects results without it.
   const resultProofRef = useRef<string>('');
+  /**
+   * Audit C4 — single-flight guard for one round submission.
+   *
+   * A touch tap fires `touchend` on the action-phase root div AND a synthetic
+   * `click` on the target button. Both handlers see the same render's
+   * `phase === 'action'`, so both call processVerification; `stopPropagation()`
+   * inside the click handler cannot cancel a touchend that already ran. The
+   * second submission gets a 409 ("Result already submitted"), which the catch
+   * block turns into outcome:'void' + phase:'bot-detected' — a touch player
+   * loses the match to a browser event quirk.
+   *
+   * A ref is the only guard that works here: React state updates are async, so
+   * both handlers read the same stale `phase`. Cleared in `finally` so the next
+   * round can submit normally.
+   */
+  const verifyingRef = useRef<boolean>(false);
 
   // Randomize calibration target for human latency check
   const randomizeCalibrationTarget = useCallback(() => {
@@ -220,6 +300,10 @@ function isWalletCancel(msg: string): boolean {
       if (waitTimeoutRef.current) clearTimeout(waitTimeoutRef.current);
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
       if (roundTransitionTimeoutRef.current) clearTimeout(roundTransitionTimeoutRef.current);
+      // Audit M29: without these two, leaving mid-round left an interval ticking
+      // and a pending timeout that would start the next round on a dead page.
+      if (verifyProgressIntervalRef.current) clearInterval(verifyProgressIntervalRef.current);
+      if (earlyClickTimeoutRef.current) clearTimeout(earlyClickTimeoutRef.current);
     };
   }, []);
 
@@ -260,8 +344,13 @@ function isWalletCancel(msg: string): boolean {
           throw e;
         }
       });
-      setServerSession(session);
-      let view = await queueForMatch(session, currentStake);
+      applyServerSession(session);
+      // Audit H1: measure the round trip BEFORE queueing, so the ping cap is
+      // evaluated at the entry gate rather than after the first round.
+      const queueRtt = await measureServerRttMs(session).catch(() => undefined);
+      // Audit M27: a friend challenge reserves the duel for the named address.
+      const challengeTarget = challengeOpponent?.trim() || undefined;
+      let view = await queueForMatch(session, currentStake, queueRtt, challengeTarget);
       // Poll while waiting in the queue (queueForMatch is idempotent: it
       // returns the caller's waiting match or their active match).
       // Audit #6 C3: the fixed 2.5s cadence = 24 req/min exceeded the old
@@ -274,10 +363,10 @@ function isWalletCancel(msg: string): boolean {
       while (view.status === 'waiting' && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, backoffMs));
         backoffMs = Math.min(backoffMs + 2500, 10_000);
-        view = await queueForMatch(session, currentStake);
+        view = await queueForMatch(session, currentStake, queueRtt, challengeTarget);
       }
       if (view.status === 'waiting') throw new Error('No opponent joined within 90 seconds. Try again.');
-      setServerMatch(view);
+      applyServerMatch(view);
       if (view.opponent) setOpponent(view.opponent);
 
       // P0-fix — THE ONLY place stake money moves: both players lock the
@@ -294,7 +383,7 @@ function isWalletCancel(msg: string): boolean {
       } else {
         // P0-fix — the joiner MUST approve before joinDuel(): the escrow pulls
         // the joiner's stake via transferFrom, which reverts without allowance
-        // (its usual result: the creator's deposit locked for 30 minutes).
+        // (its usual result: the creator's deposit locked for the full window).
         await approveUsdt(currentStake);
         // The joiner then WAITS for the creator's createDuel to confirm
         // on-chain — calling joinDuel earlier reverts ("Match not available")
@@ -311,10 +400,10 @@ function isWalletCancel(msg: string): boolean {
             // funding, or a malicious creator deposits 0.000001 USDT while
             // the UI advertises the full prize.
             if (st.status === 1) {
-              const expectedUnits = ethers.parseUnits(String(currentStake), TOKENS.USDT_DECIMALS);
+              const expectedUnits = ethers.parseUnits(String(currentStake), await getTokenDecimals());
               if (st.stakeAmount !== expectedUnits) {
                 throw new Error(
-                  `On-chain stake (${ethers.formatUnits(st.stakeAmount, TOKENS.USDT_DECIMALS)} USDT) ` +
+                  `On-chain stake (${ethers.formatUnits(st.stakeAmount, await getTokenDecimals())} USDT) ` +
                     `does not match the agreed stake (${currentStake} USDT). Refusing to join.`,
                 );
               }
@@ -350,7 +439,7 @@ function isWalletCancel(msg: string): boolean {
       setMatchResult({ outcome: 'void', yourTime: 0, opponentTime: 0, prize: 0, reason });
       setPhase('bot-detected'); // honest error shell; reason is rendered
     }
-  }, [isServerMode, wallet.address, currentStake]);
+  }, [isServerMode, wallet.address, currentStake, challengeOpponent]);
 
   // Audit-#5 refresh recovery: on reload, resume the persisted ranked match
   // (score, round, role) from the authoritative server view. Skips the queue
@@ -390,9 +479,9 @@ function isWalletCancel(msg: string): boolean {
           throw e;
         }
       });
-      setServerSession(session);
+      applyServerSession(session);
       const view = await getMatch(session, saved.matchId);
-      setServerMatch(view);
+      applyServerMatch(view);
       if (view.opponent) setOpponent(view.opponent);
       if (view.stake) setCurrentStake(view.stake);
 
@@ -403,9 +492,15 @@ function isWalletCancel(msg: string): boolean {
       if (view.status === 'waiting') {
         // Still unmatched — fall through to the normal queue loop by
         // re-queuing (idempotent) rather than dead-waiting.
-        const queued = await queueForMatch(session, view.stake || currentStake);
+        const requeueRtt = await measureServerRttMs(session).catch(() => undefined);
+        const queued = await queueForMatch(
+          session,
+          view.stake || currentStake,
+          requeueRtt,
+          challengeOpponent?.trim() || undefined
+        );
         if (queued.status === 'waiting') throw new Error('No opponent joined yet — retry in a moment.');
-        setServerMatch(queued);
+        applyServerMatch(queued);
       }
       const scores = restoreBo3FromServer(view);
       if (!(view.status === 'active' && (scores.userScore >= 2 || scores.opponentScore >= 2))) {
@@ -429,12 +524,12 @@ function isWalletCancel(msg: string): boolean {
       }
       return false;
     }
-  }, [isServerMode, wallet.address, currentStake]);
+  }, [isServerMode, wallet.address, currentStake, challengeOpponent]);
 
   // Audit-#5 refresh recovery: persist the live ranked match so a full page
   // reload can RESUME it (score, round, role) instead of re-queuing and
   // re-depositing. Server state is always the source of truth.
-  const ACTIVE_MATCH_KEY = 'pulsar_active_ranked_match';
+  const ACTIVE_MATCH_KEY = ACTIVE_RANKED_MATCH_KEY;
   const persistActiveMatch = useCallback((view: MatchView | null) => {
     try {
       if (view && (view.status === 'waiting' || view.status === 'active')) {
@@ -451,7 +546,23 @@ function isWalletCancel(msg: string): boolean {
     }
   }, []);
 
+  /**
+   * Audit HIGH-4 — do NOT clear the persisted match on the first render.
+   *
+   * On a real reload `serverMatch` is null on the first render, so this effect
+   * called `persistActiveMatch(null)`, which REMOVES the key — before
+   * `recoverServerMatch()` (which runs when the player taps) could read it. The
+   * refresh-recovery feature was therefore dead in production, and the reload
+   * re-queued and re-attempted the escrow deposit. The old test seeded
+   * localStorage AFTER mount, an ordering that never happens on a reload.
+   *
+   * The effect now acts only once a match has actually been established in this
+   * page — after which a null really does mean "the duel is over, clear it".
+   */
+  const hasEstablishedMatchRef = useRef(false);
   useEffect(() => {
+    if (!hasEstablishedMatchRef.current && serverMatch === null) return;
+    hasEstablishedMatchRef.current = true;
     persistActiveMatch(serverMatch);
   }, [serverMatch, persistActiveMatch]);
 
@@ -573,7 +684,8 @@ function isWalletCancel(msg: string): boolean {
       if (waitTimeoutRef.current) clearTimeout(waitTimeoutRef.current);
       sounds.playLoss();
       setEarlyClickWarning(true);
-      setTimeout(() => {
+      // Audit M29: tracked so leaving the page cancels it.
+      earlyClickTimeoutRef.current = setTimeout(() => {
         setEarlyClickWarning(false);
         startWaitingPhase();
       }, 1400);
@@ -694,10 +806,14 @@ function isWalletCancel(msg: string): boolean {
     yourTime: number,
     oppTime: number
   ): Promise<void> => {
-    if (!serverSession || !serverMatch) return;
+    // Audit H11: read the CURRENT values, not the ones captured when this
+    // closure was created — see the refs above.
+    const session = serverSessionRef.current;
+    const match = serverMatchRef.current;
+    if (!session || !match) return;
     try {
-      const view = await getMatch(serverSession, serverMatch.matchId);
-      setServerMatch(view);
+      const view = await getMatch(session, match.matchId);
+      applyServerMatch(view);
       if (view.status === 'void') {
         setMatchResult({
           outcome: 'void',
@@ -705,8 +821,8 @@ function isWalletCancel(msg: string): boolean {
           opponentTime: oppTime,
           prize: 0,
           // H4: honest horizon — the contract releases refunds only after
-          // its 30-minute MATCH_TIMEOUT, not immediately at void time.
-          reason: 'Match voided — each stake refunds on-chain after the 30-minute escrow timeout.',
+          // its MATCH_TIMEOUT + REFUND_GRACE, not immediately at void time.
+          reason: `Match voided — each stake refunds on-chain after the ${REFUND_OPENS_AFTER_MINUTES}-minute escrow timeout.`,
           rounds,
           userScore,
           opponentScore: oppScore,
@@ -717,14 +833,14 @@ function isWalletCancel(msg: string): boolean {
       }
       // settleMatch is idempotent server-side: when the opponent settled
       // first, the SAME oracle-signed settlement is replayed to us.
-      const result = await settleMatch(serverSession, serverMatch.matchId);
+      const result = await settleMatch(session, match.matchId);
       if (result.status !== 'settled') {
         setMatchResult({
           outcome: 'void',
           yourTime,
           opponentTime: oppTime,
           prize: 0,
-          reason: 'Match could not be settled — each stake refunds on-chain after the 30-minute escrow timeout.',
+          reason: `Match could not be settled — each stake refunds on-chain after the ${REFUND_OPENS_AFTER_MINUTES}-minute escrow timeout.`,
           rounds,
           userScore,
           opponentScore: oppScore,
@@ -735,33 +851,38 @@ function isWalletCancel(msg: string): boolean {
       }
       // P0-fix (audit #2): compare against the FULL wallet identity — the
       // truncated display address can never equal the settlement's winner.
-      const myFull = (wallet.fullAddress || wallet.address || '').toLowerCase();
+      // Audit HIGH-5: read the CURRENT wallet, not the first render's.
+      const myFull = (walletRef.current.fullAddress || walletRef.current.address || '').toLowerCase();
       const iWon = result.winner.toLowerCase() === myFull;
       // Audit #6 P3: derive from ECONOMY.winnerShareBps (single source of
       // truth mirroring the contract's PLATFORM_FEE_BPS) instead of 0.98.
       const prize = iWon
-        ? Math.round(((currentStake * 2 * ECONOMY.winnerShareBps) / 10_000) * 100) / 100
+        ? Math.round(((currentStakeRef.current * 2 * ECONOMY.winnerShareBps) / 10_000) * 100) / 100
         : 0;
 
-      // Winner submits the oracle-signed proof to release the pot.
+      // The oracle-signed proof is the SAME for both players. Build it once so
+      // either side can submit it.
+      const proofFrom = (bytes32: string) => ({
+        matchId: bytes32,
+        winner: result.winner,
+        winnerTimeMs: result.winnerTimeMs,
+        loserTimeMs: result.loserTimeMs,
+        nonce: result.serverNonce.toString(),
+        deadline: result.deadline,
+        signature: result.signature,
+      });
+
       let txHash = '';
       if (iWon) {
+        // Winner submits the oracle-signed proof to collect the pot.
         try {
           const bytes32 = await matchIdToBytes32(result.matchId);
-          const proof = {
-            matchId: bytes32,
-            winner: result.winner,
-            winnerTimeMs: result.winnerTimeMs,
-            loserTimeMs: result.loserTimeMs,
-            nonce: result.serverNonce.toString(),
-            deadline: result.deadline,
-            signature: result.signature,
-          };
+          const proof = proofFrom(bytes32);
           setLastProof(proof);
           txHash = await settleDuelOnChain(proof);
           setSettlementTxHash(txHash);
           try {
-            const claim = await claimMatch(serverSession, result.matchId, txHash);
+            const claim = await claimMatch(session, result.matchId, txHash);
             if (!claim.onChainProof) {
               setOnchainAction('Payout confirmed; server ledger verification is pending.');
             }
@@ -791,6 +912,42 @@ function isWalletCancel(msg: string): boolean {
         }
       } else {
         sounds.playLoss();
+        // Audit M37: settlement is permissionless on-chain — `settleDuel` pays
+        // `proof.winner` no matter who submits it. Gating submission behind
+        // `iWon` meant a winner who closed their tab left the pot locked until
+        // the refund horizon (where the loser could even refund a stake they
+        // lost). The loser's client releases the pot too. Best-effort and
+        // non-fatal: the result screen must render regardless.
+        try {
+          const bytes32 = await matchIdToBytes32(result.matchId);
+          const state = await getDuelState(bytes32);
+          // Terminal on-chain states: 3 Settled, 4 Cancelled, 5 Refunded. In
+          // any of them `settleDuel` would revert and burn the loser's gas.
+          const terminal = state.status === 3 || state.status === 4 || state.status === 5;
+          if (state.status === 3) {
+            // The winner settled first — the common case. Read the settlement
+            // tx back from the chain so the certificate shows the real proof
+            // instead of claiming "NOT ON-CHAIN" for a settled duel.
+            try {
+              const settledTx = await findSettlementTx(bytes32);
+              if (settledTx) {
+                txHash = settledTx;
+                setSettlementTxHash(settledTx);
+              }
+            } catch {
+              /* best effort — the result screen must still render */
+            }
+          } else if (!terminal) {
+            const proof = proofFrom(bytes32);
+            setLastProof(proof);
+            txHash = await settleDuelOnChain(proof);
+            setSettlementTxHash(txHash);
+            setOnchainAction(`Pot released to the winner: ${txHash.slice(0, 10)}…${txHash.slice(-8)}`);
+          }
+        } catch (releaseError) {
+          // The winner may still settle, or the refund window covers it.
+          reportError(releaseError, { context: 'loser_settlement_release', matchId: result.matchId });
+        }
       }
 
       const avgUser = Math.round(rounds.reduce((a, r) => a + r.userTime, 0) / Math.max(rounds.length, 1));
@@ -809,11 +966,18 @@ function isWalletCancel(msg: string): boolean {
         id: result.matchId,
         game: 'Reaction Duel (Ranked · Bo3)',
         result: iWon ? 'win' : 'loss',
-        entryFee: currentStake,
+        entryFee: currentStakeRef.current,
         prize,
         opponentTime: avgOpp,
         yourTime: avgUser,
         timestamp: Date.now(),
+        // Audit M39: carry the real settlement tx so the certificate (and the
+        // profile history view) can show a verifiable on-chain proof instead
+        // of always claiming "NOT ON-CHAIN".
+        hash: txHash || undefined,
+        // Audit M31: the ledger only knows about settled duels — this mark is
+        // what tells `recordMatch` it may reconcile against it.
+        ranked: true,
       }).then((xpRes) => setXpSummary(xpRes));
 
       setPhase('result');
@@ -825,7 +989,7 @@ function isWalletCancel(msg: string): boolean {
   };
 
   // P0-fix: on-chain recovery actions. Retry re-submits the stored server proof;
-  // Refund calls refundTimeoutMatch (only succeeds after 30-min MATCH_TIMEOUT).
+  // Refund calls refundTimeoutMatch (only succeeds after MATCH_TIMEOUT + REFUND_GRACE).
   const retrySettle = async (): Promise<void> => {
     if (!lastProof) return;
     setOnchainAction('Retrying on-chain claim…');
@@ -856,24 +1020,38 @@ function isWalletCancel(msg: string): boolean {
 
   const refundDuel = async (): Promise<void> => {
     if (!serverMatch) return;
-    setOnchainAction('Requesting timeout refund… (succeeds after 30-min escrow timeout)');
+    setOnchainAction(`Requesting timeout refund… (succeeds after the ${REFUND_OPENS_AFTER_MINUTES}-minute escrow timeout)`);
     try {
       const bytes32 = await matchIdToBytes32(serverMatch.matchId);
       const txHash = await refundTimeoutMatch(bytes32);
       setOnchainAction(`Refund submitted: ${txHash.slice(0, 10)}…${txHash.slice(-8)}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setOnchainAction(isWalletCancel(msg) ? `Cancelled — no funds moved. ${msg}` : `Refund failed (likely before 30-min timeout): ${msg}`);
+      setOnchainAction(isWalletCancel(msg) ? `Cancelled — no funds moved. ${msg}` : `Refund failed (likely before the ${REFUND_OPENS_AFTER_MINUTES}-minute timeout): ${msg}`);
     }
   };
 
   const processVerification = async (timeMs: number, eventCheck?: { isTrusted: boolean; pointerType?: string; hasNaturalJitter: boolean }) => {
+    // Audit C4: one physical tap must produce exactly one submission. See the
+    // verifyingRef comment — this must stay synchronous and before any await.
+    if (verifyingRef.current) return;
+    verifyingRef.current = true;
+    try {
+      await processVerificationInner(timeMs, eventCheck);
+    } finally {
+      verifyingRef.current = false;
+    }
+  };
+
+  const processVerificationInner = async (timeMs: number, eventCheck?: { isTrusted: boolean; pointerType?: string; hasNaturalJitter: boolean }) => {
     setPhase('verifying');
     setVerifyProgress(0);
 
+    // Audit M29: tracked in a ref so the unmount effect can clear it.
     const progressInterval = setInterval(() => {
       setVerifyProgress((prev) => Math.min(prev + 20, 92));
     }, 70);
+    verifyProgressIntervalRef.current = progressInterval;
 
     const userTime = Math.round(timeMs);
 
@@ -882,11 +1060,22 @@ function isWalletCancel(msg: string): boolean {
       try {
         // P0-fix (audit #2): the result MUST carry the per-player proof issued
         // at reveal — without it the server rejects the submission outright.
-        const res = await submitRoundResult(serverSession, serverMatch.matchId, roundIndex, userTime, resultProofRef.current || undefined);
+        // Audit H1: submit the measured round trip so the server can rank on
+        // the reaction rather than on the distance to the server. Best-effort —
+        // a failed measurement submits uncompensated rather than not at all.
+        const rttMs = await measureServerRttMs(serverSession).catch(() => undefined);
+        const res = await submitRoundResult(
+          serverSession,
+          serverMatch.matchId,
+          roundIndex,
+          userTime,
+          resultProofRef.current || undefined,
+          rttMs
+        );
         // Refresh the authoritative view (includes mutually-disclosed
         // opponent time for this round, if both have submitted).
         const view = await getMatch(serverSession, serverMatch.matchId);
-        setServerMatch(view);
+        applyServerMatch(view);
         const oppTimeRaw = view.opponentTimes[String(roundIndex)];
         const oppTime = oppTimeRaw != null ? Math.round(oppTimeRaw) : null;
 
@@ -945,7 +1134,7 @@ function isWalletCancel(msg: string): boolean {
               void (async () => {
                 try {
                   const v2 = await getMatch(serverSession, serverMatch.matchId);
-                  setServerMatch(v2);
+                  applyServerMatch(v2);
                   const o2 = v2.opponentTimes[String(roundIndex)];
                   const oppMs = o2 != null ? Math.round(o2) : null;
                   if (oppMs != null) {
@@ -1123,6 +1312,16 @@ function isWalletCancel(msg: string): boolean {
       targetWins: 2,
       isMatchOver: false,
     });
+    // Audit M5: clear the SETTLEMENT state too. It used to survive, so a later
+    // match that does not settle (a loss, a void) rendered the previous match's
+    // explorer link, its "prize claimed on-chain" line and its retry/refund
+    // buttons — all pointing at a transaction from another duel.
+    setSettlementTxHash('');
+    setLastProof(null);
+    setOnchainAction('');
+    setServerMatch(null);
+    setServerSession(null);
+    setServerError('');
     setPhase('human-verify');
     randomizeCalibrationTarget();
   };
@@ -1150,6 +1349,11 @@ function isWalletCancel(msg: string): boolean {
   return (
     <div
       onPointerMove={handlePointerMove}
+      data-testid="pulsar-game-root"
+      // Audit M5: the settlement hash is otherwise only observable while the
+      // result screen is mounted, which makes "was it cleared on rematch?"
+      // untestable without replaying a whole second duel.
+      data-settlement-tx={settlementTxHash}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
       className="min-h-screen bg-black relative overflow-x-hidden flex flex-col select-none text-zinc-100 selection:bg-white/20"
@@ -1371,6 +1575,8 @@ function isWalletCancel(msg: string): boolean {
                 <div className="relative w-full h-64 mt-5 linear-card overflow-hidden">
                   <div className="absolute inset-0 bg-grid opacity-20 pointer-events-none" />
                   <motion.button
+                    data-testid="pulsar-verify-node"
+                    aria-label="Start the duel"
                     onClick={handleVerifyNodeClick}
                     className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full p-4 flex items-center justify-center cursor-pointer shadow-lg active:scale-90 transition-transform"
                     style={{
@@ -1418,6 +1624,7 @@ function isWalletCancel(msg: string): boolean {
             {/* PHASE 3: Waiting Phase (Spatial Target Masking - Anti-Photodiode) */}
             {phase === 'waiting' && (
               <div
+                data-testid="pulsar-waiting"
                 onClick={handleEarlyClick}
                 className="w-full flex-1 flex flex-col items-center justify-center cursor-pointer p-4 select-none min-h-[320px]"
               >
@@ -1466,6 +1673,8 @@ function isWalletCancel(msg: string): boolean {
 
                 {/* Dynamic Anti-Cheat Pulsar Strike Target */}
                 <motion.button
+                  data-testid="pulsar-target"
+                  aria-label="Hit the target"
                   initial={{ scale: 0.3, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   whileTap={{ scale: 0.9 }}
@@ -1622,7 +1831,7 @@ function isWalletCancel(msg: string): boolean {
                   {isServerMode && serverMatch && (
                     <>
                       <button onClick={refundDuel} className="w-full btn-secondary py-3 text-xs cursor-pointer">
-                        Refund after 30-min timeout
+                        Refund after {REFUND_OPENS_AFTER_MINUTES}-min timeout
                       </button>
                       {onchainAction && <p className="text-[10px] font-mono text-zinc-400">{onchainAction}</p>}
                     </>
@@ -1707,11 +1916,16 @@ function isWalletCancel(msg: string): boolean {
                         Retry on-chain claim
                       </button>
                       <button onClick={refundDuel} className="w-full btn-secondary py-2.5 text-xs cursor-pointer">
-                        Refund after 30-min timeout
+                        Refund after {REFUND_OPENS_AFTER_MINUTES}-min timeout
                       </button>
                       {onchainAction && <p className="text-[10px] font-mono text-zinc-400">{onchainAction}</p>}
                     </div>
                   </>
+                )}
+                {settlementTxHash && matchResult.outcome !== 'win' && (
+                  <p className="text-[10px] font-mono text-zinc-400 mt-1">
+                    You released the winner's prize on-chain.
+                  </p>
                 )}
                 {settlementTxHash && (
                   <a
@@ -1789,6 +2003,17 @@ function isWalletCancel(msg: string): boolean {
                       </div>
                     </div>
 
+                    {/* Audit M31: the streak is server-owned and now actually
+                        feeds the XP. Show the COUNT the ledger reports — the
+                        local bonus amount would not reconcile with the
+                        server's total. */}
+                    {stats.winStreak > 1 && (
+                      <div className="flex justify-between text-[10px] font-mono text-amber-400/90">
+                        <span>{t('winStreakLabel')}</span>
+                        <span>×{stats.winStreak}</span>
+                      </div>
+                    )}
+
                   </motion.div>
                 )}
 
@@ -1861,6 +2086,15 @@ function isWalletCancel(msg: string): boolean {
                     <span>View Cryptographic Certificate & Proof</span>
                   </button>
 
+                  {/* Audit 2026-10-13: `POST /api/dispute` had no client path —
+                      a player could not file the report the feature exists for. */}
+                  {serverMatch && wallet.fullAddress && (
+                    <DisputeReportButton
+                      matchId={serverMatch.matchId}
+                      address={wallet.fullAddress}
+                    />
+                  )}
+
                   <button
                     onClick={handleBackToLobby}
                     className="w-full btn-secondary py-3 flex items-center justify-center gap-2 cursor-pointer text-xs"
@@ -1890,6 +2124,10 @@ function isWalletCancel(msg: string): boolean {
             opponentTime: matchResult.opponentTime,
             timestamp: Date.now(),
             opponentName: opponent,
+            // Audit M39: the certificate derives its ON-CHAIN badge from this
+            // hash. Omitting it made a settled duel's certificate claim
+            // "LOCAL RESULT · NOT ON-CHAIN" while the tx link sat right below.
+            hash: settlementTxHash || undefined,
           }}
           playerTag={wallet.playerId}
           walletAddress={wallet.address || undefined}

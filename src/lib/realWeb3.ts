@@ -17,6 +17,7 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 import { getDb } from './firebase';
+import { checkUsername, ensureSession, logoutServerSession } from './gameServerClient';
 import { CHAIN, TOKENS } from './chain';
 
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
@@ -131,6 +132,8 @@ export interface UserWalletData {
   avgReactionMs: number;
   xp: number;
   level: number;
+  /** Audit M31: server-authoritative win streak (the XP bonus depends on it). */
+  winStreak?: number;
   savedFriends?: string[];
   history: MatchRecord[];
 }
@@ -165,6 +168,14 @@ export interface LeaderboardPlayer {
   level: number;
 }
 
+/**
+ * The localStorage key the game page persists a live ranked match under.
+ *
+ * Audit H15: the identity lock reads it, so the two modules must agree on the
+ * string — a typo here would silently disable the lock.
+ */
+export const ACTIVE_RANKED_MATCH_KEY = 'pulsar_active_ranked_match';
+
 class RealWeb3Manager {
   private currentAccount: ConnectedAccountState = {
     address: '',
@@ -178,6 +189,12 @@ class RealWeb3Manager {
   };
 
   private listeners: Array<() => void> = [];
+  /**
+   * Audit H15 — set when a wallet or network change was REFUSED because a
+   * ranked match is live. The UI reads it to tell the player what to do instead
+   * of silently ignoring their action.
+   */
+  public identityLockedReason = '';
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -189,12 +206,38 @@ class RealWeb3Manager {
         ethereum.on?.('accountsChanged', (accounts: string[]) => {
           if (!accounts || accounts.length === 0) {
             this.disconnect();
-          } else {
-            this.setConnectedAddress(accounts[0], this.currentAccount.providerName || 'MetaMask', CHAIN.chainId);
+            return;
           }
+          // Audit H15: switching accounts mid-match would change
+          // `wallet.fullAddress` while the server session, the match and the
+          // escrow deposits all belong to the previous address — the player
+          // would be playing as someone else, and `iWon` would be evaluated
+          // against the wrong wallet.
+          if (this.hasLiveRankedMatch()) {
+            this.identityLockedReason =
+              'Your wallet changed, but a ranked match is in progress. Finish or ' +
+              'leave the match before switching accounts.';
+            this.notify();
+            return;
+          }
+          this.setConnectedAddress(
+            accounts[0],
+            this.currentAccount.providerName || 'MetaMask',
+            CHAIN.chainId,
+            ethereum
+          );
         });
 
         ethereum.on?.('chainChanged', () => {
+          // Audit H15: a reload destroys the in-memory provider — on
+          // WalletConnect that loses the session mid-match. Refuse and explain.
+          if (this.hasLiveRankedMatch()) {
+            this.identityLockedReason =
+              'Your wallet switched network, but a ranked match is in progress. ' +
+              'Finish or leave the match, then switch back.';
+            this.notify();
+            return;
+          }
           window.location.reload();
         });
 
@@ -202,6 +245,25 @@ class RealWeb3Manager {
           this.disconnect();
         });
       }
+    }
+  }
+
+  /**
+   * True while a ranked duel is in flight (audit H15).
+   *
+   * The game page persists the live match under this key; while it is present
+   * the player's identity and network are frozen, because the server session,
+   * the match and the escrow deposits were all created under the current
+   * address on the current chain.
+   */
+  private hasLiveRankedMatch(): boolean {
+    try {
+      const raw = localStorage.getItem(ACTIVE_RANKED_MATCH_KEY);
+      if (!raw) return false;
+      const saved = JSON.parse(raw) as { matchId?: string };
+      return Boolean(saved?.matchId);
+    } catch {
+      return false;
     }
   }
 
@@ -241,6 +303,18 @@ class RealWeb3Manager {
 
 
   private wcProvider: any = null;
+  /**
+   * Audit C3 — the EIP-1193 provider the user ACTUALLY connected with.
+   *
+   * `getActiveEip1193Provider()` used to fall back to `window.ethereum`, which
+   * is whatever wallet happens to own that slot — not necessarily the one the
+   * user picked. With two wallets installed (e.g. MetaMask on window.ethereum
+   * and Coinbase connected through EIP-6963) every money transaction
+   * (approveUsdt / createDuel / settleDuel) and the SIWE signature were routed
+   * to the wrong account. Recording the chosen provider at connect time is the
+   * only reliable way to know which one to sign with.
+   */
+  private activeProvider: any = null;
   private wcInitPromise: Promise<any> | null = null;
   private wcConnectPromise: Promise<ConnectedAccountState> | null = null;
   private wcEventsBound = false;
@@ -321,6 +395,7 @@ class RealWeb3Manager {
         }
       }
       if (accounts && accounts.length > 0) {
+        this.bindActiveProvider(this.wcProvider);
         void this.setConnectedAddress(accounts[0], this.pendingWalletName || 'WalletConnect', provider.chainId || CHAIN.chainId);
       }
     });
@@ -333,6 +408,7 @@ class RealWeb3Manager {
       if (!accounts || accounts.length === 0) {
         this.disconnect();
       } else {
+        this.bindActiveProvider(this.wcProvider);
         this.setConnectedAddress(accounts[0], this.pendingWalletName || 'WalletConnect', CHAIN.chainId);
       }
     });
@@ -386,7 +462,8 @@ class RealWeb3Manager {
             await this.setConnectedAddress(
               accounts[0],
               this.pendingWalletName || 'Trust Wallet',
-              this.wcProvider.chainId || CHAIN.chainId
+              this.wcProvider.chainId || CHAIN.chainId,
+              this.wcProvider
             );
             return;
           }
@@ -426,10 +503,13 @@ class RealWeb3Manager {
     if (this.wcInitPromise) return this.wcInitPromise;
 
     this.wcInitPromise = (async () => {
-      // Purge any stale/orphaned proposal keys before initializing provider
+      // Purge any stale/orphaned proposal keys before initializing provider.
+      // Audit M36: iterate BACKWARDS — localStorage indices shift under the
+      // cursor as keys are removed, so a forward loop skips the entry that
+      // slides into each vacated slot (the trap main.tsx already documents).
       try {
         if (typeof window !== 'undefined' && window.localStorage) {
-          for (let i = 0; i < localStorage.length; i++) {
+          for (let i = localStorage.length - 1; i >= 0; i--) {
             const k = localStorage.key(i);
             if (k && k.startsWith('wc@2:') && k.includes('proposal')) {
               localStorage.removeItem(k);
@@ -568,9 +648,14 @@ class RealWeb3Manager {
 
         if (accounts && accounts.length > 0) {
           this.pendingWalletName = savedProvider;
-          return await this.setConnectedAddress(accounts[0], savedProvider, provider.chainId || CHAIN.chainId);
+          return await this.setConnectedAddress(
+            accounts[0],
+            savedProvider,
+            provider.chainId || CHAIN.chainId,
+            provider
+          );
         } else if (savedAddr) {
-          return await this.setConnectedAddress(savedAddr, savedProvider, CHAIN.chainId);
+          return await this.setConnectedAddress(savedAddr, savedProvider, CHAIN.chainId, provider);
         }
       } catch (err) {
         console.warn('[Pulsar Web3] WalletConnect session recovery fallback:', err);
@@ -591,7 +676,7 @@ class RealWeb3Manager {
             const chainHex = await injected.request({ method: 'eth_chainId' });
             if (chainHex) chainId = parseInt(chainHex, 16);
           } catch {}
-          return await this.setConnectedAddress(accounts[0], savedProvider, chainId);
+          return await this.setConnectedAddress(accounts[0], savedProvider, chainId, injected);
         }
       } catch {}
     }
@@ -665,7 +750,8 @@ class RealWeb3Manager {
         return await this.setConnectedAddress(
           existingAccts[0],
           providerName,
-          existing.chainId || CHAIN.chainId
+          existing.chainId || CHAIN.chainId,
+          existing
         );
       }
     } catch {}
@@ -685,7 +771,8 @@ class RealWeb3Manager {
           return this.setConnectedAddress(
             sessAccts[0],
             providerName,
-            p.chainId || CHAIN.chainId
+            p.chainId || CHAIN.chainId,
+            p
           );
         }
       } catch {}
@@ -707,7 +794,8 @@ class RealWeb3Manager {
           return await this.setConnectedAddress(
             provider.accounts[0],
             providerName,
-            provider.chainId || CHAIN.chainId
+            provider.chainId || CHAIN.chainId,
+            provider
           );
         }
 
@@ -744,7 +832,7 @@ class RealWeb3Manager {
 
         if (accounts && accounts.length > 0) {
           const chainId = provider.chainId || CHAIN.chainId;
-          return await this.setConnectedAddress(accounts[0], providerName, chainId);
+          return await this.setConnectedAddress(accounts[0], providerName, chainId, provider);
         }
         throw new Error('No accounts selected in your wallet.');
       } catch (err: any) {
@@ -869,6 +957,8 @@ class RealWeb3Manager {
           }
         }
 
+        // Audit C3: remember WHICH provider this session belongs to.
+        this.bindActiveProvider(provider);
         return await this.setConnectedAddress(accounts[0], providerDetail.info.name, chainId);
       } else {
         throw new Error('No accounts selected in your wallet.');
@@ -902,9 +992,16 @@ class RealWeb3Manager {
     this.lastWcUri = null;
     this.lastHandoff = null;
     if (this.wcProvider) {
+      // Audit M36: `provider.connect()` opens the relay transport immediately,
+      // so `connected` is already true while the wallet has not approved yet.
+      // The old `!connected` guard therefore skipped the teardown in exactly
+      // the case that needed it — the live one — and cancelling dropped our
+      // only reference to a provider whose relay socket stayed open (the WC
+      // keys were never cleaned up either). Always close the relay when we
+      // abandon a pairing, mirroring `disconnect()`'s guard semantics.
       try {
-        if (!this.wcProvider.connected) {
-          this.wcProvider.disconnect().catch(() => {});
+        if (typeof this.wcProvider.disconnect === 'function') {
+          Promise.resolve(this.wcProvider.disconnect()).catch(() => {});
         }
       } catch {
         /* ignore */
@@ -978,6 +1075,8 @@ class RealWeb3Manager {
             }
           }
 
+          // Audit C3: `injected` is the EIP-1193 object we actually talked to.
+          this.bindActiveProvider(injected);
           return await this.setConnectedAddress(accounts[0], provider, chainId);
         }
         throw new Error('No wallet account was selected.');
@@ -1016,6 +1115,17 @@ class RealWeb3Manager {
     );
   }
 
+  /**
+   * Record which EIP-1193 provider the user connected with (audit C3).
+   *
+   * Called from every connect path so `getActiveEip1193Provider()` can return
+   * the wallet the user actually chose instead of guessing from
+   * `window.ethereum`. Pass `null` on disconnect.
+   */
+  public bindActiveProvider(provider: any | null): void {
+    this.activeProvider = provider ?? null;
+  }
+
   /** EIP-1193 provider of the currently connected wallet (injected or WalletConnect). */
   public getActiveEip1193Provider(): any | null {
     const wc: any = this.wcProvider;
@@ -1036,14 +1146,29 @@ class RealWeb3Manager {
       try {
         if (typeof wc.disconnect === 'function') wc.disconnect().catch(() => {});
       } catch {}
+      // The recorded provider may BE this zombie (the WalletConnect connect and
+      // restore paths bind `this.wcProvider`). Clearing only `wcProvider` would
+      // leave `activeProvider` pointing at the dead object, and the fallback
+      // below would hand it straight back — every request then throws
+      // "undefined is not an object (evaluating 'this.namespace...')".
+      if (this.activeProvider === wc) this.activeProvider = null;
       this.wcProvider = null;
       this.wcConnectPromise = null;
     }
+    // Audit C3: prefer the provider the user actually connected with. Only fall
+    // back to window.ethereum when nothing was recorded (e.g. a session
+    // restored from a previous page load before the connect path ran).
+    if (this.activeProvider) return this.activeProvider;
     const injected = typeof window !== 'undefined' ? (window as any).ethereum : null;
     return injected || null;
   }
 
   public disconnect(): void {
+    this.bindActiveProvider(null);
+    this.identityLockedReason = '';
+    // Audit H22b: revoke the SERVER session too. Dropping only the local copy
+    // left the bearer token valid server-side for the rest of its 2h TTL.
+    void logoutServerSession().catch(() => {});
     try {
       if (this.wcProvider?.connected) {
         this.wcProvider.disconnect().catch(() => {});
@@ -1141,8 +1266,18 @@ class RealWeb3Manager {
   private async setConnectedAddress(
     address: string,
     providerName: string,
-    chainId: number = 137
+    chainId: number = 137,
+    /**
+     * Audit C3: the EIP-1193 provider this session belongs to. Every path that
+     * establishes a session has one in scope, and recording it HERE (rather
+     * than at each call site) is what makes the fix complete — the first pass
+     * only covered the two interactive connect paths and left the reload /
+     * session-restore / accountsChanged paths falling back to window.ethereum.
+     * `undefined` means "caller has no provider to report"; `null` clears it.
+     */
+    provider?: any | null
   ): Promise<ConnectedAccountState> {
+    if (provider !== undefined) this.bindActiveProvider(provider);
     const formatted = address.toLowerCase();
     const short = `${formatted.slice(0, 6)}...${formatted.slice(-4)}`;
 
@@ -1296,10 +1431,16 @@ class RealWeb3Manager {
   public async saveUserDataAsync(data: UserWalletData): Promise<void> {
     if (!data.address) return;
     this.saveToLocal(data);
-    if (this.currentAccount.address === data.address) {
-      this.currentAccount.balanceUSDT = data.vaultBalance;
-      this.notify();
-    }
+    // Audit H12: do NOT write `balanceUSDT` from the profile record.
+    //
+    // `vaultBalance` is a deprecated field: it is 0.0 on every fresh profile and
+    // nothing updates it (P1.16 removed the vault). Assigning it here turned a
+    // real on-chain balance — say $25.00 with `balanceUnknown === false` — into
+    // a stated $0.00 after any recordMatch or updatePlayerTag, and tripped the
+    // insufficient-balance gate in the lobby and the game.
+    //
+    // The chain is the only source of truth for the balance; `balanceUnknown`
+    // says whether it has been read yet. `fetchLiveOnChainBalances` owns both.
     await this.syncToFirestore(data);
   }
 
@@ -1398,12 +1539,28 @@ class RealWeb3Manager {
       const results: LeaderboardPlayer[] = [];
       querySnapshot.forEach((d) => {
         const val = d.data();
-        const earned = typeof val.totalEarnedUSDT === 'number' ? val.totalEarnedUSDT : Math.round((val.wins || 0) * 1.96 * 100) / 100;
-        const tag = val.playerId || val.name || (val.address ? RealWeb3Manager.getPlayerTagForAddress(val.address) : 'Arena Player');
-        const bestReaction = val.bestReactionMs || val.reactionTime || 185;
+        // Audit 2026-10-13 — HONESTY: this read `totalEarnedUSDT`, which the
+        // settlement server NEVER writes (it writes `earnedUSDT`), so every
+        // podium row fell back to a computed guess — `wins * 1.96` — and
+        // presented it as USDT earned. A reaction time was invented the same way
+        // (`|| 185`), and a missing address became a RANDOM hex string. Three
+        // fabricated numbers on the money surface of a product whose pitch is
+        // cryptographic proof.
+        //
+        // The server now writes `earnedUSDT` and `bestReactionMs`; a row that
+        // lacks them reports 0 / no time rather than a plausible-looking guess.
+        if (!val.address) return; // no identity → not a player row
+        const earned =
+          typeof val.earnedUSDT === 'number'
+            ? val.earnedUSDT
+            : typeof val.totalEarnedUSDT === 'number'
+              ? val.totalEarnedUSDT
+              : 0;
+        const tag = val.playerId || val.name || RealWeb3Manager.getPlayerTagForAddress(val.address);
+        const bestReaction = typeof val.bestReactionMs === 'number' ? val.bestReactionMs : 0;
         results.push({
-          address: val.address || `0x${Math.random().toString(16).slice(2, 10)}`,
-          shortAddress: val.shortAddress || (val.address ? `${val.address.slice(0, 6)}...${val.address.slice(-4)}` : '0x...'),
+          address: val.address,
+          shortAddress: val.shortAddress || `${val.address.slice(0, 6)}...${val.address.slice(-4)}`,
           name: tag,
           playerId: tag,
           wins: val.wins || 0,
@@ -1446,6 +1603,18 @@ class RealWeb3Manager {
     if (!q) return [];
 
     const matched: FriendProfile[] = [];
+    const toProfile = (data: UserWalletData): FriendProfile => ({
+      address: data.address,
+      playerId: data.playerId || `Player#${data.address.slice(2, 6)}`,
+      shortAddress: `${data.address.slice(0, 6)}...${data.address.slice(-4)}`,
+      level: data.level || 1,
+      xp: data.xp || 0,
+      wins: data.wins || 0,
+      totalMatches: data.totalMatches || 0,
+      bestReactionMs: data.bestReactionMs || 0,
+      winRate: data.totalMatches > 0 ? Math.round((data.wins / data.totalMatches) * 100) : 0,
+      status: 'online',
+    });
 
     // Only real registered players are returned. No fabricated profiles.
     if (q.startsWith('0x') && q.length >= 6) {
@@ -1455,18 +1624,7 @@ class RealWeb3Manager {
           const userDoc = await getDoc(doc(getDb(), 'users', q));
           if (userDoc.exists()) {
             const data = userDoc.data() as UserWalletData;
-            matched.push({
-              address: data.address,
-              playerId: data.playerId || `Player#${data.address.slice(2, 6)}`,
-              shortAddress: `${data.address.slice(0, 6)}...${data.address.slice(-4)}`,
-              level: data.level || 1,
-              xp: data.xp || 0,
-              wins: data.wins || 0,
-              totalMatches: data.totalMatches || 0,
-              bestReactionMs: data.bestReactionMs || 0,
-              winRate: data.totalMatches > 0 ? Math.round((data.wins / data.totalMatches) * 100) : 0,
-              status: 'online',
-            });
+            matched.push(toProfile(data));
           } else if (q.length === 42) {
             // New valid EVM address
             matched.push({
@@ -1485,6 +1643,25 @@ class RealWeb3Manager {
           }
         } catch {}
       }
+    } else {
+      // Audit M26: search by playerId too. The tag is what players actually
+      // share with each other — address-only search made the feature useless
+      // to anyone who does not know their friend's 42-character hex address.
+      try {
+        const snap = await getDocs(
+          query(
+            collection(getDb(), 'users'),
+            where('playerId', '==', searchQuery.trim()),
+            limit(10)
+          )
+        );
+        snap.forEach((docSnap) => {
+          const data = docSnap.data() as UserWalletData;
+          if (!data?.address) return;
+          if (matched.some((m) => m.address.toLowerCase() === data.address.toLowerCase())) return;
+          matched.push(toProfile(data));
+        });
+      } catch {}
     }
 
     return matched;
@@ -1596,6 +1773,32 @@ class RealWeb3Manager {
     }
 
     const cleanUserAddr = (currentUserAddress || this.currentAccount.address || '').toLowerCase();
+
+    // Audit M12 (2026-10-13): ask the SERVER first. The registry endpoint was
+    // the authoritative, rate-limited path and nothing called it, so it
+    // protected nothing. The direct Firestore read below stays as the offline
+    // fallback (it is a public collection, so it is not a weaker source — just
+    // an unthrottled one).
+    if (cleanUserAddr) {
+      try {
+        const session = await ensureSession(cleanUserAddr, async (message: string) => {
+          const provider = this.getActiveEip1193Provider();
+          if (!provider) throw new Error('No active wallet to sign in with.');
+          return await provider.request({ method: 'personal_sign', params: [message, cleanUserAddr] });
+        });
+        const serverCheck = await checkUsername(session, cleanTag);
+        if (serverCheck.available) {
+          return { available: true, cleanTag };
+        }
+        return {
+          available: false,
+          cleanTag,
+          error: `Username "${cleanTag}" is already taken by another player`,
+        };
+      } catch {
+        /* no session / offline → fall through to the direct read */
+      }
+    }
 
     try {
       // 1. Check usernames registry document (primary index for O(1) collision detection)

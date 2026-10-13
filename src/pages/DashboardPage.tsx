@@ -216,8 +216,16 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                     <span>{t('vaultEscrow')}</span>
                   </div>
                   <div className="text-lg font-extrabold text-emerald-400 font-mono">
-                    ${stats.balance.toFixed(2)}{' '}
-                    <span className="text-[10px] font-normal text-zinc-500">USDT</span>
+                    {/* Audit 2026-10-13: see ConnectWallet — an unread balance
+                        is not $0.00. */}
+                    {stats.balanceUnknown ? (
+                      <span className="text-zinc-400">—</span>
+                    ) : (
+                      <>
+                        ${stats.balance.toFixed(2)}{' '}
+                        <span className="text-[10px] font-normal text-zinc-500">USDT</span>
+                      </>
+                    )}
                   </div>
                   <div className="text-[9.5px] text-zinc-500 font-mono mt-0.5">
                     {t('nonCustodialPolygon')}
@@ -607,9 +615,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                           {player.name || player.playerId || player.shortAddress}
                         </div>
                         <div className="text-[9.5px] text-zinc-400 font-mono">
-                          {player.bestReactionMs || player.reactionTime || 180}ms
+                          {player.bestReactionMs || player.reactionTime || 0}ms
                         </div>
                         <div className="text-[9px] text-emerald-400 font-mono mt-1 font-semibold">
+                          {/* Audit 2026-10-13: the reader used to invent a
+                              figure (`wins * 1.96`) so this always looked exact.
+                              A row with no recorded earnings now says so. */}
                           {(player.totalWinnings ?? player.totalEarnedUSDT) != null
                             ? `$${(player.totalWinnings ?? player.totalEarnedUSDT ?? 0).toLocaleString()}`
                             : `~$${(((player.wins ?? 0) * 2 * ECONOMY.winnerShareBps) / 10_000).toLocaleString()} (est.)`}
@@ -668,7 +679,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                       </div>
 
                       <div className="text-right font-mono">
-                        <div className="font-bold text-sky-400 text-xs">{p.bestReactionMs || p.reactionTime || 180}ms</div>
+                        <div className="font-bold text-sky-400 text-xs">
+                          {p.bestReactionMs || p.reactionTime
+                            ? `${p.bestReactionMs || p.reactionTime}ms`
+                            : '—'}
+                        </div>
                         <div className="text-[9.5px] text-emerald-400">
                           {(p.totalWinnings ?? p.totalEarnedUSDT) != null
                             ? `$${(p.totalWinnings ?? p.totalEarnedUSDT ?? 0).toLocaleString()}`

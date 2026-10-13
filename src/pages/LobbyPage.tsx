@@ -29,11 +29,27 @@ import { realWeb3Manager, MatchRecord } from '../lib/realWeb3';
 import { escrowStatus } from '../lib/escrowFlow';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
-import { gameServerConfigured } from '../lib/gameServerClient';
+import {
+  fetchPendingChallenges,
+  gameServerConfigured,
+  loadServerSession,
+  type PendingChallenge,
+} from '../lib/gameServerClient';
 
 interface LobbyPageProps {
-  onNavigate: (path: string, opponent?: string, stake?: number) => void;
-  onStartDuelWithOpponent?: (opponentName: string, stake?: number) => void;
+  onNavigate: (
+    path: string,
+    opponent?: string,
+    stake?: number,
+    legalTab?: unknown,
+    opponentAddress?: string
+  ) => void;
+  /** Audit M27: the address is what makes the challenge a reservation. */
+  onStartDuelWithOpponent?: (
+    opponentName: string,
+    stake?: number,
+    opponentAddress?: string
+  ) => void;
 }
 
 const STAKE_TIERS = [
@@ -61,20 +77,51 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
   const [isRefreshingOnChain, setIsRefreshingOnChain] = useState(false);
 
   const [liveCloudMatches, setLiveCloudMatches] = useState<MatchRecord[]>([]);
+  // Audit M27 closure: friend challenges waiting for THIS player.
+  const [challenges, setChallenges] = useState<PendingChallenge[]>([]);
 
   useEffect(() => {
     setMounted(true);
 
     const unsubMatches = realWeb3Manager.subscribeGlobalMatches((matches) => {
-      if (matches && matches.length > 0) {
-        setLiveCloudMatches(matches);
-      }
+      // Audit M42: an empty snapshot is a FACT — the arena has no recent
+      // real-stake duels. The old `length > 0` guard ignored it, so the last
+      // entries stayed on screen as if they were still live. Always reflect
+      // what the server sent, including nothing.
+      setLiveCloudMatches(matches ?? []);
     });
 
     return () => {
       unsubMatches();
     };
   }, []);
+
+  // Audit M27 closure: ask who is waiting for us. Only runs when a session is
+  // already cached — `ensureSession` would prompt for a signature, and a lobby
+  // visit must never do that.
+  useEffect(() => {
+    if (!wallet.connected || !wallet.address) {
+      setChallenges([]);
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      const session = loadServerSession();
+      if (!session || session.address !== wallet.address.toLowerCase()) return;
+      try {
+        const res = await fetchPendingChallenges(session);
+        if (!cancelled) setChallenges(res.available ? res.challenges : []);
+      } catch {
+        /* a failed poll must not break the lobby */
+      }
+    };
+    void poll();
+    const id = setInterval(poll, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [wallet.connected, wallet.address]);
 
   // F-17: prize math derives from the single shared constant (mirrors the
   // contract's PLATFORM_FEE_BPS) — no layer-local hardcodes left.
@@ -411,6 +458,42 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
 
         </motion.div>
 
+        {/* Audit M27 closure: a challenge you cannot see is a duel that never
+            happens. Accepting carries the challenger's ADDRESS, which is what
+            lands you in the match they reserved. */}
+        {challenges.length > 0 && (
+          <div className="space-y-2" data-testid="pulsar-challenges">
+            {challenges.map((c) => (
+              <div
+                key={c.matchId}
+                className="linear-card p-3 flex items-center justify-between gap-3 border-sky-500/25"
+              >
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-white truncate">
+                    {t('challengeWaitingTitle')}
+                  </div>
+                  <div className="text-[10px] font-mono text-zinc-400 truncate">
+                    {c.address.slice(0, 6)}...{c.address.slice(-4)} · ${c.stake} USDT
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  data-testid="pulsar-accept-challenge"
+                  onClick={() => {
+                    sounds.playGo();
+                    const label = `${c.address.slice(0, 6)}...${c.address.slice(-4)}`;
+                    onStartDuelWithOpponent?.(label, c.stake, c.address);
+                    onNavigate('/game/reaction', label, c.stake, undefined, c.address);
+                  }}
+                  className="shrink-0 px-3 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-black text-xs font-bold cursor-pointer transition-colors"
+                >
+                  {t('challengeAccept')}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div>
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
@@ -427,7 +510,12 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
 
           <div className="linear-card divide-y divide-white/[0.04] overflow-hidden">
             {(() => {
-              const allSource = liveCloudMatches.length > 0 ? liveCloudMatches : history;
+              // Audit 2026-10-13 — HONESTY: this fell back to the player's OWN
+              // history when the global feed was empty, and rendered it under
+              // "LIVE ARENA FEED" with a pulsing dot. The player's past duels
+              // are not a live arena feed, and an empty feed is a fact (the M42
+              // fix made the server say so). Show nothing instead.
+              const allSource = liveCloudMatches;
               // STRICTLY SUPPORT & DISPLAY ONLY REAL USDT STAKED BATTLES (stake > 0)
               const matchesToDisplay = allSource.filter((m: any) => {
                 const fee = Number(m.entryFee ?? m.stake ?? 0);
@@ -651,12 +739,12 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
           isOpen={showFriendModal}
           selectedStake={selectedStake}
           onClose={() => setShowFriendModal(false)}
-          onStartDuel={(oppName, stake) => {
+          onStartDuel={(oppName, stake, oppAddress) => {
             setShowFriendModal(false);
             if (onStartDuelWithOpponent) {
-              onStartDuelWithOpponent(oppName, stake);
+              onStartDuelWithOpponent(oppName, stake, oppAddress);
             }
-            onNavigate('/game/reaction', oppName, stake);
+            onNavigate('/game/reaction', oppName, stake, undefined, oppAddress);
           }}
         />
       )}

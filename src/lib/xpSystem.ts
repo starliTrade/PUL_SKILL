@@ -1,7 +1,17 @@
 /**
- * Pulsar Protocol - Cryptographic Skill-to-Earn Tokenomics & XP Engine ($PULSAR)
+ * PULSAR — the XP engine.
  *
- * Mathematically Non-Exploitable Economic Model:
+ * Audit 2026-10-13: this header used to describe a product that does not exist —
+ * a "$PULSAR" token, a "Fixed Base Mining Rate (100 XP = 1 $PULSAR)", tier
+ * "yield boosts", a "Biometric Entropy Threshold >= 80%", and an "Anti-Farming
+ * Cooldown". `TOKENOMICS_SPEC` was deleted precisely because there is no token,
+ * and H16 removed the fabricated biometric claims from the anti-cheat module —
+ * but this block kept advertising all of it at the top of the file.
+ *
+ * What the engine actually does: converts a settled duel's outcome, stake and
+ * reaction time into XP, and XP into a level. The server owns the numbers
+ * (`api/xp.py`); this copy is for practice mode and for describing a total the
+ * client did not compute. `tests/fixtures/xp_vectors.json` pins the two together.
  *
  * 1. Leveling Curve:
  *    - XP Required for Level L: Threshold(L) = round(100 * (L - 1)^1.5)
@@ -12,27 +22,25 @@
  *    - Level 25: 11,757 XP
  *    - Level 50: 34,300 XP (Apex Predator Tier)
  *
- * 2. Match Reward Matrix:
- *    - Base Victory XP: +100 XP
- *    - Base Loss XP: +30 XP (Encourages active duel participation)
- *    - Stake Weight Multiplier: +round(min(stake * 20, 200)) XP (Logarithmic dampening against whale exploits)
- *    - Reflex Speed Bonus:
- *      * Sub-180ms: +50 XP (Peak Human Reflex)
- *      * Sub-240ms: +30 XP (Elite Reflex)
- *      * Sub-300ms: +15 XP (Fast Reflex)
- *    - Streak Multiplier: +min(winStreak * 12, 60) XP (Rewards consistency)
+ * 2. Match Reward Matrix (audit M31: these are the numbers the code uses —
+ *    `api/xp.py` mirrors them and `tests/fixtures/xp_vectors.json` pins the two
+ *    together. This block used to document a DIFFERENT matrix than the one
+ *    implemented, which is exactly the drift the parity contract exists to
+ *    prevent):
+ *    - Base Victory XP: +120 XP
+ *    - Base Loss XP: +35 XP (Encourages active duel participation)
+ *    - Stake Weight Multiplier: +round(min(stake * 25, 250)) XP on a win,
+ *      +round(min(stake * 10, 250)) XP on a loss
+ *    - Reflex Speed Bonus (wins only):
+ *      * Sub-180ms: +60 XP (Peak Human Reflex)
+ *      * Sub-240ms: +35 XP (Elite Reflex)
+ *      * Sub-300ms: +20 XP (Fast Reflex)
+ *    - Streak Multiplier: +min(winStreak * 15, 75) XP, where `winStreak` is the
+ *      streak INCLUDING this win (so the first win of a streak earns none)
  *
- * 3. Native Token Conversion & Staking Yield:
- *    - Fixed Base Mining Rate: 100 XP = 1 $PULSAR Token (0.01 $PULSAR per XP)
- *    - Tier Multipliers ($PULSAR Airdrop & Mining Velocity):
- *      * Tier I (Novice Duelist - Lv 1-10): 1.00x Base Yield
- *      * Tier II (Veteran Duelist - Lv 11-25): 1.25x Yield Boost
- *      * Tier III (Cyber Master - Lv 26-49): 1.50x Yield Boost
- *      * Tier IV (Apex Predator - Lv 50+): 2.00x Max Yield Boost
- *
- * 4. Anti-Bot & Proof-of-Skill Guardrails:
- *    - Biometric Entropy Threshold: Must achieve >= 80% entropy confidence to mine bonus reflex XP.
- *    - Anti-Farming Cooldown: Repeated consecutive duels with identical peers have diminishing XP returns.
+ * 3. Tiers: cosmetic bands over the level curve (Novice / Veteran / Cyber Master
+ *    / Apex Predator). They carry NO economic multiplier — there is no token to
+ *    multiply. `tierMultiplier` is kept because the UI renders it as a label.
  */
 
 export interface XPSummary {
@@ -70,8 +78,14 @@ export interface TierInfo {
 export class XPSystem {
   public static getLevel(totalXP: number): number {
     if (totalXP <= 0) return 1;
-    const lvl = Math.floor(Math.pow(totalXP / 100, 1 / 1.5)) + 1;
-    return Math.max(1, lvl);
+    // Audit M45: this floors while `getXPForLevel` rounds, so the two were not
+    // inverses — a player at exactly the XP for level 5 was shown as level 4.
+    // The estimate below is then corrected against the real thresholds, which
+    // makes the pair exact by construction.
+    let level = Math.floor(Math.pow(totalXP / 100, 1 / 1.5)) + 1;
+    while (this.getXPForLevel(level + 1) <= totalXP) level++;
+    while (level > 1 && this.getXPForLevel(level) > totalXP) level--;
+    return Math.max(1, level);
   }
 
   public static getXPForLevel(level: number): number {
@@ -212,21 +226,45 @@ export class XPSystem {
     const totalAwardedXP = baseXP + stakeBonusXP + speedBonusXP + streakBonusXP;
     const newTotalXP = currentXP + totalAwardedXP;
 
-    const newLevel = this.getLevel(newTotalXP);
-    const curLevelBaseXP = this.getXPForLevel(newLevel);
-    const nextLevelBaseXP = this.getXPForLevel(newLevel + 1);
-    const xpSpan = Math.max(1, nextLevelBaseXP - curLevelBaseXP);
-    const currentInLevel = newTotalXP - curLevelBaseXP;
-    const progressPercent = Math.min(100, Math.round((currentInLevel / xpSpan) * 100));
-    const tier = this.getTierInfo(newLevel);
-
     return {
       baseXP,
       stakeBonusXP,
       speedBonusXP,
       streakBonusXP,
       totalAwardedXP,
-      newTotalXP,
+      ...this.describe(newTotalXP),
+    };
+  }
+
+  /**
+   * The level/progress/tier a total XP amount implies.
+   *
+   * Audit M31: the server owns XP now, so the client must be able to describe a
+   * total it did not compute. Without this the post-match screen would show the
+   * server's LEVEL next to a progress bar derived from the local estimate — two
+   * numbers from different ledgers, side by side.
+   */
+  public static describe(totalXP: number, levelOverride?: number): {
+    newTotalXP: number;
+    newLevel: number;
+    currentLevelXP: number;
+    nextLevelThresholdXP: number;
+    levelProgressPercent: number;
+    tierName: string;
+    tierMultiplier: number;
+  } {
+    // The server's level wins when it is supplied: it is the authority, and the
+    // parity test pins the two curves together so a disagreement is a bug
+    // rather than a legitimate difference.
+    const newLevel = levelOverride && levelOverride > 0 ? levelOverride : this.getLevel(totalXP);
+    const curLevelBaseXP = this.getXPForLevel(newLevel);
+    const nextLevelBaseXP = this.getXPForLevel(newLevel + 1);
+    const xpSpan = Math.max(1, nextLevelBaseXP - curLevelBaseXP);
+    const currentInLevel = totalXP - curLevelBaseXP;
+    const progressPercent = Math.min(100, Math.round((currentInLevel / xpSpan) * 100));
+    const tier = this.getTierInfo(newLevel);
+    return {
+      newTotalXP: totalXP,
       newLevel,
       currentLevelXP: Math.max(0, currentInLevel),
       nextLevelThresholdXP: xpSpan,

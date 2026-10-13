@@ -14,9 +14,32 @@ optimizer_runs = 200
 # Exclude build artifacts from source discovery
 skip = ["out/**", "lib/**"]
 
+# CT14 — fuzz and invariant budgets.
+#
+# `default` stays fast enough to run on every save. `ci` is what the workflow
+# uses. `nightly` is the deep sweep: it is the profile that actually explores
+# the invariant handler's state space, and it is far too slow for a PR.
 [profile.default.fuzz]
 runs = 256
 max_test_rejects = 65536
 
+[profile.default.invariant]
+runs = 64
+depth = 100
+fail_on_revert = false
+
 [profile.ci.fuzz]
 runs = 1024
+
+[profile.ci.invariant]
+runs = 256
+depth = 200
+fail_on_revert = false
+
+[profile.nightly.fuzz]
+runs = 10000
+
+[profile.nightly.invariant]
+runs = 1024
+depth = 500
+fail_on_revert = false

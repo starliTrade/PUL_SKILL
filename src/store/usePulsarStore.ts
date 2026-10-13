@@ -3,7 +3,14 @@ import { WalletState, UserStats, MatchHistoryItem } from '../types';
 import { realWeb3Manager, RealWeb3Manager, UserWalletData, LeaderboardPlayer, ConnectedAccountState } from '../lib/realWeb3';
 import { EIP6963ProviderDetail } from '../lib/eip6963';
 import { XPSystem, XPSummary } from '../lib/xpSystem';
-import { claimUsername, clearServerSession, ensureSession, GameServerUnavailableError } from '../lib/gameServerClient';
+import {
+  claimUsername,
+  clearServerSession,
+  ensureSession,
+  fetchPlayerStats,
+  GameServerUnavailableError,
+  type PlayerStats,
+} from '../lib/gameServerClient';
 
 /**
  * P0.7 — Single shared store.
@@ -35,6 +42,8 @@ interface PulsarSnapshot {
   userData: UserWalletData;
   leaderboard: LeaderboardPlayer[];
   lastMatchXPSummary: XPSummary | null;
+  /** Audit H15b: why a wallet/network switch was refused, if it was. */
+  identityLockedReason: string;
 }
 
 let account: ConnectedAccountState = { ...realWeb3Manager.getAccount() };
@@ -46,7 +55,16 @@ let lastLoadedAddress = '';
 let bootstrapped = false;
 
 function buildSnapshot(): PulsarSnapshot {
-  return { account, userData, leaderboard, lastMatchXPSummary };
+  return {
+    account,
+    userData,
+    leaderboard,
+    lastMatchXPSummary,
+    // Read straight off the manager: it is the only owner of this state, and
+    // copying it into a second variable would be one more thing to keep in
+    // sync.
+    identityLockedReason: realWeb3Manager.identityLockedReason,
+  };
 }
 
 function commit() {
@@ -55,10 +73,18 @@ function commit() {
 
 function reloadUserDataIfStale() {
   if (account.connected && account.address && account.address !== lastLoadedAddress) {
-    lastLoadedAddress = account.address;
+    // Audit H14: capture WHICH account this load belongs to. `lastLoadedAddress`
+    // is set before the request resolves, so without this a slow response for a
+    // previous account lands after a switch and renders one person's wins/XP/
+    // history under another person's wallet.
+    const requested = account.address;
+    lastLoadedAddress = requested;
     realWeb3Manager
-      .loadUserDataAsync(account.address)
+      .loadUserDataAsync(requested)
       .then((data) => {
+        // Drop a response that belongs to an account we have since left, or to
+        // a wallet that has been disconnected.
+        if (!account.connected || account.address !== requested) return;
         userData = data;
         commit();
       })
@@ -183,27 +209,65 @@ const refreshBalance = async () => {
   return await realWeb3Manager.refreshBalances();
 };
 
+/**
+ * Ask the ledger for this player's progression (audit M31).
+ *
+ * Returns null when there is nothing authoritative to read: no wallet, no
+ * session, no ledger, or a network failure. `ensureSession` reuses the cached
+ * SIWE session, so this costs a request, not a signature prompt.
+ */
+const fetchServerProgression = async (address: string): Promise<PlayerStats | null> => {
+  if (!address || address === 'guest_local_player') return null;
+  try {
+    const session = await ensureSession(address, async (message: string) => {
+      const provider = realWeb3Manager.getActiveEip1193Provider();
+      if (!provider) throw new Error('No active wallet to sign in with.');
+      try {
+        return await provider.request({ method: 'personal_sign', params: [message, address] });
+      } catch (e: unknown) {
+        const code = (e as { code?: number })?.code;
+        if (code === -32601 || code === -32602) {
+          return await provider.request({ method: 'signMessage', params: [address, message] });
+        }
+        throw e;
+      }
+    });
+    const res = await fetchPlayerStats(session, address);
+    return res.available ? res : null;
+  } catch {
+    return null;
+  }
+};
+
 const recordMatch = async (match: MatchHistoryItem): Promise<XPSummary> => {
   const userAddress = account.connected && account.address ? account.address : 'guest_local_player';
 
   const data = await realWeb3Manager.loadUserDataAsync(userAddress);
   const currentXP = data.xp || 0;
 
+  // Audit M31: the streak INCLUDING this match. It used to be omitted, so the
+  // streak bonus the engine documents could never fire — a dead reward.
+  const priorStreak = data.winStreak || 0;
+  const localStreak =
+    match.result === 'win' ? priorStreak + 1 : match.result === 'loss' ? 0 : priorStreak;
+
   // Calculate XP with accurate dynamic rewards (Practice games grant balanced training XP)
   const xpCalc = XPSystem.calculateMatchXP(
     match.result,
     match.entryFee,
     match.yourTime,
-    currentXP
+    currentXP,
+    localStreak
   );
 
-  match.xpEarned = xpCalc.totalAwardedXP;
-  lastMatchXPSummary = xpCalc;
+  let summary = xpCalc;
+  match.xpEarned = summary.totalAwardedXP;
 
   const updatedHistory = [match, ...data.history].slice(0, 50);
   data.totalMatches += 1;
-  data.xp = xpCalc.newTotalXP;
-  data.level = xpCalc.newLevel;
+  data.xp = summary.newTotalXP;
+  data.level = summary.newLevel;
+  data.winStreak = localStreak;
 
   if (match.result === 'win') {
     data.wins += 1;
@@ -225,13 +289,45 @@ const recordMatch = async (match: MatchHistoryItem): Promise<XPSummary> => {
         : Math.round((data.avgReactionMs * (data.totalMatches - 1) + match.yourTime) / data.totalMatches);
   }
 
+  // Audit M31: progression is the SERVER's to state. The local arithmetic above
+  // is only a fallback for when the ledger cannot answer — a player must not be
+  // able to edit their own level, and the server's XP is computed from the
+  // settlement's own validated times rather than from a client number.
+  //
+  // Only for a RANKED duel: the ledger records settled duels, so consulting it
+  // after a practice match would replace the practice XP (which is real, and
+  // locally earned) with the ranked-only numbers — resetting a player's
+  // progression to 0 after every training round.
+  const serverStats = match.ranked ? await fetchServerProgression(userAddress) : null;
+  if (serverStats) {
+    data.wins = serverStats.wins;
+    data.losses = serverStats.losses;
+    data.voids = serverStats.voids;
+    data.totalMatches = serverStats.totalMatches;
+    data.xp = serverStats.xp;
+    data.level = serverStats.level;
+    data.winStreak = serverStats.winStreak;
+    if (serverStats.bestReactionMs > 0) data.bestReactionMs = serverStats.bestReactionMs;
+    if (serverStats.avgReactionMs > 0) data.avgReactionMs = serverStats.avgReactionMs;
+    const awarded = serverStats.lastXpAwarded ?? summary.totalAwardedXP;
+    summary = {
+      ...summary,
+      totalAwardedXP: awarded,
+      // Audit M31: describe the SERVER's total, so the level, the progress bar
+      // and the tier all come from one ledger instead of two.
+      ...XPSystem.describe(serverStats.xp, serverStats.level),
+    };
+    match.xpEarned = awarded;
+  }
+
+  lastMatchXPSummary = summary;
   data.history = updatedHistory;
   await realWeb3Manager.saveUserDataAsync(data);
   setUserData({ ...data });
 
   // Refresh cloud leaderboard
   realWeb3Manager.fetchGlobalLeaderboard().then(setLeaderboard);
-  return xpCalc;
+  return summary;
 };
 
 const depositFunds = async (_amount?: number) => {
@@ -312,14 +408,34 @@ const updateBenchmarkSpeed = async (speedMs: number) => {
   setUserData({ ...data });
 };
 
+/**
+ * Test seam: the current snapshot without rendering React.
+ *
+ * The store's state is otherwise reachable only through the hook, which makes
+ * the account-switch race (audit H14) untestable at the unit level.
+ */
+/**
+ * Audit M30 — the subscription function, hoisted to module scope.
+ *
+ * `useSyncExternalStore` compares `subscribe` by IDENTITY. An inline arrow is a
+ * new function every render, so React tore the subscription down and rebuilt it
+ * on every re-render — a subscribe/unsubscribe storm on a page that re-renders
+ * per animation frame, with a window to miss a store change at every teardown.
+ */
+const subscribeToStore = (onChange: () => void): (() => void) =>
+  realWeb3Manager.subscribe(onChange);
+
+/** The snapshot is a module-level value, so this is stable too. */
+const getSnapshot = (): PulsarSnapshot => snapshot;
+
+export function getStoreSnapshot(): PulsarSnapshot {
+  return snapshot;
+}
+
 export function usePulsarStore() {
   bootstrap();
 
-  const state = useSyncExternalStore(
-    (onChange) => realWeb3Manager.subscribe(onChange),
-    () => snapshot,
-    () => snapshot
-  );
+  const state = useSyncExternalStore(subscribeToStore, getSnapshot, getSnapshot);
 
   const currentUsdtBalance =
     state.account.balanceUSDT !== undefined && !isNaN(state.account.balanceUSDT)
@@ -348,6 +464,8 @@ export function usePulsarStore() {
     totalMatches: state.userData.totalMatches,
     xp: state.userData.xp || 0,
     level: state.userData.level || 1,
+    // Audit M31: the server-owned streak, surfaced so the UI can show it.
+    winStreak: state.userData.winStreak || 0,
     playerId:
       state.userData.playerId ||
       (state.account.address ? RealWeb3Manager.getPlayerTagForAddress(state.account.address) : undefined),
@@ -364,6 +482,8 @@ export function usePulsarStore() {
     bestReactionMs: state.userData.bestReactionMs,
     avgReactionMs: state.userData.avgReactionMs,
     lastMatchXPSummary: state.lastMatchXPSummary,
+    // Audit H15b: surfaced by IdentityLockBanner.
+    identityLockedReason: state.identityLockedReason,
     connectWallet,
     connectEIP6963,
     connectWalletConnect,
