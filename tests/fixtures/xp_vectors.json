@@ -1,0 +1,162 @@
+[
+  {
+    "outcome": "win",
+    "stake": 1,
+    "yourTimeMs": 150,
+    "currentXP": 0,
+    "winStreak": 1,
+    "expected": {
+      "baseXP": 120,
+      "stakeBonusXP": 25,
+      "speedBonusXP": 60,
+      "streakBonusXP": 0,
+      "totalAwardedXP": 205,
+      "newTotalXP": 205,
+      "newLevel": 2
+    }
+  },
+  {
+    "outcome": "win",
+    "stake": 1,
+    "yourTimeMs": 150,
+    "currentXP": 0,
+    "winStreak": 2,
+    "expected": {
+      "baseXP": 120,
+      "stakeBonusXP": 25,
+      "speedBonusXP": 60,
+      "streakBonusXP": 30,
+      "totalAwardedXP": 235,
+      "newTotalXP": 235,
+      "newLevel": 2
+    }
+  },
+  {
+    "outcome": "win",
+    "stake": 5,
+    "yourTimeMs": 200,
+    "currentXP": 100,
+    "winStreak": 3,
+    "expected": {
+      "baseXP": 120,
+      "stakeBonusXP": 125,
+      "speedBonusXP": 35,
+      "streakBonusXP": 45,
+      "totalAwardedXP": 325,
+      "newTotalXP": 425,
+      "newLevel": 3
+    }
+  },
+  {
+    "outcome": "win",
+    "stake": 10,
+    "yourTimeMs": 250,
+    "currentXP": 2700,
+    "winStreak": 6,
+    "expected": {
+      "baseXP": 120,
+      "stakeBonusXP": 250,
+      "speedBonusXP": 20,
+      "streakBonusXP": 75,
+      "totalAwardedXP": 465,
+      "newTotalXP": 3165,
+      "newLevel": 11
+    }
+  },
+  {
+    "outcome": "win",
+    "stake": 50,
+    "yourTimeMs": 320,
+    "currentXP": 34300,
+    "winStreak": 10,
+    "expected": {
+      "baseXP": 120,
+      "stakeBonusXP": 250,
+      "speedBonusXP": 0,
+      "streakBonusXP": 75,
+      "totalAwardedXP": 445,
+      "newTotalXP": 34745,
+      "newLevel": 50
+    }
+  },
+  {
+    "outcome": "win",
+    "stake": 2,
+    "yourTimeMs": 0,
+    "currentXP": 800,
+    "winStreak": 1,
+    "expected": {
+      "baseXP": 120,
+      "stakeBonusXP": 50,
+      "speedBonusXP": 0,
+      "streakBonusXP": 0,
+      "totalAwardedXP": 170,
+      "newTotalXP": 970,
+      "newLevel": 5
+    }
+  },
+  {
+    "outcome": "loss",
+    "stake": 1,
+    "yourTimeMs": 200,
+    "currentXP": 500,
+    "winStreak": 0,
+    "expected": {
+      "baseXP": 35,
+      "stakeBonusXP": 10,
+      "speedBonusXP": 0,
+      "streakBonusXP": 0,
+      "totalAwardedXP": 45,
+      "newTotalXP": 545,
+      "newLevel": 4
+    }
+  },
+  {
+    "outcome": "loss",
+    "stake": 5,
+    "yourTimeMs": 400,
+    "currentXP": 11757,
+    "winStreak": 0,
+    "expected": {
+      "baseXP": 35,
+      "stakeBonusXP": 50,
+      "speedBonusXP": 0,
+      "streakBonusXP": 0,
+      "totalAwardedXP": 85,
+      "newTotalXP": 11842,
+      "newLevel": 25
+    }
+  },
+  {
+    "outcome": "void",
+    "stake": 2,
+    "yourTimeMs": 0,
+    "currentXP": 250,
+    "winStreak": 4,
+    "expected": {
+      "baseXP": 0,
+      "stakeBonusXP": 0,
+      "speedBonusXP": 0,
+      "streakBonusXP": 0,
+      "totalAwardedXP": 0,
+      "newTotalXP": 250,
+      "newLevel": 2
+    }
+  },
+  {
+    "outcome": "win",
+    "stake": 0,
+    "yourTimeMs": 179,
+    "currentXP": 0,
+    "winStreak": 1,
+    "expected": {
+      "baseXP": 120,
+      "stakeBonusXP": 0,
+      "speedBonusXP": 60,
+      "streakBonusXP": 0,
+      "totalAwardedXP": 180,
+      "newTotalXP": 180,
+      "newLevel": 2
+    }
+  }
+]
