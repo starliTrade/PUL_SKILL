@@ -218,21 +218,45 @@ export class XPSystem {
     const totalAwardedXP = baseXP + stakeBonusXP + speedBonusXP + streakBonusXP;
     const newTotalXP = currentXP + totalAwardedXP;
 
-    const newLevel = this.getLevel(newTotalXP);
-    const curLevelBaseXP = this.getXPForLevel(newLevel);
-    const nextLevelBaseXP = this.getXPForLevel(newLevel + 1);
-    const xpSpan = Math.max(1, nextLevelBaseXP - curLevelBaseXP);
-    const currentInLevel = newTotalXP - curLevelBaseXP;
-    const progressPercent = Math.min(100, Math.round((currentInLevel / xpSpan) * 100));
-    const tier = this.getTierInfo(newLevel);
-
     return {
       baseXP,
       stakeBonusXP,
       speedBonusXP,
       streakBonusXP,
       totalAwardedXP,
-      newTotalXP,
+      ...this.describe(newTotalXP),
+    };
+  }
+
+  /**
+   * The level/progress/tier a total XP amount implies.
+   *
+   * Audit M31: the server owns XP now, so the client must be able to describe a
+   * total it did not compute. Without this the post-match screen would show the
+   * server's LEVEL next to a progress bar derived from the local estimate — two
+   * numbers from different ledgers, side by side.
+   */
+  public static describe(totalXP: number, levelOverride?: number): {
+    newTotalXP: number;
+    newLevel: number;
+    currentLevelXP: number;
+    nextLevelThresholdXP: number;
+    levelProgressPercent: number;
+    tierName: string;
+    tierMultiplier: number;
+  } {
+    // The server's level wins when it is supplied: it is the authority, and the
+    // parity test pins the two curves together so a disagreement is a bug
+    // rather than a legitimate difference.
+    const newLevel = levelOverride && levelOverride > 0 ? levelOverride : this.getLevel(totalXP);
+    const curLevelBaseXP = this.getXPForLevel(newLevel);
+    const nextLevelBaseXP = this.getXPForLevel(newLevel + 1);
+    const xpSpan = Math.max(1, nextLevelBaseXP - curLevelBaseXP);
+    const currentInLevel = totalXP - curLevelBaseXP;
+    const progressPercent = Math.min(100, Math.round((currentInLevel / xpSpan) * 100));
+    const tier = this.getTierInfo(newLevel);
+    return {
+      newTotalXP: totalXP,
       newLevel,
       currentLevelXP: Math.max(0, currentInLevel),
       nextLevelThresholdXP: xpSpan,

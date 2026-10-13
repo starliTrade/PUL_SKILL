@@ -308,8 +308,9 @@ const recordMatch = async (match: MatchHistoryItem): Promise<XPSummary> => {
     summary = {
       ...summary,
       totalAwardedXP: awarded,
-      newTotalXP: serverStats.xp,
-      newLevel: serverStats.level,
+      // Audit M31: describe the SERVER's total, so the level, the progress bar
+      // and the tier all come from one ledger instead of two.
+      ...XPSystem.describe(serverStats.xp, serverStats.level),
     };
     match.xpEarned = awarded;
   }

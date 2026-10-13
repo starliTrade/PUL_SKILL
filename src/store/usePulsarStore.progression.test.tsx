@@ -66,6 +66,7 @@ vi.mock('../lib/gameServerClient', () => ({
 }));
 
 import { usePulsarStore } from './usePulsarStore';
+import { XPSystem } from '../lib/xpSystem';
 
 const MATCH = {
   id: 'm1',
@@ -147,5 +148,35 @@ describe('server-authoritative progression (audit M31)', () => {
 
     expect(Array.isArray(h.stored?.history)).toBe(true);
     expect((h.stored?.history as unknown[]).length).toBe(1);
+  });
+
+  it('describes the SERVER total, so level and progress bar agree', async () => {
+    // 4200 XP is level 13 on the shared curve (the parity test pins the two
+    // curves together). The point here is that the progress bar describes the
+    // server's total, not the local estimate that was computed a moment ago.
+    h.fetchPlayerStats.mockResolvedValue({
+      available: true,
+      wins: 12,
+      losses: 3,
+      voids: 1,
+      totalMatches: 16,
+      xp: 4200,
+      level: 13,
+      winStreak: 4,
+      bestReactionMs: 180,
+      avgReactionMs: 240,
+      lastXpAwarded: 205,
+    });
+
+    const { result } = renderHook(() => usePulsarStore());
+    let summary: Record<string, number | string> | undefined;
+    await act(async () => {
+      summary = (await result.current.recordMatch(MATCH)) as unknown as Record<string, number | string>;
+    });
+
+    expect(summary?.newTotalXP).toBe(4200);
+    expect(summary?.newLevel).toBe(13);
+    expect(summary?.currentLevelXP).toBe(4200 - XPSystem.getXPForLevel(13));
+    expect(summary?.totalAwardedXP).toBe(205);
   });
 });

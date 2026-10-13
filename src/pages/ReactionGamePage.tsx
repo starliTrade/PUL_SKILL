@@ -1949,6 +1949,16 @@ function isWalletCancel(msg: string): boolean {
                       </div>
                     </div>
 
+                    {/* Audit M31: the streak bonus is server-owned and now
+                        actually fires — show it, or the extra XP is
+                        unexplained. */}
+                    {xpSummary.streakBonusXP > 0 && (
+                      <div className="flex justify-between text-[10px] font-mono text-amber-400/90">
+                        <span>{t('winStreakLabel')}</span>
+                        <span>+{xpSummary.streakBonusXP} XP</span>
+                      </div>
+                    )}
+
                   </motion.div>
                 )}
 
