@@ -148,7 +148,11 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                     isWin ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
                   )}
                 >
-                  {isWin ? (isOnChain ? '🏆 VICTORY (ESCROW PAYOUT)' : '🏆 VICTORY (PRACTICE)') : 'DEFEAT'}
+                  {isWin
+                      ? isOnChain
+                        ? t('certOutcomeWinEscrow')
+                        : t('certOutcomeWinPractice')
+                      : t('certOutcomeLoss')}
                 </span>
               </div>
 
@@ -217,8 +221,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                 <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-500/[0.06] border border-amber-500/20">
                   <Info className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
                   <div className="text-[10.5px] text-amber-200/90 leading-relaxed">
-                    This result was recorded locally and has no on-chain settlement.
-                    Real-stake duels will settle through the Pulsar escrow contract and show a verifiable transaction here.
+                    {t('certLocalOnlyNote')}
                   </div>
                 </div>
               )}
@@ -231,7 +234,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                 className="flex-1 py-2.5 px-4 rounded-xl bg-white hover:bg-zinc-100 text-black font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all shadow-[0_0_20px_rgba(255,255,255,0.15)]"
               >
                 <Share2 className="w-3.5 h-3.5" />
-                <span>{copiedKey === 'share' ? 'Copied to Clipboard!' : 'Share Result'}</span>
+                <span>{copiedKey === 'share' ? t('certCopied') : t('certShare')}</span>
               </button>
 
               {isOnChain && txHash ? (

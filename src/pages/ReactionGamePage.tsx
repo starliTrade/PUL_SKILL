@@ -1790,11 +1790,11 @@ function isWalletCancel(msg: string): boolean {
 
                 <h2 className="text-xl font-bold text-red-400">
                   {matchResult.reason && isWalletCancel(matchResult.reason)
-                    ? 'Wallet action cancelled'
+                    ? t('reasonWalletCancelled')
                     : isServerMode ? t('serverConnError') : t('antiCheatTriggered')}
                 </h2>
                 <p className="text-xs text-zinc-400 mt-1.5 leading-relaxed px-3">
-                  {matchResult.reason || 'Input pattern flagged as non-human.'}
+                  {matchResult.reason || t('reasonNonHuman')}
                 </p>
                 {isServerMode && (
                   <p className="text-[10px] font-mono text-zinc-500 mt-2 px-3">

@@ -324,9 +324,9 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
                 }}
               >
                 {testState === 'waiting' ? (
-                  <span className="text-amber-400 animate-pulse">WAIT...</span>
+                  <span className="text-amber-400 animate-pulse">{t('reflexWait')}</span>
                 ) : testState === 'ready' ? (
-                  <span className="text-emerald-300 animate-bounce">CLICK!</span>
+                  <span className="text-emerald-300 animate-bounce">{t('reflexClick')}</span>
                 ) : testState === 'result' ? (
                   testReactionMs
                 ) : bestReactionMs > 0 ? (

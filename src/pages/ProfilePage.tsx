@@ -78,18 +78,18 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
     if (e) e.preventDefault();
     const clean = tagInput.trim();
     if (clean.length < 3) {
-      setTagError('Username must be at least 3 characters');
+      setTagError(t('errUsernameTooShort'));
       sounds.playLoss();
       return;
     }
     if (clean.length > 20) {
-      setTagError('Username cannot exceed 20 characters');
+      setTagError(t('errUsernameTooLong'));
       sounds.playLoss();
       return;
     }
     const pattern = /^[a-zA-Z0-9_]+$/;
     if (!pattern.test(clean)) {
-      setTagError('Only English letters, numbers, and (_) allowed');
+      setTagError(t('errUsernameCharset'));
       sounds.playLoss();
       return;
     }
@@ -99,7 +99,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
       setTagError(null);
       const res = await updatePlayerTag(clean);
       if (!res.success) {
-        setTagError(res.error || 'Username is already taken by another player');
+        setTagError(res.error || t('errUsernameTaken'));
         sounds.playLoss();
       } else {
         sounds.playWin();
@@ -108,7 +108,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
         setTimeout(() => setDepositMsg(null), 3500);
       }
     } catch (err: any) {
-      setTagError(err?.message || 'Failed to verify username uniqueness');
+      setTagError(err?.message || t('errUsernameCheckFailed'));
     } finally {
       setIsSavingTag(false);
     }

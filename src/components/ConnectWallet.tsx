@@ -865,7 +865,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                     className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-black font-bold text-xs tracking-tight transition-all cursor-pointer shadow-lg shadow-emerald-500/20 active:scale-95 flex items-center justify-center gap-1.5"
                   >
                     <RefreshCw className={cn('w-3.5 h-3.5', isRefreshingBalance && 'animate-spin')} />
-                    <span>{isRefreshingBalance ? 'Checking RPC...' : 'Check / Refresh On-Chain Balance'}</span>
+                    <span>{isRefreshingBalance ? t('cwCheckingRpc') : t('cwCheckBalance')}</span>
                   </button>
 
                   {depositStatusMsg && (
@@ -1195,7 +1195,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                                 )}
                               >
                                 <QrCode className="w-3.5 h-3.5 text-teal-400" />
-                                <span>{showHandoffQr ? 'Hide QR Code' : 'Scan QR Code'}</span>
+                                <span>{showHandoffQr ? t('cwHideQr') : t('cwShowQr')}</span>
                               </button>
                             </div>
 
@@ -1392,7 +1392,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                         onClick={() => setShowHelp(!showHelp)}
                         className="text-sky-400 hover:text-sky-300 hover:underline font-medium cursor-pointer"
                       >
-                        {showHelp ? 'Hide guide' : 'Learn about wallets'}
+                        {showHelp ? t('cwHideGuide') : t('cwLearnWallets')}
                       </button>
                     </div>
                   </div>

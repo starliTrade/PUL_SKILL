@@ -29,6 +29,14 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
 
+  // Audit 2026-10-13: closing on focus leaving the control covers every way out
+  // (Tab, Shift+Tab, a click on a focusable sibling) rather than Tab alone.
+  const handleBlur = (event: React.FocusEvent<HTMLDivElement>) => {
+    if (!isOpen) return;
+    if (dropdownRef.current?.contains(event.relatedTarget as Node)) return;
+    setIsOpen(false);
+  };
+
   const handleSelect = (code: SupportedLanguage) => {
     sounds.playClick();
     setLanguage(code);
@@ -98,6 +106,12 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
         setIsOpen(false);
         triggerRef.current?.focus();
         break;
+      case 'Tab':
+        // Audit 2026-10-13: Tab was unhandled, so a keyboard user left an OPEN
+        // listbox behind with focus elsewhere. Close it and let Tab proceed
+        // (returning focus to the trigger would trap the user).
+        setIsOpen(false);
+        break;
       default:
         break;
     }
@@ -107,6 +121,7 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
     <div
       className={cn('relative inline-flex items-center justify-center text-left h-8 shrink-0', className)}
       ref={dropdownRef}
+      onBlur={handleBlur}
       dir="ltr"
       style={{ direction: 'ltr' }}
     >
