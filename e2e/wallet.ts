@@ -81,13 +81,21 @@ export async function installMockWallet(page: Page, options: MockWalletOptions =
             case 'wallet_addEthereumChain':
               return null;
             case 'personal_sign':
-            case 'eth_sign':
+            case 'eth_sign': {
               if (rejectTransactions) throw reject();
               // Forward to anvil, which holds the key and can really sign.
-              return proxy('personal_sign', [
-                (params as unknown[])[0],
-                account.address,
-              ]);
+              const args = (params ?? []) as string[];
+              // EIP-1193 does not fix the argument order: MetaMask takes
+              // [message, address], some wallets take [address, message]. Pick
+              // by shape rather than assuming.
+              const msg = args.find((a) => typeof a === 'string' && !/^0x[0-9a-fA-F]{40}$/.test(a));
+              const signer = args.find((a) => typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a));
+              const signed = await proxy('personal_sign', [msg, signer ?? account.address]);
+              if (typeof signed !== 'string' || !signed.startsWith('0x')) {
+                throw new Error(`the mock wallet did not get a signature back: ${String(signed).slice(0, 60)}`);
+              }
+              return signed;
+            }
             case 'eth_sendTransaction':
               if (rejectTransactions) throw reject();
               return proxy('eth_sendTransaction', [
@@ -128,16 +136,23 @@ export async function installMockWallet(page: Page, options: MockWalletOptions =
         return body.result;
       }
 
-      // EIP-6963 announcement, which the app's provider discovery listens for.
+      // EIP-6963 discovery. The app listens for `announceProvider` AND asks for
+      // providers with `requestProvider`, so the wallet must answer BOTH:
+      // announcing once at init-script time happens before the app's listener
+      // exists, and the provider would never be discovered.
+      const detail = {
+        // The app matches a provider by NAME or RDNS against the wallet the
+        // user clicked, so the mock must announce the identity the test clicks —
+        // otherwise the click falls through to the WalletConnect path, which
+        // needs a real relay.
+        info: { uuid: 'e2e-mock', name: 'MetaMask', icon: '', rdns: 'io.metamask' },
+        provider,
+      };
       (window as unknown as Record<string, unknown>).ethereum = provider;
-      window.dispatchEvent(
-        new CustomEvent('eip6963:announceProvider', {
-          detail: {
-            info: { uuid: 'e2e-mock', name: 'E2E Mock Wallet', icon: '', rdns: 'io.pulsar.e2e' },
-            provider,
-          },
-        })
-      );
+      const announce = () =>
+        window.dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail }));
+      window.addEventListener('eip6963:requestProvider', announce);
+      announce();
     },
     { accountIndex, rejectTransactions, failRpc, chainId, locked, accounts: ANVIL_ACCOUNTS }
   );

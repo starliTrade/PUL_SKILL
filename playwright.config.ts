@@ -25,6 +25,8 @@ const manifest = existsSync(manifestPath)
       escrow: string;
       chainId: number;
       token: string;
+      treasury: string;
+      oracle: string;
     })
   : null;
 
@@ -74,8 +76,14 @@ export default defineConfig({
       env: {
         VITE_GAME_SERVER_URL: `http://127.0.0.1:${API_PORT}`,
         VITE_CHAIN_ID: String(manifest?.chainId ?? 31337),
+        // ALL FOUR are required for real-money mode to be considered configured
+        // (`isEscrowConfigured()` needs escrow + treasury + oracle). Setting two
+        // of them leaves the lobby saying "the escrow is not deployed yet".
         VITE_ESCROW_ADDRESS: manifest?.escrow ?? '',
         VITE_PAYMENT_TOKEN_ADDRESS: manifest?.token ?? '',
+        VITE_TREASURY_WALLET_ADDRESS: manifest?.treasury ?? '',
+        VITE_ORACLE_WALLET_ADDRESS: manifest?.oracle ?? '',
+        VITE_LOCAL_RPC_URL: 'http://127.0.0.1:8545',
       },
     },
   ],
