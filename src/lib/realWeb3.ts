@@ -501,10 +501,13 @@ class RealWeb3Manager {
     if (this.wcInitPromise) return this.wcInitPromise;
 
     this.wcInitPromise = (async () => {
-      // Purge any stale/orphaned proposal keys before initializing provider
+      // Purge any stale/orphaned proposal keys before initializing provider.
+      // Audit M36: iterate BACKWARDS — localStorage indices shift under the
+      // cursor as keys are removed, so a forward loop skips the entry that
+      // slides into each vacated slot (the trap main.tsx already documents).
       try {
         if (typeof window !== 'undefined' && window.localStorage) {
-          for (let i = 0; i < localStorage.length; i++) {
+          for (let i = localStorage.length - 1; i >= 0; i--) {
             const k = localStorage.key(i);
             if (k && k.startsWith('wc@2:') && k.includes('proposal')) {
               localStorage.removeItem(k);
@@ -987,9 +990,16 @@ class RealWeb3Manager {
     this.lastWcUri = null;
     this.lastHandoff = null;
     if (this.wcProvider) {
+      // Audit M36: `provider.connect()` opens the relay transport immediately,
+      // so `connected` is already true while the wallet has not approved yet.
+      // The old `!connected` guard therefore skipped the teardown in exactly
+      // the case that needed it — the live one — and cancelling dropped our
+      // only reference to a provider whose relay socket stayed open (the WC
+      // keys were never cleaned up either). Always close the relay when we
+      // abandon a pairing, mirroring `disconnect()`'s guard semantics.
       try {
-        if (!this.wcProvider.connected) {
-          this.wcProvider.disconnect().catch(() => {});
+        if (typeof this.wcProvider.disconnect === 'function') {
+          Promise.resolve(this.wcProvider.disconnect()).catch(() => {});
         }
       } catch {
         /* ignore */
