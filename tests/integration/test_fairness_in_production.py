@@ -141,22 +141,45 @@ def test_a_reported_rtt_cannot_change_the_ranking(active_match, addr, opp_addr, 
     )
 
 
-def test_inflating_the_reported_rtt_does_not_win_the_match(store, addr, opp_addr, play_round):
-    """End to end: the RTT-inflator reacts identically and must not win."""
-    store.enqueue(addr, 1.0)
-    m = store.enqueue(opp_addr, 1.0)
-    # The attacker claims a 1000ms round trip on every round.
-    for idx in range(3):
-        play_round(m, addr, idx, 250.0)
-        play_round(m, opp_addr, idx, 250.0)
-    m.min_rtt_ms[addr] = 1000.0
-    m.min_rtt_ms[opp_addr] = 20.0
+def test_the_reported_rtt_does_not_decide_the_match(play_round):
+    """Swap the reported RTTs: the outcome must be identical.
 
-    result = engine.settle(m)
-    # Identical reactions: the match cannot be decided in the inflator's favour
-    # by the RTT alone.
-    assert result.get("winner", "") != addr, (
-        "reporting a large RTT won the match (audit HIGH-6)"
+    With the old compensation, swapping which player reported the large round
+    trip flipped the winner — a stake-transfer exploit. The ranking is now the
+    server-observed reaction, so the RTT cannot decide anything.
+
+    Drives the PRODUCTION store: `install_persistence` hooks the engine's
+    `settle` to persist through `main.store`, so a match from any other store
+    would be written into the wrong place.
+    """
+    a = "0x" + "aa" * 20
+    b = "0x" + "bb" * 20
+
+    def play_and_settle(rtt_a: float, rtt_b: float) -> str:
+        mem = server.store.memory
+        mem.matches.clear()
+        mem.queue.clear()
+        mem.player_match.clear()
+        server.store.enqueue(a, 1.0)
+        m = server.store.enqueue(b, 1.0)
+        # `a` is 10ms faster in every round — a real, deterministic difference
+        # (identical times would be decided by float noise, not by the code).
+        for idx in range(3):
+            play_round(m, a, idx, 250.0)
+            play_round(m, b, idx, 260.0)
+        m.min_rtt_ms[a] = rtt_a
+        m.min_rtt_ms[b] = rtt_b
+        return engine.settle(m).get("winner", "")
+
+    # The faster player reports the LARGER round trip. Under the old
+    # compensation that bought `b` up to 140ms of credit and flipped the match;
+    # with the compensation gone the faster player wins either way.
+    first = play_and_settle(1000.0, 20.0)
+    second = play_and_settle(20.0, 1000.0)
+
+    assert first == second == a, (
+        f"the reported RTT decided the match ({first!r} vs {second!r}) — a "
+        "stake-transfer exploit (audit HIGH-6)"
     )
 
 

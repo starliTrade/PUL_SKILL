@@ -294,4 +294,11 @@ def sign_settlement(
         "oracleAddress": _load_signer().address,
         "signature": signature,
         "validatedTimes": record.get("validatedTimes", {}),
+        # Audit 2026-10-13: the engine declares forfeits in its result
+        # (`forfeits: {addr: bool}`), but the packet dropped the field, so
+        # `economy.record_settlement` read an empty map and recorded
+        # `forfeit: false` for every duel — including forfeits. The ledger then
+        # disagreed with what actually happened. (Not part of the signed digest:
+        # the digest covers matchId/winner/times/deadline/chain/contract.)
+        "forfeits": record.get("forfeits", {}),
     }

@@ -72,6 +72,8 @@ def test_a_production_deployment_must_configure_itself():
         "ESCROW_RPC_URL",
         "ORACLE_SIGNING_SECRET",
         "ORACLE_PRIVATE_KEY",
+        # Audit 2026-10-13: without this the server silently signs for Amoy.
+        "ORACLE_CHAIN_ID",
     ):
         assert name in missing, f"{name} is not enforced in production"
 
@@ -84,6 +86,7 @@ def test_a_fully_configured_deployment_has_nothing_missing():
         "ESCROW_RPC_URL": "https://rpc.example",
         "ORACLE_SIGNING_SECRET": "s",
         "ORACLE_PRIVATE_KEY": "0x" + "11" * 32,
+        "ORACLE_CHAIN_ID": "137",
     }
     assert server._missing_production_env(full) == []
 

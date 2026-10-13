@@ -53,6 +53,11 @@ QUEUE_DOC = "pulsar_queue"
 # server accumulates every duel it has ever seen.
 _MEMORY_MATCH_MAX = 4096
 
+# How many active matches one durable sweep pass may scan (audit 2026-10-13).
+# The sweep is maintenance on the hottest path; an unbounded scan grows with the
+# whole live population.
+_SWEEP_SCAN_LIMIT = 500
+
 
 def _can_pair(waiting: Match, addr: str, target: str) -> bool:
     """Audit M27 — both sides must agree before a reserved match is paired.
@@ -743,17 +748,31 @@ class FirestoreStore:
             active_docs = (
                 self.db.collection(COLLECTION)
                 .where("status", "==", "active")
+                .limit(_SWEEP_SCAN_LIMIT)
                 .stream()
             )
+            scanned = 0
             for doc in active_docs:
+                scanned += 1
                 if doc.id in seen_match_ids:
                     continue
                 m = _match_from_doc(doc.to_dict() or {})
                 if m.status == "active" and now - m.play_started_at() > MATCH_EXPIRY_SECONDS:
                     due.append(m)  # settle it, do not void it (audit H8)
-        except Exception:
-            # Sweep is best-effort; a missing composite index must not crash it.
-            pass
+            if scanned >= _SWEEP_SCAN_LIMIT:
+                # Audit 2026-10-13: an unbounded scan of every active duel grows
+                # with the whole live population. The limit keeps the sweep
+                # bounded; hitting it means the population exceeded the bound, and
+                # that must be VISIBLE rather than silently truncating the sweep.
+                self.last_sweep_error = (
+                    f"active-match scan hit the {_SWEEP_SCAN_LIMIT}-document limit; "
+                    "some expired duels were not swept this pass"
+                )
+        except Exception as exc:
+            # Audit 2026-10-13: this used to `pass` — the same silent-failure
+            # class audit H9 closed for the memory backend. A missing index or a
+            # permission error made the sweep a no-op that looked healthy.
+            self.last_sweep_error = f"active-match scan failed: {exc!r}"
         return due
 
     def put(self, match: Match) -> None:

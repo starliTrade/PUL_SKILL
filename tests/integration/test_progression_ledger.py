@@ -204,3 +204,53 @@ def test_a_settlement_writes_progression_and_the_endpoint_reads_it_back(client, 
     assert body["wins"] == 1
     assert body["xp"] == doc["xp"]
     assert body["winStreak"] == 1
+
+
+# --- audit 2026-10-13: the forfeit flag and the sentinel ----------------------
+
+
+def test_a_forfeit_is_recorded_as_a_forfeit(store, addr, opp_addr, play_round, clock):
+    """The signed envelope must carry the engine's forfeit flags.
+
+    `match_engine.settle` declares forfeits in its result, but
+    `oracle.sign_settlement` dropped the field, so `record_settlement` read an
+    empty map and wrote `forfeit: false` for EVERY duel — including forfeits.
+
+    The record is produced by the ENGINE (the oracle refuses a hand-built one —
+    audit M7), so this drives a real forfeit: one side never submits and the
+    grace window passes.
+    """
+    import match_engine as engine
+    import oracle
+
+    store.enqueue(addr, 1.0)
+    m = store.enqueue(opp_addr, 1.0)
+    for idx in range(3):
+        play_round(m, addr, idx, 220.0)
+    clock.advance(engine.MATCH_SETTLE_GRACE_SECONDS + 1)
+
+    result = engine.settle(m)
+    assert result["forfeits"][opp_addr] is True, "the engine did not declare the forfeit"
+
+    packet = oracle.sign_settlement(result, matchish=m)
+    assert packet.get("forfeits", {}).get(opp_addr) is True, (
+        "the signed packet dropped the forfeit flag — the ledger records every "
+        "duel as non-forfeit"
+    )
+
+
+def test_the_forfeit_sentinel_does_not_corrupt_the_average():
+    """A forfeit's 0.0 sentinel is not a reaction time."""
+    winner = "0x" + "aa" * 20
+    out = economy._progression_fields(
+        winner,
+        {"avgReactionMs": 250.0, "totalMatches": 4, "bestReactionMs": 210.0},
+        winner,
+        1.0,
+        [0.0],  # the forfeit sentinel
+    )
+    assert out["avgReactionMs"] == 250.0, (
+        "a forfeit's sentinel was folded into the running average — the player's "
+        "reaction stat drifts toward zero"
+    )
+    assert out["bestReactionMs"] == 210.0

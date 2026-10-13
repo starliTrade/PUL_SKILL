@@ -383,6 +383,12 @@ def _persist_void(match_id: str) -> None:
     """Persist a gate void decision in its own short transaction (audit H10)."""
 
     def _void(m: Any, eng: Any) -> None:
+        # Audit 2026-10-13: this set `void` unconditionally. If a concurrent
+        # replica settled the match between the gate's snapshot and this write,
+        # the status flipped settled -> void while the signed envelope survived —
+        # the ledger then skipped a settlement the chain had already paid.
+        if m.status in ("settled", "void"):
+            return None
         m.status = "void"
         return None
 
@@ -531,6 +537,12 @@ REQUIRED_PRODUCTION_ENV = (
     "ESCROW_RPC_URL",
     "ORACLE_SIGNING_SECRET",
     "ORACLE_PRIVATE_KEY",
+    # Audit 2026-10-13: this was missing, and both `auth` and `oracle` default it
+    # to 80002 (Amoy). A production deployment that forgot it would sign SIWE
+    # statements and settlement digests for a TESTNET while the escrow is on
+    # Polygon — the failure is a rejected signature, and the only signal was an
+    # env var the gate did not require.
+    "ORACLE_CHAIN_ID",
 )
 
 
@@ -776,8 +788,21 @@ def admin_force_void(match_id: str, body: AdminActionRequest, request: Request) 
         raise HTTPException(status_code=404, detail="Match not found")
     if m.status in ("settled", "void"):
         raise HTTPException(status_code=409, detail=f"Match is already {m.status}")
-    m.status = "void"
-    store.put(m)
+
+    # Audit 2026-10-13: this mutated the object and called `store.put` — a blind
+    # `set` OUTSIDE the store transaction, so a concurrent participant settle
+    # could be clobbered (a settled match overwritten to void while its signed
+    # envelope survived). Route it through `store.update`, which is the one
+    # serialized read-modify-write, and re-check the status INSIDE it.
+    def _void(match: Any, _eng: Any) -> str:
+        if match.status in ("settled", "void"):
+            return match.status
+        match.status = "void"
+        return "void"
+
+    outcome = store.update(match_id, _void)
+    if outcome != "void":
+        raise HTTPException(status_code=409, detail=f"Match is already {outcome}")
     print(
         f"[admin] force-void {match_id} reason={body.reason!r}",
         file=sys.stderr,
@@ -794,18 +819,22 @@ def admin_force_settle(match_id: str, body: AdminActionRequest, request: Request
     m = _admin_get_match(match_id)
     if m is None:
         raise HTTPException(status_code=404, detail="Match not found")
+
+    # Audit 2026-10-13: this settled the object and called `store.put` — a blind
+    # `set` outside the store transaction, racing a concurrent participant
+    # settle. `_settle_once` is the ONE transactional settlement body (settle →
+    # sign → attach, plus the rating update); the admin path now uses it, so the
+    # two cannot diverge and the write is serialized.
     try:
-        result = engine.settle(m)
+        signed = store.update(match_id, _settle_once)
     except MatchError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    engine.apply_settlement_ratings(store, result)
-    signed = _attach_signed_envelope(m, result) if result.get("status") == "settled" else None
-    store.put(m)
+    _ledger_settlement(match_id)
     print(
         f"[admin] force-settle {match_id} reason={body.reason!r}",
         file=sys.stderr,
     )
-    return {"matchId": match_id, "reason": body.reason, "settlement": signed or result}
+    return {"matchId": match_id, "reason": body.reason, "settlement": signed}
 
 
 class DisputeRequest(BaseModel):
@@ -1287,6 +1316,9 @@ def _attach_signed_envelope(m: Any, result: dict[str, Any]) -> dict[str, Any]:
     metrics.note_signature(True)
     metrics.note_match_settled()
     envelope["roundWins"] = result.get("roundWins", {})
+    # Audit 2026-10-13: the ledger reads `forfeits` off this envelope; without
+    # the copy it recorded every duel as non-forfeit.
+    envelope["forfeits"] = result.get("forfeits", {})
     m.signed_settlement = {"status": "settled", **envelope}
     return dict(m.signed_settlement)
 

@@ -433,15 +433,20 @@ def _progression_fields(
         streak = 0
 
     matches_before = int(before.get("totalMatches", 0) or 0)
-    sample = (sum(times) / len(times)) if times else 0.0
+    # Audit 2026-10-13: a forfeited side is recorded with the sentinel
+    # FORFEIT_SENTINEL_MS (0) so the signed arrays stay non-empty. Folding that
+    # 0 into the running average dragged a forfeiting player's avgReactionMs
+    # toward zero — a statistic that looked like a measurement and was not one.
+    real_times = [t for t in times if t > 0]
+    sample = (sum(real_times) / len(real_times)) if real_times else 0.0
 
     best = float(before.get("bestReactionMs", 0) or 0)
-    for t in times:
-        if t > 0 and (best == 0 or t < best):
+    for t in real_times:
+        if best == 0 or t < best:
             best = t
 
     avg_before = float(before.get("avgReactionMs", 0) or 0)
-    if times:
+    if real_times:
         avg = round((avg_before * matches_before + sample) / (matches_before + 1))
     else:
         avg = avg_before
