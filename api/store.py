@@ -274,6 +274,26 @@ class InMemoryStore:
             raise MatchError("Match not found")
         return m
 
+    def pending_challenges(self, address: str) -> list[dict[str, Any]]:
+        """Waiting matches RESERVED for `address` (audit M27 closure).
+
+        Without this the challenged player had no way to learn a challenge
+        existed: the reservation was real but invisible, and the target only
+        found out by queueing for something else.
+        """
+        addr = address.lower()
+        out: list[dict[str, Any]] = []
+        with self._lock:
+            for stake, bucket in self.queue.items():
+                for mid in bucket:
+                    m = self.matches.get(mid)
+                    if m is None or m.status != "waiting":
+                        continue
+                    if (m.target or "") != addr:
+                        continue
+                    out.append({"matchId": m.match_id, "address": m.creator, "stake": stake})
+        return out
+
     def update(self, match_id: str, mutate: Any) -> Any:
         """Single-process serialization of read-modify-write, WITH rollback:
         the match is deep-copied first and restored if the mutation raises.
@@ -448,6 +468,26 @@ class FirestoreStore:
         if not snap.exists:
             raise MatchError("Match not found")
         return _match_from_doc(snap.to_dict())
+
+    def pending_challenges(self, address: str) -> list[dict[str, Any]]:
+        """Waiting matches RESERVED for `address` (audit M27 closure).
+
+        Bounded by the number of queue documents (one per allowed stake), not by
+        the number of matches.
+        """
+        addr = address.lower()
+        out: list[dict[str, Any]] = []
+        for qd in self.db.collection(QUEUE_DOC).stream():
+            stake = self._stake_from_doc_id(qd.id)
+            for entry in _queue_entries(qd.to_dict() or {}):
+                snap = self._match_ref(str(entry["matchId"])).get()
+                if not snap.exists:
+                    continue
+                m = _match_from_doc(snap.to_dict())
+                if m.status != "waiting" or (m.target or "") != addr:
+                    continue
+                out.append({"matchId": m.match_id, "address": m.creator, "stake": stake})
+        return out
 
     def update(self, match_id: str, mutate: Any) -> Any:
         """Transactional read-modify-write (audit #3): the mutation is applied
@@ -693,6 +733,12 @@ class DurableMatchStore:
             self._mirror(match)
             return match
         return self.memory.get(match_id)
+
+    def pending_challenges(self, address: str) -> list[dict[str, Any]]:
+        """Audit M27 closure: challenges waiting for this address."""
+        if self._fs_store is not None:
+            return self._fs_store.pending_challenges(address)
+        return self.memory.pending_challenges(address)
 
     def _mirror(self, match: Match) -> None:
         """Refresh the local cache + idempotency map from durable state."""

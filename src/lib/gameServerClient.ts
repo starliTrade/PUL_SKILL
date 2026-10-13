@@ -308,6 +308,27 @@ export const fetchPlayerStats = (
     "GET"
   );
 
+/** A friend challenge waiting for the caller (audit M27 closure). */
+export interface PendingChallenge {
+  matchId: string;
+  address: string;
+  stake: number;
+}
+
+export interface PendingChallengesResponse {
+  available: boolean;
+  challenges: PendingChallenge[];
+}
+
+/**
+ * Who is waiting for the caller (audit M27 closure).
+ *
+ * A reservation the target cannot discover is a duel that never happens. This
+ * is the read side of `queueForMatch(..., opponent)`.
+ */
+export const fetchPendingChallenges = (session: ServerSession): Promise<PendingChallengesResponse> =>
+  request<PendingChallengesResponse>("/api/challenges", undefined, session, "GET");
+
 export const commitRound = (
   session: ServerSession,
   matchId: string,

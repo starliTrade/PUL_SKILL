@@ -132,6 +132,8 @@ export const translations = {
     enterBtn: 'Enter',
     playBtn: 'Play',
     searchPlayerBtn: 'Search Player or Challenge Friend (0x...)',
+    challengeWaitingTitle: 'A duelist is waiting for you',
+    challengeAccept: 'Accept duel',
     liveArenaFeed: 'Live Arena Feed',
     liquidityHandshake: '24/7 Liquidity Handshake',
 
@@ -526,6 +528,8 @@ export const translations = {
     enterBtn: 'ورود',
     playBtn: 'بازی',
     searchPlayerBtn: 'جستجوی کاربر یا دعوت دوست (0x...)',
+    challengeWaitingTitle: 'یک دوئلیست منتظر شماست',
+    challengeAccept: 'پذیرش دوئل',
     liveArenaFeed: 'فید زنده آرنا',
     liquidityHandshake: 'اتصال نقدینگی ۲۴/۷',
 
@@ -877,6 +881,8 @@ export const translations = {
     enterBtn: 'دخول',
     playBtn: 'لعب',
     searchPlayerBtn: 'بحث عن لاعب أو تحدي صديق (0x...)',
+    challengeWaitingTitle: 'أحد المبارزين في انتظارك',
+    challengeAccept: 'قبول النزال',
     liveArenaFeed: 'بث الساحة المباشر',
     liquidityHandshake: 'سيولة متصلة ٢٤/٧',
 
@@ -1228,6 +1234,8 @@ export const translations = {
     enterBtn: 'Katıl',
     playBtn: 'Oyna',
     searchPlayerBtn: 'Oyuncu Ara veya Arkadaşına Meydan Oku (0x...)',
+    challengeWaitingTitle: 'Bir düellocu seni bekliyor',
+    challengeAccept: 'Düelloyu kabul et',
     liveArenaFeed: 'Canlı Arena Akışı',
     liquidityHandshake: '7/24 Likidite Bağlantısı',
 
@@ -1579,6 +1587,8 @@ export const translations = {
     enterBtn: '进入',
     playBtn: '开始',
     searchPlayerBtn: '搜索玩家或挑战好友 (0x...)',
+    challengeWaitingTitle: '有对手在等你',
+    challengeAccept: '接受对决',
     liveArenaFeed: '竞技场实时动态',
     liquidityHandshake: '24/7 流动性握手',
 

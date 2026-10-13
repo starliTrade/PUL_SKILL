@@ -81,6 +81,7 @@ RL_CLAIM_MAX = 10        # claim calls per minute per address (audit #10 #7:
 RL_ROUND_MAX = 60        # target reveals + result submissions per minute per
 RL_USERNAME_LOOKUP_MAX = 60  # GET /api/username/{name} per minute per IP
 RL_PLAYER_STATS_MAX = 60     # GET /api/player/{addr}/stats per minute per address
+RL_CHALLENGES_MAX = 60       # GET /api/challenges per minute per address
                          # (audit #11 H3: without this the registry is
                          # enumerable — every possible name probed for free)
                          # address — hot endpoints that each trigger store work
@@ -1590,3 +1591,21 @@ def player_stats(address: str, request: Request) -> dict[str, Any]:
     if stats is None:
         return {"available": False}
     return {"available": True, **stats}
+
+
+@app.get("/api/challenges")
+def list_challenges(request: Request) -> dict[str, Any]:
+    """Challenges waiting for the CALLER (audit M27 closure).
+
+    A reservation the target cannot discover is a duel that never happens: the
+    challenged player used to learn about it only by queueing for something
+    else. This is the read side of `POST /api/queue {opponent}`.
+    """
+    address = _auth(request)
+    _rl_check("challenges", address, RL_CHALLENGES_MAX)
+    try:
+        challenges = store.pending_challenges(address)
+    except Exception as exc:
+        _note_sweep_failure("pending_challenges", exc)
+        return {"available": False, "challenges": []}
+    return {"available": True, "challenges": challenges}
