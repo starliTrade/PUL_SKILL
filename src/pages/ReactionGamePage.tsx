@@ -1377,14 +1377,22 @@ function isWalletCancel(msg: string): boolean {
           <span>{t('backToLobby')}</span>
         </button>
 
-        {/* Best of 3 Live Score Banner */}
-        <div className="flex items-center gap-3" dir="ltr" style={{ direction: 'ltr' }}>
+        {/* Best of 3 Live Score Banner.
+            Audit 8.10: this container holds TRANSLATED text (`bestOfThree`,
+            `serverModeLabel`, `practiceModeLabel`), so forcing `dir="ltr"` broke
+            the word order and punctuation for Persian and Arabic. The layout
+            stays LTR via `flex-row`; only the numeric/hex fragments below keep
+            an explicit LTR direction, which is where it is actually needed. */}
+        <div className="flex items-center gap-3">
           <div className="text-right">
             <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-mono">{t('bestOfThree')}</div>
             <div className="text-xs font-semibold text-zinc-200">
-              {isServerMode && opponent.startsWith('0x')
-                ? `${opponent.slice(0, 6)}...${opponent.slice(-4)}`
-                : opponent}
+              {isServerMode && opponent.startsWith('0x') ? (
+                // A hex address is LTR content, whatever the UI language is.
+                <span dir="ltr">{`${opponent.slice(0, 6)}...${opponent.slice(-4)}`}</span>
+              ) : (
+                opponent
+              )}
             </div>
             {isServerMode ? (
               <div className="text-[9px] text-emerald-400/90 font-mono">{t('serverModeLabel')}</div>
@@ -1634,6 +1642,7 @@ function isWalletCancel(msg: string): boolean {
               >
                 {earlyClickWarning ? (
                   <motion.div
+                    role="alert"
                     initial={{ scale: 0.9, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
                     className="text-center"
@@ -1754,7 +1763,13 @@ function isWalletCancel(msg: string): boolean {
                   )}
                 </div>
 
-                <h3 className="text-sm font-bold text-sky-400 tracking-wider uppercase font-mono">
+                {/* Audit 8.8: this feedback is motion-only — a screen reader
+                    user never learned that the round ended or who won it. */}
+                <h3
+                  role="status"
+                  aria-live="polite"
+                  className="text-sm font-bold text-sky-400 tracking-wider uppercase font-mono"
+                >
                   {roundTransitionMessage}
                 </h3>
 
@@ -1837,7 +1852,11 @@ function isWalletCancel(msg: string): boolean {
                       <button onClick={refundDuel} className="w-full btn-secondary py-3 text-xs cursor-pointer">
                         Refund after {REFUND_OPENS_AFTER_MINUTES}-min timeout
                       </button>
-                      {onchainAction && <p className="text-[10px] font-mono text-zinc-400">{onchainAction}</p>}
+                      {onchainAction && (
+                        <p role="status" aria-live="polite" className="text-[10px] font-mono text-zinc-400">
+                          {onchainAction}
+                        </p>
+                      )}
                     </>
                   )}
                   <button
@@ -1884,6 +1903,8 @@ function isWalletCancel(msg: string): boolean {
                 </motion.div>
 
                 <h2
+                  role="status"
+                  aria-live="polite"
                   className={cn(
                     'text-2xl font-bold tracking-tight',
                     matchResult.outcome === 'win' ? 'text-emerald-400' : 'text-sky-300'

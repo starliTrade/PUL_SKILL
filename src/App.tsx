@@ -1,3 +1,4 @@
+import { MotionConfig } from 'motion/react';
 import { IdentityLockBanner } from './components/IdentityLockBanner';
 import React, { Suspense, lazy, useState, useEffect } from 'react';
 import type { LegalTab } from './pages/LegalPage';
@@ -100,6 +101,10 @@ export default function App() {
   const isGameRoute = currentPath === '/game/reaction';
 
   return (
+    // Audit 8.12: motion/react must honour the user's reduced-motion setting,
+    // not just the CSS animations. `user` reads the media query and drops
+    // transform/opacity animations for anyone who asked for less motion.
+    <MotionConfig reducedMotion="user">
     <ErrorBoundary>
     <div className="min-h-screen bg-[#07080a] text-slate-100 flex flex-col font-sans selection:bg-sky-500/30 selection:text-white">
       {/* Audit H15b: the identity lock refuses a wallet/network switch mid-match;
@@ -143,5 +148,6 @@ export default function App() {
       )}
     </div>
     </ErrorBoundary>
+    </MotionConfig>
   );
 }

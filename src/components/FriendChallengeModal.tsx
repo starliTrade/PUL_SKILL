@@ -285,14 +285,25 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
           <div className="space-y-3 flex-1 flex flex-col min-h-0 overflow-hidden">
             {/* Input Box */}
             <div className="relative">
+              {/* Audit 8.7: a placeholder is not a label — it disappears as soon
+                  as the user types, and screen readers do not announce it as one.
+                  The label is visually hidden so the design is unchanged. */}
+              <label htmlFor="friend-search" className="sr-only">
+                {t('searchPlayers')}
+              </label>
               <input
+                id="friend-search"
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={t('searchPlaceholder')}
+                aria-describedby="friend-search-hint"
                 className="w-full bg-zinc-900/90 border border-white/[0.08] focus:border-sky-500/50 focus:ring-1 focus:ring-sky-500/50 rounded-xl py-2.5 px-9 text-xs text-white placeholder-zinc-500 transition-all outline-none"
               />
-              <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
+              <p id="friend-search-hint" className="sr-only">
+                {t('searchPlaceholder')}
+              </p>
+              <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-3" aria-hidden="true" />
               {searchQuery && (
                 <button
                   onClick={() => setSearchQuery('')}

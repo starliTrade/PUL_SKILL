@@ -314,3 +314,22 @@ nav,
   width: 0;
   height: 0;
 }
+
+/* ── Audit 8.12 — prefers-reduced-motion ─────────────────────────────────────
+   The app animates a lot (motion/react plus Tailwind's animate-ping/pulse/spin).
+   A user who has asked their system to reduce motion — a vestibular disorder,
+   motion sickness, or a migraine trigger — was ignored entirely.
+
+   This is the CSS half: it neutralises CSS-driven animation and transition for
+   anyone who asked. The JS half is <MotionConfig reducedMotion="user"> in
+   App.tsx, which makes motion/react honour the same preference. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

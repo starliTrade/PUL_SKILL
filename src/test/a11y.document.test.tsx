@@ -18,6 +18,19 @@ import { LanguageProvider, useLanguage } from '../i18n/LanguageContext';
 
 const INDEX_HTML = fs.readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf8');
 
+
+/** The element's opening tag, from `<` to the `>` that closes it. */
+function openingTag(src: string, start: number): string {
+  let depth = 0;
+  for (let i = start; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '{' || ch === '(') depth++;
+    else if (ch === '}' || ch === ')') depth--;
+    else if (ch === '>' && depth === 0 && src[i - 1] !== '=') return src.slice(start, i + 1);
+  }
+  return src.slice(start, start + 600);
+}
+
 describe('the document (plan items 8.1, 8.2)', () => {
   afterEach(() => {
     cleanup();
@@ -68,5 +81,39 @@ describe('the document (plan items 8.1, 8.2)', () => {
     });
     expect(document.documentElement.lang).toBe('en');
     expect(document.documentElement.dir).toBe('ltr');
+  });
+
+  it('does not force LTR on a panel of translated text (plan item 8.10)', () => {
+    // A container that renders t(...) output must not pin direction: in Persian
+    // and Arabic the word order and punctuation would be wrong. Numeric/hex
+    // fragments keep an explicit dir — that is where it belongs.
+    const files = [
+      'src/pages/ReactionGamePage.tsx',
+      'src/pages/ProfilePage.tsx',
+      'src/pages/DashboardPage.tsx',
+      'src/pages/LobbyPage.tsx',
+    ];
+    const offenders: string[] = [];
+    for (const rel of files) {
+      const src = fs.readFileSync(path.resolve(process.cwd(), rel), 'utf8');
+      for (const m of src.matchAll(/dir="ltr"/g)) {
+        const start = src.lastIndexOf('<', m.index);
+        // The element's OWN opening tag only. Looking at the children produced
+        // false positives (an LTR hex <span> followed by a translated label).
+        const tag = openingTag(src, start);
+        if (/\bt\('/.test(tag)) {
+          offenders.push(`${rel}:${src.slice(0, m.index).split('\n').length}`);
+        }
+      }
+    }
+    expect(offenders, `translated panels pinned to LTR:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it('honours prefers-reduced-motion (plan item 8.12)', () => {
+    const css = fs.readFileSync(path.resolve(process.cwd(), 'src/index.css'), 'utf8');
+    expect(css).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+    const app = fs.readFileSync(path.resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+    expect(app).toMatch(/MotionConfig/);
+    expect(app).toMatch(/reducedMotion="user"/);
   });
 });
