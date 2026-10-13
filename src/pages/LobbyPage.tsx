@@ -22,7 +22,7 @@ import { ConnectWallet } from '../components/ConnectWallet';
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { FriendChallengeModal } from '../components/FriendChallengeModal';
 import { AntiCheat, getRandomOpponent } from '../lib/antiCheat';
-import { ECONOMY } from '../lib/chain';
+import { ECONOMY, CHAIN } from '../lib/chain';
 import { sounds } from '../lib/sound';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { realWeb3Manager, MatchRecord } from '../lib/realWeb3';
@@ -380,7 +380,11 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                   <ShieldCheck className="w-3 h-3 text-emerald-400 shrink-0" />
                   <span>{t('biometricEntropy')}</span>
                 </div>
-                <span className="text-zinc-500 font-mono">Polygon Mainnet</span>
+                {/* Audit M34 (missed here): this was the literal "Polygon
+                    Mainnet", so on the Amoy testnet deployment the lobby told
+                    the player they were on mainnet. The network name comes from
+                    CHAIN, like everywhere else. */}
+                <span className="text-zinc-500 font-mono">{CHAIN.name}</span>
               </div>
             </>
           ) : (

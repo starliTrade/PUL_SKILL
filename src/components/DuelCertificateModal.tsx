@@ -142,11 +142,11 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                   </span>
                   {isOnChain ? (
                     <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                      ON-CHAIN SETTLED
+                      {t('certOnChainSettled')}
                     </span>
                   ) : (
                     <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white/10 text-zinc-300">
-                      LOCAL RESULT · NOT ON-CHAIN
+                      {t('certLocalResult')}
                     </span>
                   )}
                 </div>
@@ -172,14 +172,14 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
 
               <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/5 font-mono">
                 <div>
-                  <div className="text-[10.5px] text-zinc-500">Your Reflex Speed</div>
+                  <div className="text-[10.5px] text-zinc-500">{t('certYourReflex')}</div>
                   <div className="text-sm font-bold text-white flex items-center gap-1">
                     <Zap className="w-3.5 h-3.5 text-sky-400" />
                     <span>{reactionMs} ms</span>
                   </div>
                 </div>
                 <div>
-                  <div className="text-[10.5px] text-zinc-500">Opponent Speed</div>
+                  <div className="text-[10.5px] text-zinc-500">{t('certOpponentSpeed')}</div>
                   <div className="text-sm font-bold text-zinc-300 flex items-center gap-1">
                     <Clock className="w-3.5 h-3.5 text-zinc-500" />
                     <span>{oppMs} ms</span>
@@ -220,7 +220,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
               {isOnChain && txHash ? (
                 <div className="flex items-center justify-between p-2.5 rounded-lg bg-black/40 border border-white/5">
                   <div className="space-y-0.5 min-w-0 pr-2">
-                    <div className="text-[10px] text-zinc-500">Settlement Transaction</div>
+                    <div className="text-[10px] text-zinc-500">{t('certSettlementTx')}</div>
                     <div className="text-emerald-300 truncate">{displayTx}</div>
                   </div>
                   <button
@@ -260,12 +260,12 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
                   className="py-2.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-zinc-300 hover:text-white font-mono text-xs flex items-center justify-center gap-1.5 transition-colors"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
-                  <span>Explorer</span>
+                  <span>{t('certExplorer')}</span>
                 </a>
               ) : (
                 <div className="py-2.5 px-3 rounded-xl bg-white/[0.02] border border-white/5 text-zinc-600 font-mono text-xs flex items-center justify-center gap-1.5">
                   <ExternalLink className="w-3.5 h-3.5" />
-                  <span>Explorer</span>
+                  <span>{t('certExplorer')}</span>
                 </div>
               )}
             </div>

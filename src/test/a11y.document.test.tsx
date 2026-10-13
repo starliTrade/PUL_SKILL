@@ -116,4 +116,27 @@ describe('the document (plan items 8.1, 8.2)', () => {
     expect(app).toMatch(/MotionConfig/);
     expect(app).toMatch(/reducedMotion="user"/);
   });
+
+  it('has no hardcoded user-facing text left (plan item 8.9)', () => {
+    // A brand name is the same in every language and stays a literal. Anything
+    // else a user reads must come from translations.ts.
+    const ALLOWED = new Set(['PULSAR PROTOCOL™', 'PULSAR PROTOCOL']);
+    const files: string[] = [];
+    for (const dir of ['src/components', 'src/pages']) {
+      for (const name of fs.readdirSync(path.resolve(process.cwd(), dir))) {
+        if (name.endsWith('.tsx') && !name.endsWith('.test.tsx')) files.push(`${dir}/${name}`);
+      }
+    }
+
+    const offenders: string[] = [];
+    for (const rel of files) {
+      const src = fs.readFileSync(path.resolve(process.cwd(), rel), 'utf8');
+      for (const m of src.matchAll(/>\s*([A-Z][A-Za-z][^<>{}\n]{6,80}?)\s*</g)) {
+        const text = String(m[1]).trim();
+        if (ALLOWED.has(text)) continue;
+        offenders.push(`${rel}:${src.slice(0, m.start()).split('\n').length} "${text}"`);
+      }
+    }
+    expect(offenders, `hardcoded user-facing text:\n${offenders.join('\n')}`).toEqual([]);
+  });
 });

@@ -1938,7 +1938,7 @@ function isWalletCancel(msg: string): boolean {
                     <p className="text-[10px] text-amber-400/90 font-mono mt-1">{t('claimingPrize')}</p>
                     <div className="flex flex-col gap-2 w-full mt-2">
                       <button onClick={retrySettle} className="w-full btn-primary py-2.5 text-xs cursor-pointer">
-                        Retry on-chain claim
+                        {t('retryOnchainClaim')}
                       </button>
                       <button onClick={refundDuel} className="w-full btn-secondary py-2.5 text-xs cursor-pointer">
                         Refund after {REFUND_OPENS_AFTER_MINUTES}-min timeout
@@ -1949,7 +1949,7 @@ function isWalletCancel(msg: string): boolean {
                 )}
                 {settlementTxHash && matchResult.outcome !== 'win' && (
                   <p className="text-[10px] font-mono text-zinc-400 mt-1">
-                    You released the winner's prize on-chain.
+                    {t('releasedWinnerPrize')}
                   </p>
                 )}
                 {settlementTxHash && (
@@ -2108,7 +2108,7 @@ function isWalletCancel(msg: string): boolean {
                     className="w-full py-2.5 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-sky-400 font-mono text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors active:scale-95"
                   >
                     <ShieldCheck className="w-4 h-4 text-sky-400" />
-                    <span>View Cryptographic Certificate & Proof</span>
+                    <span>{t('viewCertificate')}</span>
                   </button>
 
                   {/* Audit 2026-10-13: `POST /api/dispute` had no client path —

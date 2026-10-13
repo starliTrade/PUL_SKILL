@@ -214,7 +214,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
           </div>
           <span className="text-[10px] text-sky-400/90 font-mono flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
-            SIWE Session
+            {t('siweSession')}
           </span>
         </div>
 
@@ -540,11 +540,11 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
             <div className="flex items-center gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5 text-sky-400" />
               <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
-                Settled Battles & Certificates
+                {t('settledBattles')}
               </h3>
             </div>
             <span className="text-[9px] font-mono text-zinc-500">
-              Click to view on-chain proof
+              {t('clickToViewProof')}
             </span>
           </div>
 
@@ -603,7 +603,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                           {isWin ? `+$${prize.toFixed(2)}` : `-$${fee}`}
                         </div>
                         <div className="text-[9px] text-sky-400 hover:underline">
-                          View Proof →
+                          {t('viewProof')}
                         </div>
                       </div>
                     </div>

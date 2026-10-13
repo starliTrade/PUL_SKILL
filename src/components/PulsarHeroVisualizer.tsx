@@ -431,9 +431,12 @@ export const PulsarHeroVisualizer: React.FC<PulsarHeroVisualizerProps> = ({
           >
             <div className="flex items-center gap-1.5 text-zinc-400">
               <ShieldCheck className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
-              <span>Biometric Anti-Cheat v2.4</span>
+              {/* Audit H16 + 8.9: 'Biometric Anti-Cheat v2.4' claimed a capability the
+                  code does not have (there is no biometrics — the real checks are
+                  isTrusted, a human floor, and trajectory curvature). */}
+              <span>{t('inputIntegrityChecks')}</span>
             </div>
-            <span className="text-zinc-500 font-medium">Sub-ms Clock Sync</span>
+            <span className="text-zinc-500 font-medium">{t('highResTiming')}</span>
           </div>
         </div>
       </div>

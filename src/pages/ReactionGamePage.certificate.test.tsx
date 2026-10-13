@@ -204,8 +204,10 @@ describe('duel certificate proof (audit M39)', () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByText('ON-CHAIN SETTLED')).toBeTruthy();
-    expect(screen.queryByText(/NOT ON-CHAIN/)).toBeNull();
+    // Audit 8.9: the badge is translated now, and this file's i18n mock returns
+    // the key — so the assertion is on the key.
+    expect(screen.getByText('certOnChainSettled')).toBeTruthy();
+    expect(screen.queryByText('certLocalResult')).toBeNull();
     // The real tx hash is displayed (truncated) and linked to the explorer.
     expect(screen.getByText(`${TX_HASH.slice(0, 10)}...${TX_HASH.slice(-8)}`)).toBeTruthy();
   });

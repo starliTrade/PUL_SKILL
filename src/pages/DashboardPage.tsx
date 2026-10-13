@@ -531,7 +531,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                                   <ExternalLink className="w-2.5 h-2.5" />
                                 </a>
                               ) : (
-                                <span className="text-zinc-500">Off-chain result</span>
+                                <span className="text-zinc-500">{t('offChainResult')}</span>
                               )}
                             </div>
                             <div className="flex items-center justify-between text-zinc-400">
@@ -539,7 +539,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                               {m.hash && /^0x[0-9a-fA-F]{64}$/.test(m.hash) ? (
                                 <span className="text-emerald-400">{t('verifiedEip191')}</span>
                               ) : (
-                                <span className="text-amber-400">Pending server settlement</span>
+                                <span className="text-amber-400">{t('pendingServerSettlement')}</span>
                               )}
                             </div>
                           </motion.div>

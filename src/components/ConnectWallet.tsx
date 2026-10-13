@@ -609,7 +609,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
               {/* Real Live On-Chain Balance Card */}
               <div className="my-2.5 p-3 rounded-xl bg-gradient-to-br from-emerald-500/10 via-zinc-900/90 to-zinc-950 border border-emerald-500/25 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                 <div className="flex items-center justify-between text-[10.5px] text-zinc-400 mb-1" style={{ direction: 'ltr' }}>
-                  <span className="font-medium text-zinc-300">Polygon USDT Vault</span>
+                  <span className="font-medium text-zinc-300">{t('cwVaultTitle')}</span>
                   <button
                     type="button"
                     disabled={isRefreshingBalance}
@@ -648,7 +648,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                     </div>
                     <div className="text-[10px] font-medium text-zinc-400 mt-0.5 flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_4px_#34d399]"></span>
-                      <span className="font-mono text-[9.5px]">Smart Escrow Settlement</span>
+                      <span className="font-mono text-[9.5px]">{t('cwSmartEscrow')}</span>
                     </div>
                   </div>
                   <button
@@ -660,7 +660,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                     className="text-[10.5px] font-semibold text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1 active:scale-95 shadow-[0_2px_8px_rgba(52,211,153,0.2)]"
                   >
                     <ArrowDownLeft className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Deposit / QR</span>
+                    <span>{t('cwDepositQr')}</span>
                   </button>
                 </div>
               </div>
@@ -672,13 +672,13 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                   <div className="text-xs font-bold font-mono text-zinc-100">{stats.totalMatches || 0}</div>
                 </div>
                 <div className="p-1 border-x border-white/[0.06]">
-                  <div className="text-[9.5px] text-zinc-400 font-medium">Win Rate</div>
+                  <div className="text-[9.5px] text-zinc-400 font-medium">{t('cwWinRate')}</div>
                   <div className="text-xs font-bold font-mono text-emerald-400">
                     {stats.totalMatches ? Math.round(((stats.wins || 0) / stats.totalMatches) * 100) : 0}%
                   </div>
                 </div>
                 <div className="p-1">
-                  <div className="text-[9.5px] text-zinc-400 font-medium">Best Reflex</div>
+                  <div className="text-[9.5px] text-zinc-400 font-medium">{t('cwBestReflex')}</div>
                   <div className="text-xs font-bold font-mono text-sky-400">
                     {stats.bestReactionMs ? `${stats.bestReactionMs}ms` : '--'}
                   </div>
@@ -689,7 +689,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
               <div className="mb-2.5 p-2 rounded-xl bg-zinc-900/90 border border-white/[0.08] flex items-center justify-between gap-2" style={{ direction: 'ltr' }}>
                 <div className="min-w-0 flex-1">
                   <div className="text-[9.5px] text-zinc-400 uppercase tracking-wider font-mono font-medium">
-                    Wallet Address
+                    {t('cwWalletAddress')}
                   </div>
                   <div
                     data-wallet-address="true"
@@ -754,7 +754,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                   className="w-full py-2 px-2.5 rounded-xl text-xs text-rose-400 hover:text-rose-300 bg-rose-500/5 hover:bg-rose-500/15 border border-rose-500/20 transition-all flex items-center justify-center gap-1.5 cursor-pointer font-medium active:scale-[0.99]"
                 >
                   <LogOut className="w-3.5 h-3.5" />
-                  <span>Disconnect Session</span>
+                  <span>{t('cwDisconnectSession')}</span>
                 </button>
               </div>
             </motion.div>
@@ -783,8 +783,8 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                       <ArrowDownLeft className="w-4 h-4" />
                     </div>
                     <div>
-                      <h4 className="text-sm font-bold text-white">Receive Polygon USDT</h4>
-                      <p className="text-[11px] text-zinc-400">Non-Custodial Polygon (137) Deposit</p>
+                      <h4 className="text-sm font-bold text-white">{t('cwReceiveTitle')}</h4>
+                      <p className="text-[11px] text-zinc-400">{t('cwDepositSubtitle', { chainId: CHAIN.chainId })}</p>
                     </div>
                   </div>
                   <button
@@ -802,7 +802,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
 
                 {/* Address Box */}
                 <div>
-                  <label className="text-[11px] text-zinc-400 block mb-1">Your Polygon Address</label>
+                  <label className="text-[11px] text-zinc-400 block mb-1">{t('cwYourAddress')}</label>
                   <div className="p-2.5 rounded-xl bg-zinc-900 border border-white/[0.08] flex items-center justify-between gap-2">
                     <span className="font-mono text-xs text-zinc-200 truncate select-all">{fullAddr}</span>
                     <button
@@ -831,7 +831,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                     <span className="text-zinc-200 font-mono">{TOKEN_LABEL}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span>Token Contract</span>
+                    <span>{t('cwTokenContract')}</span>
                     <span className="text-zinc-400 font-mono text-[10px]">{shortTokenAddress()}</span>
                   </div>
                 </div>
@@ -949,7 +949,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                           <span>1-Tap Mobile Testing</span>
                         </div>
                         <p className="text-[11px] text-zinc-300 mt-0.5 leading-snug">
-                          Open in a dedicated fullscreen tab for direct 1-click mobile wallet app launch.
+                          {t('cwDedicatedTabBody')}
                         </p>
                       </div>
                       <button
@@ -963,7 +963,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                         className="px-3 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 active:scale-95 text-zinc-950 font-bold text-xs shrink-0 flex items-center gap-1.5 shadow-md shadow-sky-500/20 cursor-pointer transition-all"
                       >
                         <ExternalLink className="w-3.5 h-3.5" />
-                        <span>Dedicated Tab</span>
+                        <span>{t('cwDedicatedTab')}</span>
                       </button>
                     </div>
                   )}
@@ -987,7 +987,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                             className="px-2.5 py-1.5 rounded-lg bg-white/[0.08] hover:bg-white/[0.14] text-white text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1 active:scale-95"
                           >
                             <ExternalLink className="w-3 h-3" />
-                            <span>Open in Dedicated Tab</span>
+                            <span>{t('cwOpenInDedicatedTab')}</span>
                           </button>
                           <button
                             type="button"
@@ -1007,10 +1007,10 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                           <div className="min-w-0">
                             <div className="text-xs font-bold text-white flex items-center gap-1.5">
                               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                              <span>In-App Mobile Web3 Detected</span>
+                              <span>{t('cwInAppDetected')}</span>
                             </div>
                             <p className="text-[11px] text-zinc-300 mt-0.5 truncate">
-                              Tap to connect directly with your wallet app.
+                              {t('cwTapToConnect')}
                             </p>
                           </div>
                           <button
@@ -1018,7 +1018,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                             onClick={() => handleConnectWalletItem('MetaMask', 'In-App Wallet')}
                             className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold shrink-0 shadow cursor-pointer transition-colors"
                           >
-                            Connect Now
+                            {t('cwConnectNow')}
                           </button>
                         </div>
                       )}
@@ -1084,7 +1084,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                                 className="w-full py-3 px-4 rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-2 bg-white/5 text-zinc-500 border border-white/5 cursor-not-allowed"
                               >
                                 <Loader2 className="w-4 h-4 animate-spin text-zinc-400 shrink-0" />
-                                <span>Preparing session...</span>
+                                <span>{t('cwPreparingSession')}</span>
                               </button>
                             )}
 
@@ -1115,7 +1115,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                                 )}
                               >
                                 <ExternalLink className="w-3.5 h-3.5" />
-                                <span>Open again</span>
+                                <span>{t('cwOpenAgain')}</span>
                               </button>
 
                               {/* Copy Code button */}
@@ -1146,7 +1146,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                                 ) : (
                                   <>
                                     <Copy className="w-3.5 h-3.5" />
-                                    <span>Copy Code</span>
+                                    <span>{t('cwCopyCode')}</span>
                                   </>
                                 )}
                               </button>
@@ -1246,14 +1246,14 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                                       {p.info.name}
                                     </span>
                                     <span className="text-[11px] text-emerald-400 font-medium block">
-                                      Detected Extension
+                                      {t('cwDetectedExtension')}
                                     </span>
                                   </div>
                                 </div>
 
                                 <div className="flex items-center gap-2 shrink-0">
                                   <span className="text-[10.5px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                    Installed
+                                    {t('cwInstalled')}
                                   </span>
                                   {isConnecting ? (
                                     <Loader2 className="w-4 h-4 text-zinc-300 animate-spin" />
@@ -1344,7 +1344,7 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                       >
                         <div className="font-semibold text-white flex items-center gap-1.5">
                           <HelpCircle className="w-3.5 h-3.5 text-sky-400" />
-                          <span>What is a Web3 wallet?</span>
+                          <span>{t('cwWhatIsWallet')}</span>
                         </div>
                         <p className="text-[11.5px] text-zinc-400 leading-relaxed">
                           A wallet lets you log in, authorize duels, and hold your tournament USDT
@@ -1360,10 +1360,10 @@ export const ConnectWallet: React.FC<ConnectWalletProps> = ({
                   {/* OpenSea-Style Footer */}
                   <div className="mt-4 pt-3.5 border-t border-white/[0.06] text-center space-y-1.5 shrink-0">
                     <p className="text-[11px] text-zinc-500 leading-relaxed max-w-xs mx-auto">
-                      By connecting your wallet, you agree to the <a href="/legal" target="_blank" rel="noreferrer" className="text-sky-400/90 hover:text-sky-300 underline">Terms of Service</a> & <a href="/legal" target="_blank" rel="noreferrer" className="text-sky-400/90 hover:text-sky-300 underline">Privacy Policy</a>.
+                      {t('cwAgreePrefix')} <a href="/legal" target="_blank" rel="noreferrer" className="text-sky-400/90 hover:text-sky-300 underline">{t('cwTerms')}</a> & <a href="/legal" target="_blank" rel="noreferrer" className="text-sky-400/90 hover:text-sky-300 underline">{t('cwPrivacy')}</a>.
                     </p>
                     <div className="flex items-center justify-center gap-1 text-[11px] text-zinc-400">
-                      <span>Need help?</span>
+                      <span>{t('cwNeedHelp')}</span>
                       <button
                         type="button"
                         onClick={() => setShowHelp(!showHelp)}

@@ -319,7 +319,7 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
               {searchResults.length === 0 ? (
                 <div className="p-6 text-center text-xs text-zinc-500 space-y-1">
                   <Search className="w-6 h-6 mx-auto text-zinc-600 mb-1" />
-                  <p className="text-zinc-300 font-medium">No player found</p>
+                  <p className="text-zinc-300 font-medium">{t('noPlayerFound')}</p>
                 </div>
               ) : (
                 searchResults.map((player) => {
