@@ -48,6 +48,11 @@ except Exception:  # pragma: no cover
 COLLECTION = "pulsar_matches"
 QUEUE_DOC = "pulsar_queue"
 
+# How many matches the in-process mirror may hold. `DurableMatchStore._mirror`
+# writes every match it touches into it, so without a bound a long-running
+# server accumulates every duel it has ever seen.
+_MEMORY_MATCH_MAX = 4096
+
 
 def _can_pair(waiting: Match, addr: str, target: str) -> bool:
     """Audit M27 — both sides must agree before a reserved match is paired.
@@ -341,6 +346,33 @@ class InMemoryStore:
     def put(self, match: Match) -> None:
         with self._lock:
             self.matches[match.match_id] = match
+            if len(self.matches) <= _MEMORY_MATCH_MAX:
+                return
+            # Audit (phase 0–7 review): nothing ever removed a match from this
+            # map, and `DurableMatchStore._mirror` writes EVERY match it touches
+            # into it — so a long-running server accumulated every duel it had
+            # ever seen, rounds and all. Same class as M15/M16.
+            #
+            # Only TERMINAL matches are evictable: a waiting/active duel must
+            # never disappear from the cache. The durable sweep
+            # (`sweep_stale_settlements`) is the authoritative re-sign pass, so
+            # dropping a settled match here costs nothing but a cache miss.
+            overflow = len(self.matches) - _MEMORY_MATCH_MAX
+            evictable = sorted(
+                (
+                    (mid, m)
+                    for mid, m in self.matches.items()
+                    if m.status in ("settled", "void")
+                ),
+                key=lambda kv: kv[1].settled_at or kv[1].created_at,
+            )
+            for mid, m in evictable[:overflow]:
+                self.matches.pop(mid, None)
+                # A `player_match` entry pointing at an evicted match would make
+                # `player_live_match` fall through to Firestore on every poll.
+                for addr in m.players:
+                    if self.player_match.get(addr) == mid:
+                        self.player_match.pop(addr, None)
 
 
 class FirestoreStore:

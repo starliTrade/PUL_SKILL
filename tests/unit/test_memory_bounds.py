@@ -126,3 +126,71 @@ def test_revoke_session_takes_the_auth_lock(monkeypatch):
     assert spy.acquired == 1, (
         "the revoked-jti set is mutated without the lock (audit M17)"
     )
+
+
+# --- the in-memory match mirror -------------------------------------------------
+#
+# Found by the phase-0..7 audit, same class as M15/M16: nothing ever removed a
+# match from this map, and `DurableMatchStore._mirror` writes EVERY match it
+# touches into it — so a long-running server accumulated every duel it had ever
+# seen, rounds and all.
+
+
+def _settled(match_id: str, at: float):
+    from match_engine import Match
+
+    return Match(match_id=match_id, stake=1.0, created_at=0.0, status="settled", settled_at=at)
+
+
+def test_the_in_memory_match_map_is_bounded(monkeypatch):
+    import store as store_module
+    from store import InMemoryStore
+
+    monkeypatch.setattr(store_module, "_MEMORY_MATCH_MAX", 10)
+    store = InMemoryStore()
+    for i in range(100):
+        store.put(_settled(f"m{i}", float(i)))
+
+    assert len(store.matches) <= 10, (
+        f"the in-memory match map holds {len(store.matches)} matches — every duel "
+        "the process has ever touched, forever"
+    )
+
+
+def test_a_live_match_is_never_evicted(monkeypatch):
+    import store as store_module
+    from match_engine import Match
+    from store import InMemoryStore
+
+    monkeypatch.setattr(store_module, "_MEMORY_MATCH_MAX", 5)
+    store = InMemoryStore()
+    live = Match(match_id="live", stake=1.0, created_at=0.0, status="active")
+    store.put(live)
+    for i in range(50):
+        store.put(_settled(f"m{i}", float(i)))
+
+    assert "live" in store.matches, "a live match was evicted from the cache"
+
+
+def test_eviction_clears_the_idempotency_entry_too(monkeypatch):
+    """A `player_match` entry pointing at an evicted match must not shadow."""
+    import store as store_module
+    from store import InMemoryStore
+
+    monkeypatch.setattr(store_module, "_MEMORY_MATCH_MAX", 3)
+    store = InMemoryStore()
+    for i in range(20):
+        m = _settled(f"m{i}", float(i))
+        m.players = {f"0x{i:040x}": {"address": f"0x{i:040x}"}}
+        store.put(m)
+        store.player_match[f"0x{i:040x}"] = m.match_id
+
+    dangling = [
+        addr
+        for addr, mid in store.player_match.items()
+        if mid not in store.matches
+    ]
+    assert not dangling, (
+        f"player_match still points at evicted matches: {dangling[:3]} — a stale "
+        "entry makes `player_live_match` scan Firestore on every poll"
+    )
