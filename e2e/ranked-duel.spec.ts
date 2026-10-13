@@ -14,15 +14,31 @@
  * with a clean stack the server answers 200 on `round/commit` and
  * `round/target`, where it previously refused with 409.
  *
- * STILL OPEN — the app's JOINER path. The creator's page sits on "Waiting for
- * a ranked opponent" while the joiner lands on the error shell with
- * `missing revert data (action="estimateGas")`. The CONTRACT flow itself is
- * proven correct by driving anvil directly with real transactions:
- * `approve` → allowance becomes 1_000_000; `createDuel` → status Created;
- * `joinDuel` → succeeds once the allowance exists. So the revert is in the
- * app's call, not in the escrow — most likely a token/escrow address the app
- * does not have (a call to a non-contract returns no revert data, which is
- * exactly this error). That is the next thing to trace.
+ * STILL OPEN — and narrowed to one call. The creator's page sits on "Waiting
+ * for a ranked opponent" while the other lands on the error shell with
+ * `missing revert data (action="estimateGas")`.
+ *
+ * What has been RULED OUT, each by evidence rather than reasoning:
+ *   - the CONTRACT flow: driving anvil directly with real transactions works
+ *     (`approve` → allowance 1_000_000; `createDuel` → status Created;
+ *     `joinDuel` → succeeds once the allowance exists);
+ *   - the ADDRESSES the app uses: logged at the call site, `token` and
+ *     `escrow` match the manifest exactly, chain 31337, stake 1;
+ *   - the ROLE assignment: `youAreCreator` is `creator == me.address` on the
+ *     server, and the two players queue in order.
+ *
+ *   - the ROLE assignment: tested against the live server, A (queued first)
+ *     gets `youAreCreator: true`, B gets `youAreJoiner: true`, and a re-read
+ *     agrees.
+ *
+ * What is LEFT, and it is one thing: **the creator's page never leaves
+ * "Connecting to matchmaking server… Waiting for a ranked opponent…"** even
+ * though the server paired the two players. So the creator never sends
+ * `createDuel`, the joiner's `joinDuel` has nothing to join, and the error's
+ * `transaction.data` (`0x09dfe770` = `createDuel`) is the joiner's retry path
+ * rather than the creator's first attempt. The next question is therefore:
+ * does the creator's client re-poll `/api/queue` (or `/api/match/{id}`) after
+ * the pairing, and if so why does it not act on it?
  */
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { clearEligibilityGate } from './helpers';
