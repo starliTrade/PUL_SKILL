@@ -37,15 +37,17 @@
  *   - the gas price floor: chain 31337 falls back to 1 gwei, which anvil
  *     accepts.
  *
- * What is LEFT: with a CLEAN Firestore the roles are right and the pairing
- * works, but the creator still fails at `createDuel` with
- * `missing revert data (action="estimateGas", data=null)` while the joiner
- * waits. The one thing this suite does NOT reset is **anvil** — the chain keeps
- * every duel from every previous run — so the next suspect is the on-chain
- * `matchId` the client derives: `createDuel` reverts when
- * `matches[matchId].status != None`. Resetting anvil (which redeploys the
- * escrow and rewrites the manifest, so the API must restart too) is the next
- * experiment.
+ * FIXED along the way — a real app bug, found by reading the FULL ethers error
+ * rather than its message. `createDuel` is not idempotent: the contract reverts
+ * with "Match already exists" when the duel is already on-chain, so ANY retry
+ * of this flow re-created a funded duel and died on a revert — the player saw
+ * "Could not reach the duel server" while their stake sat in the escrow. The
+ * joiner already guarded for this; the creator now does too (it reads
+ * `getDuelState` first and resumes instead of re-depositing).
+ *
+ * What is LEFT: the round endpoints now return `409 {"detail":"Match not
+ * found"}` — a different problem from the deposit. The app reaches the rounds
+ * with a match id the server does not know, which is the next thing to trace.
  */
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { clearEligibilityGate } from './helpers';
@@ -92,6 +94,13 @@ test.describe('the ranked duel', () => {
     try {
       const pageA = await connectPlayer(ctxA, 0);
       const pageB = await connectPlayer(ctxB, 1);
+      for (const [page, tag] of [[pageA, 'A'], [pageB, 'B']] as const) {
+        page.on('response', async (r) => {
+          if (r.url().includes('/api/round/') && r.status() >= 400) {
+            console.log(`${tag} ROUND ${r.status()}:`, (await r.text().catch(() => '')).slice(0, 160));
+          }
+        });
+      }
 
       // Real-money mode must be AVAILABLE: it needs escrow + treasury + oracle
       // configured, and the lobby says so plainly when any is missing.
