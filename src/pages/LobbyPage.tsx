@@ -66,9 +66,11 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
     setMounted(true);
 
     const unsubMatches = realWeb3Manager.subscribeGlobalMatches((matches) => {
-      if (matches && matches.length > 0) {
-        setLiveCloudMatches(matches);
-      }
+      // Audit M42: an empty snapshot is a FACT — the arena has no recent
+      // real-stake duels. The old `length > 0` guard ignored it, so the last
+      // entries stayed on screen as if they were still live. Always reflect
+      // what the server sent, including nothing.
+      setLiveCloudMatches(matches ?? []);
     });
 
     return () => {

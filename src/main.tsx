@@ -6,7 +6,8 @@ import { initErrorMonitoring } from './lib/monitoring';
 import './index.css';
 
 // P2.4 — error monitoring. No-ops unless VITE_SENTRY_DSN is configured.
-initErrorMonitoring();
+// Audit M44: lazy — the Sentry SDK is only fetched when a DSN exists.
+void initErrorMonitoring();
 
 // Boot hygiene: purge orphaned/stale WalletConnect proposal keys.
 // NOTE (P0.8): the previous console.error / window.onerror interception that
