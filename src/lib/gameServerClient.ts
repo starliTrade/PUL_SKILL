@@ -274,6 +274,40 @@ export const queueForMatch = (
 export const getMatch = (session: ServerSession, matchId: string): Promise<MatchView> =>
   request<MatchView>(`/api/match/${encodeURIComponent(matchId)}`, undefined, session, "GET");
 
+/** A player's server-authoritative progression (audit M31). */
+export interface PlayerStats {
+  wins: number;
+  losses: number;
+  voids: number;
+  totalMatches: number;
+  xp: number;
+  level: number;
+  winStreak: number;
+  bestReactionMs: number;
+  avgReactionMs: number;
+  lastXpAwarded?: number;
+}
+
+export type PlayerStatsResponse = ({ available: true } & PlayerStats) | { available: false };
+
+/**
+ * Read the ledger's view of a player's progression (audit M31).
+ *
+ * `available: false` means the ledger could not answer. The caller must fall
+ * back to its local estimate — reporting zeros as facts would tell a player
+ * with a hundred wins that they have never played.
+ */
+export const fetchPlayerStats = (
+  session: ServerSession,
+  address: string
+): Promise<PlayerStatsResponse> =>
+  request<PlayerStatsResponse>(
+    `/api/player/${encodeURIComponent(address)}/stats`,
+    undefined,
+    session,
+    "GET"
+  );
+
 export const commitRound = (
   session: ServerSession,
   matchId: string,

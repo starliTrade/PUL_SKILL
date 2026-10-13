@@ -34,6 +34,7 @@ import sys
 from typing import Any
 
 import timebase
+import xp as xp_engine
 
 
 def _fs_db() -> Any:
@@ -97,6 +98,39 @@ def ledger_health() -> dict[str, Any]:
         "failures": dict(_LEDGER_FAILURES),
         "lastError": dict(_LEDGER_LAST_ERROR),
     }
+
+
+def player_stats(address: str) -> dict[str, Any] | None:
+    """A player's server-authoritative progression (audit M31).
+
+    Returns None when the ledger is unavailable — the caller must say so rather
+    than report zeros, which would read as a real (and wrong) "you have never
+    won a duel".
+    """
+    db = _fs_db()
+    if db is None:
+        return None
+    try:
+        snap = db.collection("users").document(address.lower()).get()
+        d = (snap.to_dict() or {}) if snap.exists else {}
+        return {
+            "wins": int(d.get("wins", 0) or 0),
+            "losses": int(d.get("losses", 0) or 0),
+            "voids": int(d.get("voids", 0) or 0),
+            "totalMatches": int(d.get("totalMatches", 0) or 0),
+            "xp": float(d.get("xp", 0) or 0),
+            "level": int(d.get("level", 1) or 1),
+            "winStreak": int(d.get("winStreak", 0) or 0),
+            "bestReactionMs": float(d.get("bestReactionMs", 0) or 0),
+            "avgReactionMs": float(d.get("avgReactionMs", 0) or 0),
+            # Audit M31: the XP this player's last settlement awarded, so the
+            # post-match screen can show the server's number instead of a
+            # client-side estimate.
+            "lastXpAwarded": float(d.get("lastXpAwarded", 0) or 0),
+        }
+    except Exception as exc:
+        _log_ledger_error("player_stats", exc)
+        return None
 
 
 # Audit M20: the contract's PLATFORM_FEE_BPS is the ON-CHAIN AUTHORITY — it is
@@ -300,6 +334,22 @@ def record_settlement(match: Any) -> None:
                     )
                     return False
 
+            # Audit M31: read the committed progression. Firestore requires
+            # EVERY read to precede EVERY write in a transaction — putting this
+            # after the first `tx.set` fails the whole settlement with
+            # ReadAfterWriteError (caught by the emulator test, not by the
+            # memory-mode unit tests).
+            prior: dict[str, dict[str, Any]] = {}
+            for addr in players:
+                usnap = db.collection("users").document(addr).get(transaction=tx)
+                prior[addr] = (usnap.to_dict() or {}) if usnap.exists else {}
+            progression = {
+                addr: _progression_fields(
+                    addr, prior.get(addr) or {}, winner, stake, list(validated_times.get(addr, []))
+                )
+                for addr in players
+            }
+
             tx.set(gate_ref, {"matchId": match_id, "settlementId": settlement_id, "at": settled_at})
             tx.set(match_ref, doc, merge=True)
 
@@ -313,6 +363,7 @@ def record_settlement(match: Any) -> None:
                         "losses": _inc(1) if (winner and not is_winner) else _inc(0),
                         "voids": _inc(1) if not winner else _inc(0),
                         "lastSettledAt": settled_at,
+                        **progression[addr],
                     },
                     merge=True,
                 )
@@ -325,6 +376,10 @@ def record_settlement(match: Any) -> None:
                         "wins": _inc(1),
                         "totalMatches": _inc(1),
                         "earnedUSDT": _inc(prize),
+                        # Audit M31: the podium shows the same server-computed
+                        # progression the profile does.
+                        "xp": progression[winner]["xp"],
+                        "level": progression[winner]["level"],
                         "updatedAt": settled_at,
                     },
                     merge=True,
@@ -336,6 +391,58 @@ def record_settlement(match: Any) -> None:
         # Ledger is a shadow of the money path — never raise into settlement,
         # but make the failure VISIBLE (F-07).
         _log_ledger_error("record_settlement", exc)
+
+
+def _progression_fields(
+    addr: str,
+    before: dict[str, Any],
+    winner: str,
+    stake: float,
+    times: list[float],
+) -> dict[str, Any]:
+    """The server-authoritative progression fields for one player (audit M31).
+
+    `before` is the committed user document, read INSIDE the settlement
+    transaction, so XP and the streak are derived from state the server owns —
+    never from a client claim. `times` are the player's validated round times
+    for this match (the ledger's own record, not a client number).
+    """
+    is_winner = bool(winner) and addr == winner
+    prior_streak = int(before.get("winStreak", 0) or 0)
+    if not winner:
+        # A void is not a defeat: it neither extends nor breaks a streak.
+        streak = prior_streak
+    elif is_winner:
+        streak = prior_streak + 1
+    else:
+        streak = 0
+
+    matches_before = int(before.get("totalMatches", 0) or 0)
+    sample = (sum(times) / len(times)) if times else 0.0
+
+    best = float(before.get("bestReactionMs", 0) or 0)
+    for t in times:
+        if t > 0 and (best == 0 or t < best):
+            best = t
+
+    avg_before = float(before.get("avgReactionMs", 0) or 0)
+    if times:
+        avg = round((avg_before * matches_before + sample) / (matches_before + 1))
+    else:
+        avg = avg_before
+
+    xp_before = float(before.get("xp", 0) or 0)
+    outcome = "win" if is_winner else ("loss" if winner else "void")
+    summary = xp_engine.match_xp(outcome, stake, sample, xp_before, streak)
+
+    return {
+        "xp": summary["newTotalXP"],
+        "level": summary["newLevel"],
+        "winStreak": streak,
+        "bestReactionMs": best,
+        "avgReactionMs": avg,
+        "lastXpAwarded": summary["totalAwardedXP"],
+    }
 
 
 def _inc(n: float) -> dict[str, Any]:
@@ -357,6 +464,7 @@ def _inc(n: float) -> dict[str, Any]:
 __all__ = [
     "ledger_available",
     "ledger_health",
+    "player_stats",
     "record_claim",
     "record_settlement",
     "settlement_id_for",

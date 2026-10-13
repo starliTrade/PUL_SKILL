@@ -80,6 +80,7 @@ RL_CLAIM_MAX = 10        # claim calls per minute per address (audit #10 #7:
                          # CPU work; unthrottled it was a cheap DoS surface)
 RL_ROUND_MAX = 60        # target reveals + result submissions per minute per
 RL_USERNAME_LOOKUP_MAX = 60  # GET /api/username/{name} per minute per IP
+RL_PLAYER_STATS_MAX = 60     # GET /api/player/{addr}/stats per minute per address
                          # (audit #11 H3: without this the registry is
                          # enumerable — every possible name probed for free)
                          # address — hot endpoints that each trigger store work
@@ -1563,3 +1564,27 @@ def username_lookup(name: str, request: Request) -> dict[str, Any]:
         return {"available": True, "username": normalized}
     owner = (snap.to_dict() or {}).get("address", "")
     return {"available": False, "username": normalized, "taken": True, "owner": owner.lower()}
+
+
+@app.get("/api/player/{address}/stats")
+def player_stats(address: str, request: Request) -> dict[str, Any]:
+    """Server-authoritative progression for a player (audit M31).
+
+    Wins/XP/level/streak used to live entirely in the client's localStorage:
+    any player could edit them, and the documented streak bonus could never
+    fire because `winStreak` was never passed to the XP calculation. This is
+    the ledger's view of the same numbers.
+
+    When the ledger is unavailable the response says `available: false` instead
+    of reporting zeros — a zero that means "no data" and a zero that means "no
+    wins" must not look the same to the client.
+    """
+    _auth(request)
+    addr = (address or "").strip().lower()
+    if not _is_address(addr):
+        raise HTTPException(status_code=400, detail="Invalid address")
+    _rl_check("player_stats", addr, RL_PLAYER_STATS_MAX)
+    stats = economy.player_stats(addr)
+    if stats is None:
+        return {"available": False}
+    return {"available": True, **stats}

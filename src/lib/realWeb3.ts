@@ -132,6 +132,8 @@ export interface UserWalletData {
   avgReactionMs: number;
   xp: number;
   level: number;
+  /** Audit M31: server-authoritative win streak (the XP bonus depends on it). */
+  winStreak?: number;
   savedFriends?: string[];
   history: MatchRecord[];
 }

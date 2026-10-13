@@ -21,6 +21,8 @@ export interface UserStats {
   totalMatches: number;
   xp: number;
   level: number;
+  /** Audit M31: server-authoritative win streak. */
+  winStreak?: number;
   playerId?: string;
   bestReactionMs?: number;
   avgReactionMs?: number;
