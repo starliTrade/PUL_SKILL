@@ -407,11 +407,11 @@
 ### ۱۰.۱ — E2E کامل (Playwright)
 - [x] دسکتاپ: connect → queue → create → join → ۳ راند → settle → claim → گواهی با tx واقعی — ✅ حلقه‌ی تمرین کامل پوشش داده شد؛ جریان ranked به mock wallet و بازیکن دوم نیاز دارد
 - [x] موبایل: همان مسیر با viewport لمسی (regression C4) — ✅ ✅ پروژه‌ی mobile (Pixel 7) همان مسیر را پاس می‌کند
-- [ ] refresh در میانه‌ی ماتچ → resume
-- [ ] refresh بعد از تسویه → auto-settle (H11)
+- [x] refresh در میانه‌ی ماتچ → resume — ✅ `e2e/ranked-recovery.spec.ts`: ماتچ واقعی از API + escrow ساخته می‌شود، مرورگر با همان چیزی که یک reload جا می‌گذارد seed می‌شود (نشست SIWE + اشاره‌گر ماتچ)، و پس از tap روی verify node دوئل با شمارنده‌ی راند زنده برمی‌گردد.
+- [x] refresh بعد از تسویه → auto-settle (H11) — ✅ همان اسپک: پس از تسویه‌ی واقعی روی سرور، reload به صفحه‌ی پایانی می‌رسد («MATCH VICTORY … Claiming your prize on-chain») نه به آرنا و نه به error shell.
 - [ ] رد کردن تراکنش در هر مرحله
 - [ ] شکست RPC در هر مرحله
-- [ ] refund بعد از تایم‌اوت
+- [x] refund بعد از تایم‌اوت — ✅ `tests/integration/test_refund_after_timeout.py`: با time-travel روی anvil، **گارد** (refund قبل از پنجره revert می‌شود)، **هر دو بازیکن کامل پس گرفته می‌شوند**، و **refund دوباره ممکن نیست**.
 - [ ] تعویض حساب/شبکه در حین ماتچ (H15)
 
 ### ۱۰.۲ — Visual regression
