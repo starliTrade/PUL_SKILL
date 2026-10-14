@@ -145,3 +145,25 @@ def test_a_legacy_document_gets_the_right_creator() -> None:
     migrated = migrate_document(doc)
     assert migrated["creator"] == "0xaa", "the earliest joiner is the creator"
     assert migrated["joiner"] == "0xbb"
+
+
+def test_a_current_version_document_with_a_missing_field_is_repaired() -> None:
+    """A version number is a CLAIM about shape, not a guarantee.
+
+    Audit 2026-10-15: the backup round trip produced a document that claimed v1
+    but had no `creator`, and the migration left it alone because the version
+    matched. A document that is wrong should be repaired, not trusted.
+    """
+    doc = {
+        "schemaVersion": SCHEMA_VERSION,
+        "match_id": "c" * 32,
+        "stake": 1.0,
+        "created_at": 1.0,
+        "players": {"0xaa": {"address": "0xaa", "joinedAt": 1.0}},
+        "status": "waiting",
+        "rounds": {},
+    }
+    repaired = migrate_document(dict(doc))
+    assert repaired["creator"] == "0xaa"
+    assert repaired["target"] == ""
+    assert repaired["schemaVersion"] == SCHEMA_VERSION

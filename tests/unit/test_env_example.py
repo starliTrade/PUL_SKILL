@@ -33,6 +33,10 @@ SCRIPT_ONLY = {
     # them in production would be wrong.
     "FIRESTORE_EMULATOR_HOST",
     "GCLOUD_PROJECT",
+    # `scripts/check_alerts.py` (plan item 11.2) — the alerting check's own
+    # configuration, not the server's. The server never reads either.
+    "PULSAR_ALERT_URL",
+    "PULSAR_ALERT_WEBHOOK",
 }
 
 # Public configuration, not secrets — a chain id is in every RPC request.

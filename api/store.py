@@ -291,13 +291,13 @@ def migrate_document(d: dict[str, Any]) -> dict[str, Any]:
             f"understands ({SCHEMA_VERSION}) — refusing to read it rather than "
             "silently ignoring fields it does not know about"
         )
-    if version == SCHEMA_VERSION:
-        return d
-
-    # v0 -> v1: documents written before versioning. The fields below were added
-    # over time and the read path derived them on the fly; stamping them makes
-    # the derivation explicit and permanent, so a later reader does not have to
-    # reproduce it.
+    # The field-stamping below runs for EVERY version, not only for older ones.
+    #
+    # Audit 2026-10-15: it used to `return d` early when the version already
+    # matched — so a document that claimed v1 but was missing a required field
+    # (which the backup round trip produced) was never repaired. A version number
+    # is a claim about shape; if the shape is wrong, the claim is not a reason to
+    # leave it wrong.
     players = dict(d.get("players", {}) or {})
     if not d.get("creator") or not d.get("joiner"):
         creator, joiner = _creator_from_players(players)

@@ -279,6 +279,19 @@ if [[ -f "$ROOT/tests/integration/test_refund_after_timeout.py" ]]; then
   PATH="$PATH:/root/workspace/.foundry/bin" bash "$ROOT/scripts/start_anvil.sh" --bg >/dev/null 2>&1 || true
 fi
 
+# --- 8c2. Alerting — plan item 11.2 ------------------------------------------
+#
+# The metrics existed and nothing watched them. This gate proves the alerting
+# path works AND that it stays quiet when the server is healthy — an alert that
+# fires on a healthy server is worse than none, because it trains people to
+# ignore it.
+if [[ -f "$ROOT/scripts/check_alerts.py" ]]; then
+  run_gate "alerting (healthy server must be quiet)" bash -c \
+    "cd '$ROOT' && '$PY' scripts/check_alerts.py --quiet"
+else
+  skip_gate "alerting (healthy server must be quiet)" "scripts/check_alerts.py is missing"
+fi
+
 # --- 8d. Chaos suite — plan item 10.4 ----------------------------------------
 #
 # Audit 2026-10-14: `scripts/chaos_suite.py` was referenced by NOTHING — not this
