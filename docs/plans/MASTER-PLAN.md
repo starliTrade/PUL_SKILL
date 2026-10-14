@@ -420,11 +420,11 @@
 - [x] تم روشن/تیره — ✅ ✅ هر دو تم
 
 ### ۱۰.۳ — Load
-- [ ] k6/Locust: ۱۰۰۰ poller هم‌زمان روی `/api/queue`
+- [x] k6/Locust: ۱۰۰۰ poller هم‌زمان روی `/api/queue` — ✅ اجرا شد و **یک باگ واقعی پیدا کرد**: ۱۵۷ از ۱۵۷ درخواست صف با **۵۰۰** برمی‌گشتند (`ValueError: Failed to commit transaction in 5 attempts`). حالا contention فروشگاه یک **۵۰۳ قابل‌retry** با `Retry-After` است، به‌صورت **global** (نه per-route — اصلاح اول فقط `/api/queue` را پوشاند و همان خطا روی `/api/challenges` و `/api/player/{addr}/stats` برگشت). پس از اصلاح: **۰ خطای ۵۰۰ روی هر مسیری** (قبلاً ۱۵۷+). شمارنده‌ی `store.contention503` هم اضافه شد.
 - [x] اندازه‌گیری read فایرستور به‌ازای هر ماتچ (هدف: <۲۰) — ✅ **اندازه‌گیری شد: ۴۷ read برای هر ماتچ کامل (از `/api/metrics`)، یعنی بیش از دو برابر هدف <۲۰. این یک شکاف واقعی و مستند است (تست xfail می‌شود، نه skip) و بهینه‌سازی‌اش کار فاز بعد است.
 - [x] جریان ranked از طریق API با driver قطعی — ✅ `tests/integration/test_ranked_flow_e2e.py`: SIWE → queue → fund → approve → createDuel/joinDuel → گیت deposit → راندها → **settle واقعی** (بدون مرورگر، بدون polling). همراه با رفع باگ واقعی سرور: کش منفیِ ۱۰ ثانیه‌ای روی deposit تأییدنشده، که راند اول بازیکن را رد می‌کرد.
 - [x] latency p50/p95/p99 هر endpoint — ✅ ✅ اندازه‌گیری شد و منبعش هم مشخص شد (emulator، نه اپ) — docs/LOAD-REPORT.md
-- [ ] گزارش هزینه‌ی تخمینی در مقیاس
+- [x] گزارش هزینه‌ی تخمینی در مقیاس — ✅ در `docs/LOAD-REPORT.md` بر پایه‌ی ۳۵ read اندازه‌گیری‌شده: حتی یک میلیون ماتچ در روز ≈ **$21** — یعنی **دیتابیس محرک هزینه نیست**؛ هزینه‌های واقعی RPC و گس Polygon است. هشدار صادقانه: این عدد polling کلاینت را شامل نمی‌شود (یک ماتچ ۳ دقیقه‌ای با poll هر ۱.۵s ≈ ۱۲۰ read اضافه).
 
 ### ۱۰.۴ — Chaos
 - [x] کشتن RPC در میانه‌ی راند — ✅ ✅ اسکریپت chaos: سرور زنده می‌ماند، health صادقانه `reachable=false` می‌گوید، و **گیت deposit واقعاً fail-closed است** (۴۰۹)

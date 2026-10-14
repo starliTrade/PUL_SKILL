@@ -86,3 +86,19 @@ def test_identity_on_the_memory_backend_is_just_get(monkeypatch) -> None:
     m = _match()
     s.memory.put(m)
     assert s.identity(m.match_id).match_id == m.match_id
+
+
+def test_store_contention_is_recognised_as_retryable() -> None:
+    """A busy store must be a retryable 503, not a 500.
+
+    Found by the 1000-poller load run: `ValueError: Failed to commit transaction
+    in 5 attempts` escaped as an HTTP 500, and 157 of 157 queue requests failed
+    that way. A 500 says "do not retry"; the truth is "the store was busy".
+    """
+    from api.main import _is_store_contention
+
+    assert _is_store_contention(ValueError("Failed to commit transaction in 5 attempts."))
+    assert _is_store_contention(RuntimeError("ABORTED: too much contention"))
+    # A real validation failure must NOT be dressed up as retryable.
+    assert not _is_store_contention(ValueError("Invalid stake"))
+    assert not _is_store_contention(KeyError("matchId"))

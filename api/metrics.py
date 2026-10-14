@@ -43,6 +43,8 @@ _endpoints: dict[str, dict[str, Any]] = {}
 _firestore_reads = 0
 # route template -> Firestore reads attributed to it (see note_firestore_reads_for_route)
 _reads_by_route: dict[str, int] = {}
+# requests answered 503 because the store was busy
+_store_contention = 0
 _matches_settled = 0
 _signatures_attempted = 0
 _signatures_failed = 0
@@ -113,6 +115,16 @@ def note_match_settled() -> None:
     _matches_settled += 1
 
 
+def note_store_contention() -> None:
+    """A request refused because the store was BUSY (returned 503, not 500).
+
+    Audit 2026-10-14: this is the honest signal for "we were at capacity", and
+    it is what tells an operator whether the 503s are load or a regression.
+    """
+    global _store_contention
+    _store_contention += 1
+
+
 def note_signature(ok: bool) -> None:
     global _signatures_attempted, _signatures_failed
     _signatures_attempted += 1
@@ -164,6 +176,11 @@ def snapshot() -> dict[str, Any]:
             "failed": failed,
             "failureRate": round(failed / attempted, 4) if attempted else None,
         },
+        "store": {
+            # A busy store is capacity, not breakage. Counted so the two are
+            # never confused when reading the logs.
+            "contention503": _store_contention,
+        },
         "process": {
             "uptimeSeconds": round(time.monotonic() - _STARTED_AT, 1),
         },
@@ -180,6 +197,8 @@ def reset() -> None:
         _endpoints.clear()
         _reads_by_route.clear()
     _firestore_reads = 0
+    global _store_contention
+    _store_contention = 0
     _matches_settled = 0
     _signatures_attempted = 0
     _signatures_failed = 0
