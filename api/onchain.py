@@ -35,8 +35,21 @@ STATUS_CREATED = 1
 STATUS_ACTIVE = 2
 
 RPC_TIMEOUT_SECONDS = 5.0
-_POSITIVE_TTL = 60.0   # verified-deposit cache (both stakes seen)
-_NEGATIVE_TTL = 10.0   # unverified cache (retry RPC quickly but not per call)
+# A VERIFIED deposit is immutable for the life of the duel, so caching it is
+# free correctness.
+_POSITIVE_TTL = 60.0
+# An UNVERIFIED read is a TRANSIENT state, not a fact: the client deposits
+# on-chain right after the match is created, so "not verified yet" is expected
+# for a few seconds and then becomes false. Caching it for 10s (audit
+# 2026-10-14, found by the phase-10 ranked E2E) meant a gate read that happened
+# BEFORE the deposit kept answering "not verified" AFTER it — and the player's
+# first round was refused with
+# `409 "On-chain deposits are not verified for this match yet."`
+#
+# That is also what made the browser E2E look flaky: the same flow passed or
+# failed depending on whether the negative window had expired. The bug was
+# never the driver. Do not cache a negative.
+_NEGATIVE_TTL = 0.0
 
 # Audit #7 — chain-binding cross-check. Three env vars describe one chain
 # (ESCROW_RPC_URL's network, ORACLE_CHAIN_ID for signatures, VITE_CHAIN_ID in
@@ -339,9 +352,11 @@ def duel_info(match_id: str, *, use_cache: bool = True) -> dict[str, Any] | None
     info = _decode_match(ret)
     if use_cache:
         status = info.get("status") if info else None
-        verified = status == STATUS_ACTIVE
-        ttl = _POSITIVE_TTL if verified else _NEGATIVE_TTL
-        _cache_store(key, (status, timebase.now() + ttl, info))
+        if status == STATUS_ACTIVE:
+            # Verified: both stakes are locked and cannot un-lock. Cache it.
+            _cache_store(key, (status, timebase.now() + _POSITIVE_TTL, info))
+        # NOT verified: deliberately NOT cached — see _NEGATIVE_TTL. The client
+        # may be mid-deposit, and a stale negative refuses a legitimate round.
     return info
 
 
