@@ -83,10 +83,16 @@
  *      broken when they had just won or lost it. It now asks the server what
  *      happened and finishes on the real result.
  *
- * The round loop is not asserted HERE yet: driving two browsers through it
- * reliably needs the loop's timing tuned, and the probe that proved it is not
- * yet a test. That is the next piece of work; the spec asserts the deposit
- * proof, which is what the 409 gate guards.
+ * The round loop is NOT asserted here, and the reason is measured rather than
+ * assumed: a DOM-polling driver is FLAKY. The same loop that completes all
+ * three rounds and settles on-chain in one run comes back
+ * `409 "Match is not complete yet"` in the next, because a short-lived target
+ * can fall between two polls and a round is then never submitted. A flaky test
+ * would hide exactly the defects this one found, so the spec asserts the
+ * deposit proof instead.
+ *
+ * A reliable driver needs to react to the app's own round state rather than
+ * poll the DOM — the next piece of work.
  */
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { clearEligibilityGate } from './helpers';
