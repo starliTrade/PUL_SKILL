@@ -34,6 +34,7 @@ from typing import Any
 import timebase
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import auth as _auth_module
@@ -353,6 +354,17 @@ REFUND_HORIZON_SECONDS = MATCH_TIMEOUT_SECONDS + REFUND_GRACE_SECONDS
 DEPOSIT_TIMEOUT_SECONDS = 300.0
 
 
+def _is_store_contention(exc: BaseException) -> bool:
+    """True when the store failed because it was BUSY, not because we were wrong.
+
+    Firestore's transaction helper gives up after a fixed number of retries and
+    raises a plain `ValueError`; the message is the only signal it offers. A
+    busy store is transient and retryable, so it must not be reported as a 500.
+    """
+    text = str(exc).lower()
+    return "failed to commit transaction" in text or "aborted" in text or "contention" in text
+
+
 def _gate_or_void(match_id: str) -> None:
     """Run the on-chain deposit gate BEFORE the store lock is taken (audit H10).
 
@@ -370,7 +382,10 @@ def _gate_or_void(match_id: str) -> None:
     """
     if not onchain.escrow_configured():
         return  # practice / unconfigured dev — gate inactive
-    snapshot = store.get(match_id)
+    # `identity` is the mirror-backed read: the gate's inputs are immutable, and
+    # the on-chain state below is still read fresh. Saves one Firestore read per
+    # round action (audit 2026-10-14, plan item 10.3).
+    snapshot = store.identity(match_id)
     gate = _verify_deposits_or_void(snapshot)
     if not gate:
         return
@@ -510,6 +525,31 @@ def _siwe_message(address: str, nonce: str, domain: str) -> str:
     )
 
 app = FastAPI(title="PULSAR Game Server", version="1.1.1")
+
+
+@app.exception_handler(Exception)
+async def _store_contention_handler(request: Request, exc: Exception) -> JSONResponse:
+    """A BUSY store is a retryable 503, on EVERY route.
+
+    Audit 2026-10-14 (found by the 1000-poller load run): Firestore's
+    transaction helper gives up after a fixed number of retries and raises
+    `ValueError: Failed to commit transaction in 5 attempts`. That escaped as an
+    HTTP 500 — which tells a client "this is broken, do not retry" — on 157 of
+    157 queue requests, and on `/api/challenges` and `/api/player/{addr}/stats`
+    too. The request was fine; the store was busy.
+
+    Handled once here rather than per route, because the first fix covered only
+    `/api/queue` and the same failure kept surfacing on the other endpoints.
+    """
+    if _is_store_contention(exc):
+        metrics.note_store_contention()
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Matchmaking is busy — retry shortly."},
+            headers={"Retry-After": "1"},
+        )
+    # Anything else is a real error: let FastAPI's default handling report it.
+    raise exc
 
 # Audit H6 — production configuration is MANDATORY, and the default is INVERTED.
 #
@@ -690,11 +730,17 @@ async def _record_metrics(request: Request, call_next: Any) -> Any:
     otherwise every scrape perturbs the numbers it reports.
     """
     started = time.perf_counter()
+    reads_before = metrics.firestore_reads_total()
     response = await call_next(request)
     route = request.scope.get("route")
     path = getattr(route, "path", None) or request.url.path
     if path != "/api/metrics":
         metrics.observe_request(request.method, path, (time.perf_counter() - started) * 1000.0)
+        # Attribute this request's Firestore reads to its route, so
+        # `readsPerMatch` can be acted on rather than merely reported.
+        metrics.note_firestore_reads_for_route(
+            path, metrics.firestore_reads_total() - reads_before
+        )
     return response
 
 
@@ -1195,7 +1241,26 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
                 f"Finish or leave it before queueing at {body.stake:g}."
             ),
         )
-    match = store.enqueue(address, body.stake, body.rttMs, challenge_target or None)
+    try:
+        match = store.enqueue(address, body.stake, body.rttMs, challenge_target or None)
+    except Exception as exc:  # noqa: BLE001
+        # Audit 2026-10-14 (found by the 1000-poller load run, plan item 10.3):
+        # under contention the Firestore transaction exhausts its retries and
+        # raises `ValueError: Failed to commit transaction in 5 attempts`. That
+        # escaped as an **HTTP 500** — 157 of 157 queue requests failed that way
+        # at 1000 concurrent pollers.
+        #
+        # A 500 tells the client "this is broken, do not retry". The truth is
+        # the opposite: the request is fine and the store was busy, so the
+        # honest answer is a RETRYABLE 503 with `Retry-After`. The client
+        # already polls `/api/queue` while waiting, so it recovers on its own.
+        if _is_store_contention(exc):
+            raise HTTPException(
+                status_code=503,
+                detail="Matchmaking is busy — retry shortly.",
+                headers={"Retry-After": "1"},
+            ) from exc
+        raise
     return match.public_view(for_address=address)
 
 

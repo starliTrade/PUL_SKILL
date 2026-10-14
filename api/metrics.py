@@ -41,6 +41,10 @@ _endpoints: dict[str, dict[str, Any]] = {}
 
 # Counters. Kept as plain ints so a read is atomic enough for monitoring.
 _firestore_reads = 0
+# route template -> Firestore reads attributed to it (see note_firestore_reads_for_route)
+_reads_by_route: dict[str, int] = {}
+# requests answered 503 because the store was busy
+_store_contention = 0
 _matches_settled = 0
 _signatures_attempted = 0
 _signatures_failed = 0
@@ -87,9 +91,38 @@ def note_firestore_read(count: int = 1) -> None:
     _firestore_reads += count
 
 
+def firestore_reads_total() -> int:
+    """The counter, for attributing a request's reads to its route."""
+    return _firestore_reads
+
+
+def note_firestore_reads_for_route(path: str, count: int) -> None:
+    """Attribute `count` reads to a route.
+
+    Audit 2026-10-14: `readsPerMatch` was a single total, which says a match
+    costs ~47 reads but not WHERE they go — so it cannot be acted on. The
+    middleware measures the delta across each request and lands it here, which
+    turns the number into a list of the endpoints that actually spend it.
+    """
+    if count <= 0:
+        return
+    with _lock:
+        _reads_by_route[path] = _reads_by_route.get(path, 0) + count
+
+
 def note_match_settled() -> None:
     global _matches_settled
     _matches_settled += 1
+
+
+def note_store_contention() -> None:
+    """A request refused because the store was BUSY (returned 503, not 500).
+
+    Audit 2026-10-14: this is the honest signal for "we were at capacity", and
+    it is what tells an operator whether the 503s are load or a regression.
+    """
+    global _store_contention
+    _store_contention += 1
 
 
 def note_signature(ok: bool) -> None:
@@ -128,6 +161,10 @@ def snapshot() -> dict[str, Any]:
         "endpoints": endpoints,
         "firestore": {
             "reads": reads,
+            # Where the reads actually go. Sorted, so the top spender is first.
+            "readsByRoute": dict(
+                sorted(_reads_by_route.items(), key=lambda kv: kv[1], reverse=True)
+            ),
             "matchesSettled": settled,
             # The plan's cost target is <20 reads per match. Reported as None
             # rather than 0 before the first match, so "no data" is not read as
@@ -138,6 +175,11 @@ def snapshot() -> dict[str, Any]:
             "attempted": attempted,
             "failed": failed,
             "failureRate": round(failed / attempted, 4) if attempted else None,
+        },
+        "store": {
+            # A busy store is capacity, not breakage. Counted so the two are
+            # never confused when reading the logs.
+            "contention503": _store_contention,
         },
         "process": {
             "uptimeSeconds": round(time.monotonic() - _STARTED_AT, 1),
@@ -153,7 +195,10 @@ def reset() -> None:
     global _firestore_reads, _matches_settled, _signatures_attempted, _signatures_failed
     with _lock:
         _endpoints.clear()
+        _reads_by_route.clear()
     _firestore_reads = 0
+    global _store_contention
+    _store_contention = 0
     _matches_settled = 0
     _signatures_attempted = 0
     _signatures_failed = 0

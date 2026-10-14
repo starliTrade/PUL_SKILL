@@ -950,6 +950,30 @@ class DurableMatchStore:
             return match
         return self.memory.get(match_id)
 
+    def identity(self, match_id: str) -> Match:
+        """The match's IMMUTABLE identity (players, stake, creator) — cheaply.
+
+        Audit 2026-10-14 (plan item 10.3, reads per match measured at 47 against
+        a target of <20): the deposit gate ran `get()` before every round
+        action, and `update()` then read the match again inside its transaction
+        — two Firestore reads per commit/reveal/submit, 37 of a match's 47.
+
+        The gate only needs `stake` and `players`, which are immutable after
+        activation (its own docstring says so), and the mirror already holds the
+        match after `enqueue`/`get`/`update`. Serving the gate from the mirror
+        removes one read per round action WITHOUT weakening the gate: the
+        on-chain state it verifies is still read fresh on every call.
+
+        Falls back to a real read whenever the mirror does not have it, so this
+        can only ever be a cache hit, never a wrong answer.
+        """
+        if self._fs_store is not None:
+            cached = self.memory.matches.get(match_id)
+            if cached is not None and cached.status in ("waiting", "active"):
+                return cached
+            return self.get(match_id)
+        return self.memory.get(match_id)
+
     def pending_challenges(self, address: str) -> list[dict[str, Any]]:
         """Audit M27 closure: challenges waiting for this address."""
         if self._fs_store is not None:
