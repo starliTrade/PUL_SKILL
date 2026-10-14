@@ -62,10 +62,31 @@
  * With both fixed, round 1 completes end to end against the real stack:
  * `round/commit` 200, `round/target` 200, `round/result` 200.
  *
- * What is LEFT: round 2's commit comes back 409, and so does `settle`. The
- * round loop is therefore not asserted here yet — the spec asserts the deposit
- * proof (the duel is running, the counter advanced, no error shell), which is
- * what the 409 gate is actually testing.
+ * THE FULL DUEL NOW RUNS, verified by driving it end to end:
+ *
+ *     all 3 rounds: commit 200, target 200, result 200
+ *     settle -> 200 for BOTH players
+ *     A: "MATCH VICTORY | Final Score: 1 - 2 | Prize claimed on-chain 0x95773c8c…9c79662d"
+ *     B: "MATCH DEFEAT  | Final Score: 2 - 1 | You released the winner's prize on-chain."
+ *
+ * Two more REAL app bugs were fixed to get there, both found from the server's
+ * own 409 bodies:
+ *
+ *   1. An undisclosed opponent time called `finishServerMatch` — which SETTLES.
+ *      The match was still in progress, so the settle came back
+ *      `409 "Match is not complete yet"`, the app rendered its error shell, and
+ *      the player was EJECTED FROM A LIVE MATCH with their stake in the escrow.
+ *      The client now WAITS for the disclosure (the server owns completion).
+ *   2. A best-of-three that ended 2-0 answered the next commit with
+ *      `409 {"detail":"Match is not active"}` — the server being RIGHT — and the
+ *      app showed the error shell for it, telling the player their duel had
+ *      broken when they had just won or lost it. It now asks the server what
+ *      happened and finishes on the real result.
+ *
+ * The round loop is not asserted HERE yet: driving two browsers through it
+ * reliably needs the loop's timing tuned, and the probe that proved it is not
+ * yet a test. That is the next piece of work; the spec asserts the deposit
+ * proof, which is what the 409 gate guards.
  */
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { clearEligibilityGate } from './helpers';
@@ -133,18 +154,16 @@ test.describe('the ranked duel', () => {
         timeout: 40_000,
       });
 
-      // WHAT THIS ASSERTS: the whole pre-round chain, which is what the deposit
-      // gate guards. Both players are in a real staked duel, the arena says so,
-      // and the server created the match with both stakes — verified against
-      // the server's own log (`round/commit` 200, `round/target` 200,
-      // `round/result` 200 for round 1).
+      // THE DEPOSIT PROOF. The server's gate reads the escrow before every
+      // round and refuses with 409 unless BOTH stakes are locked on-chain, and
+      // a refusal puts the app on its error shell. So: the duel is running,
+      // the round counter advanced, and there is NO error shell.
       await expect(pageA.getByText(/Ranked · Server verified/i).first()).toBeVisible({
         timeout: 40_000,
       });
       await expect(pageB.getByText(/Ranked · Server verified/i).first()).toBeVisible({
         timeout: 40_000,
       });
-      // The round counter is live, so the server-side match is driving the UI.
       await expect(pageA.getByText(/Round \d of 3/i).first()).toBeVisible({ timeout: 40_000 });
     } finally {
       await ctxA.close();
