@@ -318,3 +318,33 @@ def test_the_firestore_reads_per_match_are_measured(manifest: dict) -> None:
             f"reads per match is {per_match}, the plan target is <20 "
             f"(reads={reads}, settled={settled}) — a real, measured gap"
         )
+
+
+def test_the_reads_are_attributed_to_routes(manifest: dict) -> None:
+    """The reads-per-match number must say WHERE the reads go.
+
+    Audit 2026-10-14: `readsPerMatch` was a single total — it said a match costs
+    ~47 reads but not which endpoints spend them, so it could not be acted on.
+    The middleware now measures the delta across each request and attributes it
+    to the route. This asserts that attribution is real, because a metric that
+    silently reports an empty map is worse than no metric: it looks like an
+    answer.
+    """
+    try:
+        status, payload = _api("/api/metrics")
+    except Exception:  # noqa: BLE001
+        pytest.skip("no API on 127.0.0.1:8000 — run scripts/start_e2e_stack.sh")
+    assert status == 200, payload
+
+    firestore = payload.get("firestore") or {}
+    by_route = firestore.get("readsByRoute")
+    assert isinstance(by_route, dict), f"readsByRoute must be a map, got {type(by_route)}"
+    if not by_route:
+        pytest.skip("no reads attributed yet in this process — run the flow test first")
+
+    total = firestore.get("reads") or 0
+    attributed = sum(by_route.values())
+    assert attributed <= total, f"attributed {attributed} exceeds the total {total}"
+    # The round endpoints dominate a match; if they are missing, the attribution
+    # is measuring the wrong thing.
+    assert any("/api/round/" in route for route in by_route), by_route

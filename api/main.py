@@ -370,7 +370,10 @@ def _gate_or_void(match_id: str) -> None:
     """
     if not onchain.escrow_configured():
         return  # practice / unconfigured dev — gate inactive
-    snapshot = store.get(match_id)
+    # `identity` is the mirror-backed read: the gate's inputs are immutable, and
+    # the on-chain state below is still read fresh. Saves one Firestore read per
+    # round action (audit 2026-10-14, plan item 10.3).
+    snapshot = store.identity(match_id)
     gate = _verify_deposits_or_void(snapshot)
     if not gate:
         return
@@ -690,11 +693,17 @@ async def _record_metrics(request: Request, call_next: Any) -> Any:
     otherwise every scrape perturbs the numbers it reports.
     """
     started = time.perf_counter()
+    reads_before = metrics.firestore_reads_total()
     response = await call_next(request)
     route = request.scope.get("route")
     path = getattr(route, "path", None) or request.url.path
     if path != "/api/metrics":
         metrics.observe_request(request.method, path, (time.perf_counter() - started) * 1000.0)
+        # Attribute this request's Firestore reads to its route, so
+        # `readsPerMatch` can be acted on rather than merely reported.
+        metrics.note_firestore_reads_for_route(
+            path, metrics.firestore_reads_total() - reads_before
+        )
     return response
 
 
