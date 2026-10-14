@@ -348,8 +348,29 @@ function isWalletCancel(msg: string): boolean {
       }
       const bytes32 = await matchIdToBytes32(view.matchId);
       if (view.youAreCreator) {
-        await approveUsdt(currentStake);
-        await createDuel(bytes32, currentStake);
+        // Audit 2026-10-13 (found by the phase-10 ranked E2E, from the full
+        // ethers error): `createDuel` is NOT idempotent. The contract reverts
+        // with "Match already exists" when `matches[matchId].status != None`,
+        // so ANY retry of this flow — a re-tap, a reload, a failure further
+        // down that the player retries — re-created a duel that was already
+        // funded and died on a revert. The player saw "Could not reach the
+        // duel server" while their stake sat in the escrow.
+        //
+        // The joiner already guards for exactly this (it polls `getDuelState`
+        // before `joinDuel`). The creator now does the same: if the duel is
+        // already on-chain, the deposit is DONE — resume instead of re-depositing.
+        let alreadyDeposited = false;
+        try {
+          const existing = await getDuelState(bytes32);
+          alreadyDeposited = existing.status !== 0;
+        } catch {
+          // Unreadable state (RPC hiccup): fall through and let createDuel
+          // decide, rather than blocking a first-time deposit.
+        }
+        if (!alreadyDeposited) {
+          await approveUsdt(currentStake);
+          await createDuel(bytes32, currentStake);
+        }
       } else {
         // P0-fix — the joiner MUST approve before joinDuel(): the escrow pulls
         // the joiner's stake via transferFrom, which reverts without allowance
