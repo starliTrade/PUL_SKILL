@@ -15,11 +15,26 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="$ROOT/contracts/deployments/local.json"
 PIDFILE="/tmp/pulsar-e2e-api.pid"
+API_PORT="${PULSAR_API_PORT:-8000}"
 LOGFILE="/tmp/pulsar-e2e-api.log"
 PORT="${PULSAR_E2E_API_PORT:-8000}"
 FRONTEND_PORT="${PULSAR_E2E_FRONTEND_PORT:-3000}"
 
 if [[ "${1:-}" == "--stop" ]]; then
+  # Kill by PORT, not only by the recorded pid.
+  #
+  # Audit 2026-10-14: `--stop` killed the pid in $PIDFILE, and the startup path
+  # wrote `$!` after `nohup … &`. When that pid was stale or the shell had
+  # re-parented the process, an OLD API kept the port — and the next start's
+  # health poll saw the old server's 200 and printed "E2E API up". The durable
+  # store's in-process `player_match` cache then survived, so `/api/queue`
+  # returned matches the wiped store no longer had, and tests skipped or failed
+  # for reasons that looked like product bugs. This cost real debugging time
+  # three separate times.
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k "${API_PORT:-8000}/tcp" 2>/dev/null || true
+  fi
+  pkill -f "uvicorn.*${API_PORT:-8000}" 2>/dev/null || true
   if [[ -f "$PIDFILE" ]]; then
     kill "$(cat "$PIDFILE")" 2>/dev/null || true
     rm -f "$PIDFILE"
@@ -85,6 +100,17 @@ ORACLE_SIGNING_SECRET="$SIGNING_SECRET" \
 nohup "$ROOT/.venv/bin/python" -m uvicorn main:app --port "$PORT" --log-level info \
   > "$LOGFILE" 2>&1 &
 echo $! > "$PIDFILE"
+# Verify the port is OURS, not a survivor's: a stale server answering the health
+# check is indistinguishable from a fresh one, and it is what made several tests
+# skip silently.
+sleep 1
+if command -v ss >/dev/null 2>&1; then
+  OWNER_PID="$(ss -lptn "sport = :${API_PORT:-8000}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1 || true)"
+  if [[ -n "$OWNER_PID" && "$OWNER_PID" != "$(cat "$PIDFILE")" ]]; then
+    echo "port ${API_PORT:-8000} is held by pid $OWNER_PID, not the server we started ($(cat "$PIDFILE"))" >&2
+    exit 1
+  fi
+fi
 
 for _ in $(seq 1 40); do
   if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/health"; then

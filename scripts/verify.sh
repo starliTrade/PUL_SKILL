@@ -220,6 +220,12 @@ if [[ -f "$ROOT/playwright.config.ts" ]]; then
   if curl -sf -o /dev/null -X POST -H "Content-Type: application/json" \
       --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
       "http://127.0.0.1:${PULSAR_ANVIL_PORT:-8545}" 2>/dev/null; then
+    # A FRESH stack. The E2E specs pair anvil's deterministic players, and the
+    # live-stack gate above has already used them — so without this the money-path
+    # specs skip or fail on a stale match, which reads as a product failure.
+    bash "$ROOT/scripts/start_e2e_stack.sh" --stop >/dev/null 2>&1 || true
+    sleep 2
+    bash "$ROOT/scripts/start_e2e_stack.sh" >/dev/null 2>&1 || true
     run_gate "browser E2E (playwright)" bun run test:e2e
   else
     skip_gate "browser E2E (playwright)" "anvil is not running — run scripts/start_anvil.sh --bg"
@@ -270,6 +276,12 @@ fi
 # Audit 2026-10-14: `scripts/chaos_suite.py` was referenced by NOTHING — not this
 # script, not CI, not package.json. Nineteen checks that no gate ever ran.
 if [[ -f "$ROOT/scripts/chaos_suite.py" ]]; then
+  # The suite pairs the manifest's players, and earlier gates have already used
+  # them — so it needs a FRESH stack, or its control fails on a stale match
+  # rather than on the thing it is testing.
+  bash "$ROOT/scripts/start_e2e_stack.sh" --stop >/dev/null 2>&1 || true
+  sleep 2
+  bash "$ROOT/scripts/start_e2e_stack.sh" >/dev/null 2>&1 || true
   run_gate "chaos suite (rpc/firestore/replica/delay/soak)" bash -c \
     "cd '$ROOT' && FIRESTORE_EMULATOR_HOST=127.0.0.1:${PULSAR_FIRESTORE_PORT:-8081} \
      GCLOUD_PROJECT=demo-pulsar '$PY' scripts/chaos_suite.py"

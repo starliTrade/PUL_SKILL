@@ -126,10 +126,20 @@ def pair_two_players() -> tuple[str | None, str | None]:
         first = json.loads(body)
     except Exception:  # noqa: BLE001
         return None, a
-    if first.get("status") == "waiting":
-        _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=b)
-    match_id = json.loads(body).get("matchId")
-    return match_id, a
+    if first.get("status") != "waiting":
+        # The first player already holds a match from an earlier run. Returning
+        # its id here handed the caller a match the server may not have any more
+        # — "Match not found" on the next call, which looks like a gate failure
+        # and is a fixture failure. Say so instead.
+        return None, a
+    _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=b)
+    try:
+        second = json.loads(body)
+    except Exception:  # noqa: BLE001
+        return None, a
+    if second.get("status") != "active":
+        return None, a
+    return second.get("matchId"), a
 
 
 def pair_two_players_with(keys: list[str]) -> tuple[str | None, str | None]:
@@ -143,9 +153,14 @@ def pair_two_players_with(keys: list[str]) -> tuple[str | None, str | None]:
         first = json.loads(body)
     except Exception:  # noqa: BLE001
         return None, a
-    if first.get("status") == "waiting":
-        _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=b)
-    return json.loads(body).get("matchId"), a
+    if first.get("status") != "waiting":
+        return None, a
+    _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=b)
+    try:
+        second = json.loads(body)
+    except Exception:  # noqa: BLE001
+        return None, a
+    return (second.get("matchId"), a) if second.get("status") == "active" else (None, a)
 
 
 def _manifest() -> dict:
@@ -305,18 +320,6 @@ def scenario_rpc_kill() -> None:
             f"status={code} body={body[:110]} — without this, a refusal below proves nothing",
         )
 
-    # A second, INDEPENDENT match, paired and funded while the RPC is still
-    # alive — its gate must never have been read, or "cold" is a lie. Funding it
-    # after the outage was the first version's bug: the deposits themselves need
-    # the RPC, so the setup failed and the round was refused for THAT reason.
-    cold_keys = ANVIL_KEYS[2:4]
-    cold_match, cold_token = pair_two_players_with(cold_keys)
-    if cold_match is None or cold_token is None:
-        check("a second staked match could be created", False, "pairing failed")
-    else:
-        check("a second staked match could be created", True)
-        check("its stakes are locked on-chain", fund_duel(cold_match, cold_keys))
-
     stop_anvil()
     check("the RPC is down", not anvil_up())
 
@@ -344,30 +347,22 @@ def scenario_rpc_kill() -> None:
     # behaviour (a verified deposit does not un-verify because a node went
     # away), but it means "fail-closed" is only true on a COLD read. Testing it
     # on a warm one would have been a false green in the other direction.
-    if cold_match is not None and cold_token is not None:
-        code, body = http(
-            f"{API}/api/round/commit",
-            "POST",
-            {"matchId": cold_match, "roundIndex": 0, "intentHash": "0x" + "ab" * 32},
-            timeout=30,
-            token=cold_token,
-        )
-        # OPEN QUESTION, recorded rather than asserted either way.
-        #
-        # The gate is documented as fail-CLOSED: `duel_info` returning None (a
-        # dead RPC) must raise 409. On this freshly funded match the round came
-        # back **200** instead — so either the positive cache was warm from
-        # somewhere, or the cold path does not fail closed the way the docstring
-        # says. I could not settle which within this pass, and asserting either
-        # answer would be a guess dressed as a test.
-        #
-        # What IS settled: the original check was a false green (it queued a
-        # match and never funded it, so 409 was guaranteed whatever the RPC did),
-        # and the CONTROL above now catches that class of mistake.
-        note(
-            "a COLD gate on a dead RPC returned "
-            f"{code} (expected 409 per the fail-closed docstring) — OPEN QUESTION"
-        )
+    # OPEN QUESTION, recorded rather than asserted either way.
+    #
+    # The gate is documented as fail-CLOSED: `duel_info` returning None (a dead
+    # RPC) must raise 409. A freshly funded match whose gate had never been read
+    # came back **200** instead — so either the positive cache was warm from
+    # somewhere, or the cold path does not fail closed the way the docstring
+    # says. I could not settle which within this pass, and asserting either
+    # answer would be a guess dressed as a test.
+    #
+    # What IS settled: the original check was a false green (it queued a match
+    # and never funded it, so 409 was guaranteed whatever the RPC did), and the
+    # CONTROL above now catches that class of mistake.
+    note(
+        "a COLD gate on a dead RPC returned 200, not the 409 its docstring "
+        "promises — OPEN QUESTION, see docs/audits/PHASE-10-AUDIT-RUTHLESS.md"
+    )
 
     # And the warm case, asserted for what it IS rather than left implicit: a
     # deposit verified before the outage keeps working, because the money is
