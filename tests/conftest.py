@@ -222,3 +222,31 @@ def _isolate_server_store(monkeypatch):
     _clear()
     yield
     _clear()
+
+
+# --- "a skip is not coverage" -------------------------------------------------
+#
+# Audit 2026-10-14: the live-stack gate ran `test_ranked_flow_e2e.py`, the test
+# SKIPPED because the server held a stale match, and the gate reported PASS —
+# because pytest's exit code does not care about skips. So a gate whose entire
+# purpose is "these tests actually run" could pass while running nothing.
+#
+# With PULSAR_FAIL_ON_SKIP=1 a skipped test is reported as a FAILURE, at report
+# time — `pytest_sessionfinish` is too late, because the exit code is taken from
+# the terminal reporter. It is opt-in: most gates have legitimate skips (chain
+# tests without anvil, the refund module by design); only the gates that claim
+# execution turn it on.
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):  # type: ignore[no-untyped-def]
+    # A hookwrapper MUST yield exactly once, whatever it decides — returning
+    # early made pytest raise INTERNALERROR (exit 3) on every ordinary run.
+    outcome = yield
+    if os.environ.get("PULSAR_FAIL_ON_SKIP") != "1":
+        return
+    report = outcome.get_result()
+    if report.skipped:
+        reason = getattr(report, "wasxfail", "") or report.longrepr
+        report.outcome = "failed"
+        report.longrepr = (
+            f"SKIPPED, and PULSAR_FAIL_ON_SKIP=1 — a skip is not coverage.\n{reason}"
+        )

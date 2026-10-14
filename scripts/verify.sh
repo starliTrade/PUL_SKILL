@@ -241,9 +241,17 @@ fi
 # before any API exists — so the ranked money path was verified by tests that
 # never executed in a gate. This gate starts the stack and runs them for real.
 if [[ -x "$ROOT/scripts/start_e2e_stack.sh" ]]; then
+  # --stop FIRST: starting without it leaves a stale server holding the port,
+  # whose in-process cache makes these tests skip against a wiped store.
+  bash "$ROOT/scripts/start_e2e_stack.sh" --stop >/dev/null 2>&1 || true
+  sleep 2
   if bash "$ROOT/scripts/start_e2e_stack.sh" >/dev/null 2>&1; then
+    # PULSAR_FAIL_ON_SKIP: this gate exists to prove these tests RUN. A skip is
+    # not coverage, and pytest's exit code does not care about skips — so
+    # without this the gate passed while executing nothing.
     run_gate "live-stack integration (ranked flow + reads)" bash -c \
-      "cd '$ROOT' && FIRESTORE_EMULATOR_HOST=127.0.0.1:${PULSAR_FIRESTORE_PORT:-8081} \
+      "cd '$ROOT' && PULSAR_FAIL_ON_SKIP=1 \
+       FIRESTORE_EMULATOR_HOST=127.0.0.1:${PULSAR_FIRESTORE_PORT:-8081} \
        GCLOUD_PROJECT=demo-pulsar '$PY' -m pytest tests/integration/test_ranked_flow_e2e.py -q -p no:cacheprovider"
   else
     skip_gate "live-stack integration (ranked flow + reads)" "the E2E stack did not start"
@@ -260,7 +268,7 @@ fi
 # here, on its own, and the chain is restarted afterwards.
 if [[ -f "$ROOT/tests/integration/test_refund_after_timeout.py" ]]; then
   run_gate "refund after timeout (time travel)" bash -c \
-    "cd '$ROOT' && PULSAR_TEST_TIME_TRAVEL=1 \
+    "cd '$ROOT' && PULSAR_TEST_TIME_TRAVEL=1 PULSAR_FAIL_ON_SKIP=1 \
      FIRESTORE_EMULATOR_HOST=127.0.0.1:${PULSAR_FIRESTORE_PORT:-8081} GCLOUD_PROJECT=demo-pulsar \
      '$PY' -m pytest tests/integration/test_refund_after_timeout.py -q -p no:cacheprovider"
   # The chain is now hours ahead of the server; the oracle signs a deadline from
