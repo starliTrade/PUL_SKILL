@@ -231,8 +231,90 @@ def _round_from_doc(d: dict[str, Any]) -> Round:
     return r
 
 
+# --- document schema versioning (plan item 6.11 / G16) ------------------------
+#
+# Audit 2026-10-15: this item was marked done for months with NO implementation.
+# The read path tolerated missing fields, which is not the same thing as
+# versioning: tolerating a MISSING field is safe, but nothing stopped old code
+# from silently misreading a NEWER document — it would take the fields it knew
+# and ignore the rest, which is exactly how a schema change corrupts data.
+#
+# So there are three parts, and the third is the one that matters:
+#   1. every document written carries `schemaVersion`;
+#   2. legacy documents are migrated forward (derived fields stamped);
+#   3. a document NEWER than this code refuses to be read, loudly.
+SCHEMA_VERSION = 1
+
+
+class SchemaVersionError(RuntimeError):
+    """A stored document is newer than this code understands."""
+
+
+def _creator_from_players(players: dict[str, Any]) -> tuple[str, str]:
+    """(creator, joiner) for a document that predates those fields.
+
+    Audit 2026-10-15: this used to be `next(iter(players))` — "the first key is
+    the creator, because insertion order is preserved". That assumption is
+    FALSE for Firestore: writing `{"0xaa": ..., "0xbb": ...}` and reading it back
+    five times returned `('0xbb', '0xaa')` every time. So the derivation could
+    name the WRONG player as the creator — and in a money game the creator is the
+    one who deposits first, so this is not cosmetic.
+
+    The stable signal is `joinedAt`, which every player entry carries: the
+    creator is the one who joined first. When it is absent there is no honest way
+    to tell, so both are returned empty rather than guessed.
+    """
+    entries = [
+        (addr, info) for addr, info in (players or {}).items() if isinstance(info, dict)
+    ]
+    stamped = [(addr, float(info.get("joinedAt", 0.0) or 0.0)) for addr, info in entries]
+    if not stamped or all(ts == 0.0 for _addr, ts in stamped):
+        # No timestamps: refuse to guess. An empty creator is visible; a wrong
+        # one is not.
+        return "", ""
+    stamped.sort(key=lambda pair: pair[1])
+    creator = stamped[0][0]
+    joiner = stamped[1][0] if len(stamped) > 1 else ""
+    return creator, joiner
+
+
+def migrate_document(d: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade a stored document to SCHEMA_VERSION, in place, and return it.
+
+    Idempotent: a document already at the current version is returned unchanged.
+    Unknown FUTURE versions raise rather than being guessed at.
+    """
+    version = int(d.get("schemaVersion", 0) or 0)
+    if version > SCHEMA_VERSION:
+        raise SchemaVersionError(
+            f"document schemaVersion={version} is newer than this server "
+            f"understands ({SCHEMA_VERSION}) — refusing to read it rather than "
+            "silently ignoring fields it does not know about"
+        )
+    if version == SCHEMA_VERSION:
+        return d
+
+    # v0 -> v1: documents written before versioning. The fields below were added
+    # over time and the read path derived them on the fly; stamping them makes
+    # the derivation explicit and permanent, so a later reader does not have to
+    # reproduce it.
+    players = dict(d.get("players", {}) or {})
+    if not d.get("creator") or not d.get("joiner"):
+        creator, joiner = _creator_from_players(players)
+        if not d.get("creator"):
+            d["creator"] = creator
+        if not d.get("joiner"):
+            d["joiner"] = joiner
+    d.setdefault("target", "")
+    d.setdefault("min_rtt_ms", {})
+    d["schemaVersion"] = SCHEMA_VERSION
+    return d
+
+
 def _match_to_doc(m: Match) -> dict[str, Any]:
     return {
+        # Plan item 6.11: every document states the schema it was written under.
+        "schemaVersion": SCHEMA_VERSION,
         "match_id": m.match_id,
         "stake": m.stake,
         "created_at": m.created_at,
@@ -264,6 +346,9 @@ def _match_to_doc(m: Match) -> dict[str, Any]:
 
 
 def _match_from_doc(d: dict[str, Any]) -> Match:
+    # Migrate on read: this is where a document from a NEWER server is refused
+    # instead of being half-understood.
+    d = migrate_document(dict(d))
     m = Match(
         match_id=d["match_id"],
         stake=float(d["stake"]),
@@ -274,11 +359,12 @@ def _match_from_doc(d: dict[str, Any]) -> Match:
     m.activated_at = d.get("activated_at")
     # P0-fix: restore creator; for documents written before this field
     # existed, derive it (players preserves insertion order — creator first).
-    m.creator = d.get("creator", "") or next(iter(m.players), "")
-    # Audit #5: restore joiner; derive it for legacy docs (2nd player).
-    m.joiner = d.get("joiner", "") or (
-        list(m.players)[1] if len(m.players) > 1 else ""
-    )
+    # Audit 2026-10-15: derive from `joinedAt`, NOT from key order — Firestore
+    # does not preserve map key order, so "first key" could name the wrong
+    # player as the creator.
+    _derived_creator, _derived_joiner = _creator_from_players(m.players)
+    m.creator = d.get("creator", "") or _derived_creator
+    m.joiner = d.get("joiner", "") or _derived_joiner
     m.rounds = {
         addr: {int(idx): _round_from_doc(r) for idx, r in per_player.items()}
         for addr, per_player in (d.get("rounds", {}) or {}).items()
