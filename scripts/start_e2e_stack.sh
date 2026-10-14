@@ -43,9 +43,34 @@ ORACLE_KEY="$(read_manifest "['oracleKey']")"
 # A deterministic signing secret for the test run — never a real one.
 SIGNING_SECRET="0x$(printf '11%.0s' {1..32})"
 
+# Wipe the emulator BEFORE the API starts.
+#
+# The durable store keeps an in-process `player_match` cache, so a wipe that
+# happens after the server is up leaves it holding match ids whose documents no
+# longer exist — and `/api/queue` then hands those out, which is exactly the
+# `409 {"detail":"Match not found"}` this suite kept hitting. Resetting the
+# store and starting the server must be one ordered step, not two.
+EMULATOR_HOST="${FIRESTORE_EMULATOR_HOST:-127.0.0.1:8081}"
+PROJECT="${FIRESTORE_PROJECT_ID:-${GCLOUD_PROJECT:-demo-pulsar}}"
+if curl -sf -o /dev/null "http://${EMULATOR_HOST}/" 2>/dev/null; then
+  curl -sf -o /dev/null -X DELETE \
+    "http://${EMULATOR_HOST}/emulator/v1/projects/${PROJECT}/databases/(default)/documents" \
+    && echo "reset the Firestore emulator (${PROJECT})"
+fi
+
 cd "$ROOT/api"
 # NOTE: Starlette strips the port before matching a Host header, so
 # ALLOWED_HOSTS holds HOSTNAMES (no ports).
+#
+# NOTE: `GCLOUD_PROJECT` only — `api/store.py` reads `FIRESTORE_PROJECT_ID` for
+# its client, and setting that here made the client construction fail, which the
+# store swallows into a MEMORY fallback.
+#
+# DO NOT PUT A COMMENT INSIDE THE ENV PREFIX BELOW. A `#` line breaks the
+# backslash continuation, so the assignment list ends there and every variable
+# after it becomes a separate command — the server then starts with
+# `PULSAR_MATCH_STORE` unset and silently serves from memory. This has now
+# happened twice in this file; that is why the warning is here.
 PULSAR_MATCH_STORE=firestore \
 FIRESTORE_EMULATOR_HOST="${FIRESTORE_EMULATOR_HOST:-127.0.0.1:8081}" \
 GCLOUD_PROJECT="${GCLOUD_PROJECT:-demo-pulsar}" \

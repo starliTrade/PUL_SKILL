@@ -32,10 +32,12 @@ const manifest = existsSync(manifestPath)
 
 export default defineConfig({
   testDir: './e2e',
-  // The suite reuses anvil's deterministic accounts, so it must also reset the
-  // state those accounts accumulated — otherwise a match from a previous run
-  // is handed back by `/api/queue` and every symptom looks like an app bug.
-  globalSetup: './e2e/global-setup.ts',
+  // NOTE: the store reset lives in `scripts/start_e2e_stack.sh`, BEFORE the
+  // API starts. A globalSetup wipe runs AFTER the web server is up, which
+  // leaves the durable store's in-process `player_match` cache holding match
+  // ids whose documents were just deleted — the exact `409 Match not found`
+  // this suite kept hitting. Resetting the store and starting the server must
+  // be one ordered step.
   // The stack is shared and stateful (one Firestore emulator, one anvil), so
   // tests run in one worker. Parallelism here would make failures unrepeatable.
   workers: 1,
