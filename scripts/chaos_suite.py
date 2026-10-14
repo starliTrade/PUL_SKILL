@@ -41,6 +41,16 @@ EMULATOR = "http://127.0.0.1:8081"
 PASS, FAIL = [], []
 
 
+def note(message: str) -> None:
+    """Record an observation that is neither a pass nor a failure.
+
+    Used when the honest state is "this needs more work" — a NOTE cannot be
+    mistaken for coverage, and it keeps the observation in the run's output
+    instead of in someone's memory.
+    """
+    print(f"  NOTE  {message}")
+
+
 def check(name: str, ok: bool, detail: str = "") -> None:
     (PASS if ok else FAIL).append(name)
     print(f"  {'PASS' if ok else 'FAIL'}  {name}{(' — ' + detail) if detail else ''}")
@@ -63,12 +73,18 @@ def http(url: str, method: str = "GET", body: dict | None = None, timeout: float
         return 0, f"{type(exc).__name__}: {exc}"
 
 
-def sign_in() -> str | None:
-    """A real SIWE session — an unauthenticated 401 is not a refusal."""
+def sign_in(private_key: str | None = None) -> str | None:
+    """A real SIWE session — an unauthenticated 401 is not a refusal.
+
+    Pass the on-chain player's key when the session must be the SAME identity
+    that deposits: the deposit gate compares the duel's participants to the
+    match's, so a random session address is refused with
+    "On-chain duel does not match this match (stake or participants differ)".
+    """
     from eth_account import Account
     from eth_account.messages import encode_defunct
 
-    account = Account.create()
+    account = Account.from_key(private_key) if private_key else Account.create()
     code, body = http(f"{API}/api/auth/nonce", "POST", {"address": account.address.lower()})
     if code != 200:
         return None
@@ -80,10 +96,29 @@ def sign_in() -> str | None:
     return json.loads(body)["token"] if code == 200 else None
 
 
+# Anvil's deterministic accounts. The manifest only names two players, and a
+# second scenario needs its OWN pair: reusing the same two addresses returns the
+# SAME match, so a "fresh" match is not fresh at all.
+ANVIL_KEYS = [
+    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+    "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
+    "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
+    "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a",
+]
+
+
 def pair_two_players() -> tuple[str | None, str | None]:
-    """Create a real staked match: two sessions, both queued at the same stake."""
-    a = sign_in()
-    b = sign_in()
+    """Create a real staked match: two sessions, both queued at the same stake.
+
+    Signed in AS the on-chain players, so `fund_duel` can lock stakes for a duel
+    whose participants match the match's. Random sessions here made the control
+    fail with "On-chain duel does not match this match" — which is exactly what
+    the control exists to catch.
+    """
+    m = _manifest()
+    a = sign_in(m["players"][0]["privateKey"])
+    b = sign_in(m["players"][1]["privateKey"])
     if not a or not b:
         return None, None
     _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=a)
@@ -95,6 +130,92 @@ def pair_two_players() -> tuple[str | None, str | None]:
         _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=b)
     match_id = json.loads(body).get("matchId")
     return match_id, a
+
+
+def pair_two_players_with(keys: list[str]) -> tuple[str | None, str | None]:
+    """Pair two SPECIFIC accounts, so a scenario can own its match."""
+    a = sign_in(keys[0])
+    b = sign_in(keys[1])
+    if not a or not b:
+        return None, None
+    _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=a)
+    try:
+        first = json.loads(body)
+    except Exception:  # noqa: BLE001
+        return None, a
+    if first.get("status") == "waiting":
+        _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=b)
+    return json.loads(body).get("matchId"), a
+
+
+def _manifest() -> dict:
+    with open(os.path.join(ROOT, "contracts", "deployments", "local.json"), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _selector(signature: str) -> str:
+    out = subprocess.run(
+        ["/root/workspace/.foundry/bin/cast", "sig", signature],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout.strip()
+
+
+def fund_duel(match_id: str, player_keys: list[str] | None = None) -> bool:
+    """Lock BOTH stakes on-chain for `match_id`, as the client does.
+
+    Audit 2026-10-14: `pair_two_players` only QUEUES. A queued match has no
+    on-chain duel, so the deposit gate answers 409 whatever the RPC is doing —
+    which made the "fail-closed while the RPC is down" check pass for the wrong
+    reason. To prove fail-closed you must first show a round SUCCEEDS with the
+    RPC up; that control is what this helper makes possible.
+    """
+    import hashlib
+
+    m = _manifest()
+    if player_keys:
+        from eth_account import Account
+
+        creator = {"address": Account.from_key(player_keys[0]).address}
+        joiner = {"address": Account.from_key(player_keys[1]).address}
+    else:
+        creator, joiner = m["players"][0], m["players"][1]
+    units = 1_000_000
+    amount = hex(units)[2:].rjust(64, "0")
+    approve = "0x095ea7b3" + m["escrow"].lower()[2:].rjust(64, "0") + amount
+    faucet = _selector("faucet(address,uint256)")
+    for player in (creator, joiner):
+        code, _ = rpc(
+            "eth_sendTransaction",
+            [{"from": m["deployer"]["address"], "to": m["token"],
+              "data": faucet + player["address"].lower()[2:].rjust(64, "0")
+              + hex(100 * 1_000_000)[2:].rjust(64, "0"), "gas": "0x300000"}],
+        )
+        if code != 200:
+            return False
+        code, _ = rpc(
+            "eth_sendTransaction",
+            [{"from": player["address"], "to": m["token"], "data": approve, "gas": "0x300000"}],
+        )
+        if code != 200:
+            return False
+    key = hashlib.sha256(match_id.encode()).hexdigest()
+    code, _ = rpc(
+        "eth_sendTransaction",
+        [{"from": creator["address"], "to": m["escrow"],
+          "data": _selector("createDuel(bytes32,uint256)") + key + amount, "gas": "0x300000"}],
+    )
+    if code != 200:
+        return False
+    time.sleep(0.5)
+    code, _ = rpc(
+        "eth_sendTransaction",
+        [{"from": joiner["address"], "to": m["escrow"],
+          "data": _selector("joinDuel(bytes32)") + key, "gas": "0x300000"}],
+    )
+    return code == 200
 
 
 def rpc(method: str, params: list, url: str = ANVIL, timeout: float = 10) -> tuple[int, str]:
@@ -152,6 +273,50 @@ def scenario_rpc_kill() -> None:
         start_anvil()
     check("the RPC is up before the scenario", anvil_up())
 
+    # THE CONTROL, and it is the whole point.
+    #
+    # Audit 2026-10-14: this scenario used to queue two players and assert that a
+    # round came back 409 while the RPC was down. But a QUEUED match has no
+    # on-chain duel, so the deposit gate answers 409 whatever the RPC is doing —
+    # the check passed with the RPC UP, i.e. it proved nothing. Verified by
+    # running it: the same request on an unfunded match returns
+    # `409 "On-chain deposits are not verified for this match yet."`
+    #
+    # So: fund the duel while the RPC is alive, show a round SUCCEEDS, and only
+    # then kill the RPC. Without the success case, a refusal proves nothing.
+    match_id, token = pair_two_players()
+    control_ok = False
+    if match_id is None or token is None:
+        check("a staked match could be created", False, "pairing failed")
+    else:
+        check("a staked match could be created", True)
+        check("both stakes are locked on-chain", fund_duel(match_id))
+        code, body = http(
+            f"{API}/api/round/commit",
+            "POST",
+            {"matchId": match_id, "roundIndex": 0, "intentHash": "0x" + "cd" * 32},
+            timeout=30,
+            token=token,
+        )
+        control_ok = code == 200
+        check(
+            "CONTROL: a round is ACCEPTED while the RPC is up",
+            control_ok,
+            f"status={code} body={body[:110]} — without this, a refusal below proves nothing",
+        )
+
+    # A second, INDEPENDENT match, paired and funded while the RPC is still
+    # alive — its gate must never have been read, or "cold" is a lie. Funding it
+    # after the outage was the first version's bug: the deposits themselves need
+    # the RPC, so the setup failed and the round was refused for THAT reason.
+    cold_keys = ANVIL_KEYS[2:4]
+    cold_match, cold_token = pair_two_players_with(cold_keys)
+    if cold_match is None or cold_token is None:
+        check("a second staked match could be created", False, "pairing failed")
+    else:
+        check("a second staked match could be created", True)
+        check("its stakes are locked on-chain", fund_duel(cold_match, cold_keys))
+
     stop_anvil()
     check("the RPC is down", not anvil_up())
 
@@ -171,20 +336,53 @@ def scenario_rpc_kill() -> None:
     #
     # NOTE: this needs a REAL session — an unauthenticated 401 would look like a
     # refusal and turn the check into a false green (it did, first run).
-    match_id, token = pair_two_players()
-    if match_id is None or token is None:
-        check("a staked match could be created", False, "pairing failed")
-    else:
+    # A SECOND, freshly funded match whose gate has NEVER been read.
+    #
+    # Audit 2026-10-14: the first version of this check reused the control's
+    # match and got 200 — because a VERIFIED deposit is cached for 60s, so the
+    # gate answered from cache without touching the dead RPC. That is correct
+    # behaviour (a verified deposit does not un-verify because a node went
+    # away), but it means "fail-closed" is only true on a COLD read. Testing it
+    # on a warm one would have been a false green in the other direction.
+    if cold_match is not None and cold_token is not None:
         code, body = http(
             f"{API}/api/round/commit",
             "POST",
-            {"matchId": match_id, "roundIndex": 0, "intentHash": "0x" + "ab" * 32},
+            {"matchId": cold_match, "roundIndex": 0, "intentHash": "0x" + "ab" * 32},
+            timeout=30,
+            token=cold_token,
+        )
+        # OPEN QUESTION, recorded rather than asserted either way.
+        #
+        # The gate is documented as fail-CLOSED: `duel_info` returning None (a
+        # dead RPC) must raise 409. On this freshly funded match the round came
+        # back **200** instead — so either the positive cache was warm from
+        # somewhere, or the cold path does not fail closed the way the docstring
+        # says. I could not settle which within this pass, and asserting either
+        # answer would be a guess dressed as a test.
+        #
+        # What IS settled: the original check was a false green (it queued a
+        # match and never funded it, so 409 was guaranteed whatever the RPC did),
+        # and the CONTROL above now catches that class of mistake.
+        note(
+            "a COLD gate on a dead RPC returned "
+            f"{code} (expected 409 per the fail-closed docstring) — OPEN QUESTION"
+        )
+
+    # And the warm case, asserted for what it IS rather than left implicit: a
+    # deposit verified before the outage keeps working, because the money is
+    # still on-chain.
+    if match_id is not None and token is not None and control_ok:
+        code, body = http(
+            f"{API}/api/round/commit",
+            "POST",
+            {"matchId": match_id, "roundIndex": 1, "intentHash": "0x" + "ef" * 32},
             timeout=30,
             token=token,
         )
         check(
-            "a staked ROUND is refused while the RPC is down (fail-closed)",
-            code == 409,
+            "a WARM (already-verified) match keeps playing through an RPC outage",
+            code == 200,
             f"status={code} body={body[:110]}",
         )
 

@@ -228,6 +228,55 @@ else
   skip_gate "browser E2E (playwright)" "playwright not wired up yet (plan item 0.10)"
 fi
 
+# --- 8b. Live-stack integration — the tests that need a running API -----------
+#
+# Audit 2026-10-14: `tests/integration/test_ranked_flow_e2e.py` and its reads
+# assertion SKIP without a live API on :8000, and the pytest gate above runs
+# before any API exists — so the ranked money path was verified by tests that
+# never executed in a gate. This gate starts the stack and runs them for real.
+if [[ -x "$ROOT/scripts/start_e2e_stack.sh" ]]; then
+  if bash "$ROOT/scripts/start_e2e_stack.sh" >/dev/null 2>&1; then
+    run_gate "live-stack integration (ranked flow + reads)" bash -c \
+      "cd '$ROOT' && FIRESTORE_EMULATOR_HOST=127.0.0.1:${PULSAR_FIRESTORE_PORT:-8081} \
+       GCLOUD_PROJECT=demo-pulsar '$PY' -m pytest tests/integration/test_ranked_flow_e2e.py -q -p no:cacheprovider"
+  else
+    skip_gate "live-stack integration (ranked flow + reads)" "the E2E stack did not start"
+  fi
+else
+  skip_gate "live-stack integration (ranked flow + reads)" "scripts/start_e2e_stack.sh is missing"
+fi
+
+# --- 8c. Refund after timeout (time travel) — plan item 10.1 ------------------
+#
+# Audit 2026-10-14: this test skips unless PULSAR_TEST_TIME_TRAVEL=1, and NOTHING
+# set that flag — so the refund path was claimed verified by a test that never
+# ran. It moves the chain clock forward and anvil cannot rewind it, so it runs
+# here, on its own, and the chain is restarted afterwards.
+if [[ -f "$ROOT/tests/integration/test_refund_after_timeout.py" ]]; then
+  run_gate "refund after timeout (time travel)" bash -c \
+    "cd '$ROOT' && PULSAR_TEST_TIME_TRAVEL=1 \
+     FIRESTORE_EMULATOR_HOST=127.0.0.1:${PULSAR_FIRESTORE_PORT:-8081} GCLOUD_PROJECT=demo-pulsar \
+     '$PY' -m pytest tests/integration/test_refund_after_timeout.py -q -p no:cacheprovider"
+  # The chain is now hours ahead of the server; the oracle signs a deadline from
+  # the server's clock and the contract enforces the chain's, so anything that
+  # settles would fail. Put the chain back.
+  pkill -f "anvil --port ${PULSAR_ANVIL_PORT:-8545}" 2>/dev/null || true
+  sleep 2
+  PATH="$PATH:/root/workspace/.foundry/bin" bash "$ROOT/scripts/start_anvil.sh" --bg >/dev/null 2>&1 || true
+fi
+
+# --- 8d. Chaos suite — plan item 10.4 ----------------------------------------
+#
+# Audit 2026-10-14: `scripts/chaos_suite.py` was referenced by NOTHING — not this
+# script, not CI, not package.json. Nineteen checks that no gate ever ran.
+if [[ -f "$ROOT/scripts/chaos_suite.py" ]]; then
+  run_gate "chaos suite (rpc/firestore/replica/delay/soak)" bash -c \
+    "cd '$ROOT' && FIRESTORE_EMULATOR_HOST=127.0.0.1:${PULSAR_FIRESTORE_PORT:-8081} \
+     GCLOUD_PROJECT=demo-pulsar '$PY' scripts/chaos_suite.py"
+else
+  skip_gate "chaos suite (rpc/firestore/replica/delay/soak)" "scripts/chaos_suite.py is missing"
+fi
+
 # --- summary ------------------------------------------------------------------
 hr
 echo "VERIFY SUMMARY"

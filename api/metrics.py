@@ -30,9 +30,13 @@ from typing import Any
 # exhaust memory.
 METRICS_MAX_ROUTES = 64
 
-# Latency samples kept per route. Enough for a stable p95 without unbounded
-# growth: 256 samples is a few KB per route.
-_LATENCY_SAMPLES = 256
+# Latency samples kept per route.
+#
+# Audit 2026-10-14: this was 256, which is enough for a stable p95 but makes p99
+# statistically meaningless — the 99th percentile of 256 samples is the 2nd
+# highest value, i.e. "almost the max". 1024 gives p99 about ten samples to sit
+# on, at a few tens of KB per route with a 64-route cap.
+_LATENCY_SAMPLES = 1024
 
 _lock = threading.Lock()
 
@@ -150,6 +154,13 @@ def snapshot() -> dict[str, Any]:
                 "avgMs": round(entry["totalMs"] / entry["count"], 2) if entry["count"] else 0.0,
                 "p50Ms": round(_percentile(samples, 0.50), 2),
                 "p95Ms": round(_percentile(samples, 0.95), 2),
+                # Audit 2026-10-14: plan item 10.3.4 claimed p50/p95/p99 for
+                # every endpoint, but only p50 and p95 were computed — p99
+                # appeared NOWHERE in the repo. The claim was unsupported; the
+                # fix is to make it true rather than to delete the requirement,
+                # because p99 is the number that shows tail latency, and tail
+                # latency is what a player feels when a round hangs.
+                "p99Ms": round(_percentile(samples, 0.99), 2),
                 "maxMs": round(entry["maxMs"], 2),
             }
         reads = _firestore_reads

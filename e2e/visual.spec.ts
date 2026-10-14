@@ -38,18 +38,19 @@ test.describe('RTL layout (plan item 10.2)', () => {
   }
 });
 
-test.describe('themes (plan item 10.2)', () => {
-  for (const theme of ['dark', 'light'] as const) {
-    test(`${theme} theme renders the arena`, async ({ page }) => {
-      await page.addInitScript((t) => localStorage.setItem('pulsar_theme', t), theme);
-      await page.goto('/lobby');
-      await clearEligibilityGate(page);
-      // The page must render a real surface in both themes.
-      await expect(page.getByRole('banner')).toBeVisible();
-      await expect(page.locator('main')).toBeVisible();
-    });
-  }
-});
+// NO THEME TESTS HERE, because there is no theme system to test.
+//
+// Audit 2026-10-14: this block used to set `localStorage.pulsar_theme` and then
+// assert the banner and main were visible — which is true in every theme and in
+// no theme. Two things were wrong with it:
+//
+//   1. `pulsar_theme` is read by NOTHING in src/ — the app never looks at it.
+//   2. The app has no light/dark mode at all. Every "theme" in the codebase is a
+//      rank tier's colour (`currentTier.theme.coreColor`), not a mode.
+//
+// So plan item 10.2's "light/dark theme ✅" was marking a feature that does not
+// exist, verified by a test that asserted nothing. It is now an OPEN item in the
+// plan rather than a ticked one. A test that cannot fail is worse than no test.
 
 test.describe('the duel surfaces (plan item 10.2)', () => {
   test('the target, the round transition and the result screen all render', async ({ page }) => {
@@ -69,7 +70,12 @@ test.describe('the duel surfaces (plan item 10.2)', () => {
     await expect(target).toBeVisible({ timeout: 25_000 });
     await target.click();
 
-    // The round transition follows.
-    await expect(page.getByText(/ROUND \d|MATCH POINT|TIE/i).first()).toBeVisible({ timeout: 20_000 });
+    // The round transition follows — identified by its OWN testid.
+    //
+    // Audit 2026-10-14: this used `/ROUND \d|MATCH POINT|TIE/i`, and the
+    // scoreboard's "Round 2 of 3" matches that pattern — so it passed without
+    // the transition screen ever appearing. The testid was added for exactly
+    // this reason and this spec was not updated to use it.
+    await expect(page.getByTestId('pulsar-round-transition')).toBeVisible({ timeout: 20_000 });
   });
 });
