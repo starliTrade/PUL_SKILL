@@ -875,7 +875,18 @@ class DurableMatchStore:
                     self._firestore, rating_for=self.memory.rating_for
                 )
                 self.backend_name = "firestore"
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                # Audit 2026-10-14 (found by the phase-10 E2E): this swallowed
+                # the reason. A deployment that asked for `firestore` and got
+                # `memory` went on serving traffic — every match in one process,
+                # nothing durable, and the only signal was a health field an
+                # operator had to know to look at. Say it out loud.
+                print(
+                    f"[store] PULSAR_MATCH_STORE={backend} but the Firestore client "
+                    f"could not be created ({type(exc).__name__}: {exc}); "
+                    "FALLING BACK TO MEMORY — matches will not persist.",
+                    file=sys.stderr,
+                )
                 self._firestore = None
                 self._fs_store = None
                 self.backend_name = "memory"

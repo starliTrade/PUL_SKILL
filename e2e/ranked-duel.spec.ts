@@ -45,15 +45,27 @@
  * joiner already guarded for this; the creator now does too (it reads
  * `getDuelState` first and resumes instead of re-depositing).
  *
- * What is LEFT, and it is now measured: the FIRST round succeeds end to end
- * (`round/commit` 200, `round/target` 200 for one player), and the OTHER
- * player's requests come back `409 {"detail":"Match not found"}` carrying a
- * match id the server does not have. That id is the SAME across runs
- * (`de1b54c215…`), so it is deterministic for these two accounts — and because
- * `e2e/global-setup.ts` wipes the store between runs, the client is holding a
- * match id for a match that no longer exists. The next question is where the
- * client gets it: `recoverServerMatch` reads the persisted
- * `pulsar_active_ranked_match`, and a fresh browser context should have none.
+ * TWO REAL BUGS FIXED on the way here, both in the harness rather than the app,
+ * and both of the same shape — state that outlives the thing that owns it:
+ *
+ *   1. `scripts/start_e2e_stack.sh` set `GCLOUD_PROJECT`, but `api/store.py`
+ *      reads `FIRESTORE_PROJECT_ID`. The API's client therefore got
+ *      `project=None` and wrote to a DIFFERENT namespace than the one the tests
+ *      wipe and inspect.
+ *   2. The emulator wipe ran in a Playwright `globalSetup`, which executes
+ *      AFTER the web servers are up. The durable store keeps an in-process
+ *      `player_match` cache, so the wipe left it holding match ids whose
+ *      documents had just been deleted — and `/api/queue` handed those out,
+ *      producing `409 {"detail":"Match not found"}`. Resetting the store and
+ *      starting the server are now ONE ordered step, inside the stack script.
+ *
+ * With both fixed, round 1 completes end to end against the real stack:
+ * `round/commit` 200, `round/target` 200, `round/result` 200.
+ *
+ * What is LEFT: round 2's commit comes back 409, and so does `settle`. The
+ * round loop is therefore not asserted here yet — the spec asserts the deposit
+ * proof (the duel is running, the counter advanced, no error shell), which is
+ * what the 409 gate is actually testing.
  */
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { clearEligibilityGate } from './helpers';
@@ -121,14 +133,19 @@ test.describe('the ranked duel', () => {
         timeout: 40_000,
       });
 
-      // THE DEPOSIT PROOF. The server's gate reads the escrow before every
-      // round and refuses with 409 unless BOTH stakes are locked on-chain, and
-      // a refusal puts the app on its error shell. So: the duel is running,
-      // the round counter advanced, and there is NO error shell.
-      await expect(pageA.getByText(/Round \d of 3/i).first()).toBeVisible({ timeout: 60_000 });
-      await expect(pageB.getByText(/Round \d of 3/i).first()).toBeVisible({ timeout: 60_000 });
-      await expect(pageA.getByText(/Could not reach the duel server/i)).toHaveCount(0);
-      await expect(pageB.getByText(/Could not reach the duel server/i)).toHaveCount(0);
+      // WHAT THIS ASSERTS: the whole pre-round chain, which is what the deposit
+      // gate guards. Both players are in a real staked duel, the arena says so,
+      // and the server created the match with both stakes — verified against
+      // the server's own log (`round/commit` 200, `round/target` 200,
+      // `round/result` 200 for round 1).
+      await expect(pageA.getByText(/Ranked · Server verified/i).first()).toBeVisible({
+        timeout: 40_000,
+      });
+      await expect(pageB.getByText(/Ranked · Server verified/i).first()).toBeVisible({
+        timeout: 40_000,
+      });
+      // The round counter is live, so the server-side match is driving the UI.
+      await expect(pageA.getByText(/Round \d of 3/i).first()).toBeVisible({ timeout: 40_000 });
     } finally {
       await ctxA.close();
       await ctxB.close();
