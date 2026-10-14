@@ -27,6 +27,12 @@ SCRIPT_ONLY = {
     # The chaos suite passes PATH through to the anvil subprocess; it is the
     # shell's variable, not the server's configuration.
     "PATH",
+    # `scripts/migrate_firestore.py` (plan item 6.11) points the Firestore client
+    # at the emulator. These are the Google client library's own variables — the
+    # server reads them too, but only in a test/emulator context, and setting
+    # them in production would be wrong.
+    "FIRESTORE_EMULATOR_HOST",
+    "GCLOUD_PROJECT",
 }
 
 # Public configuration, not secrets — a chain id is in every RPC request.
