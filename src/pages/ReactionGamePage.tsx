@@ -658,6 +658,24 @@ function isWalletCancel(msg: string): boolean {
           }, targetMs);
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
+          // Audit 2026-10-14 (found by the phase-10 ranked E2E): a best-of-three
+          // can END before the third round — 2-0 is a legitimate finish — and
+          // the server then answers the next commit with
+          // `409 {"detail":"Match is not active"}`. That is the server being
+          // RIGHT. Showing the error shell for it told the player their duel
+          // had broken when they had in fact just won or lost it.
+          //
+          // Ask the server what actually happened and finish on the real result.
+          try {
+            const view = await getMatch(serverSession, serverMatch.matchId);
+            applyServerMatch(view);
+            if (view.status === 'settled' || view.status === 'void') {
+              void finishServerMatch(bo3State.rounds, bo3State.userScore, bo3State.opponentScore, 0, 0);
+              return;
+            }
+          } catch {
+            // Fall through to the honest error shell.
+          }
           setMatchResult({ outcome: 'void', yourTime: 0, opponentTime: 0, prize: 0, reason: msg });
           setPhase('bot-detected');
         }
@@ -739,19 +757,71 @@ function isWalletCancel(msg: string): boolean {
   // Score one server round locally from the mutually-disclosed opponent time.
   // If the opponent hasn't submitted yet, the round shows as undecided (no
   // fabricated points) — the server's settlement remains authoritative.
+  /**
+   * Wait for the opponent to disclose their time for this round.
+   *
+   * The server reveals an opponent's time only once BOTH players have submitted
+   * the round, so "not disclosed yet" is a normal mid-match state — not a
+   * reason to settle. Poll until the disclosure arrives, or until the server
+   * reports the match terminal (settled/void), and only then finish.
+   */
+  const waitForOpponentDisclosure = async (roundIndex: number, userTime: number) => {
+    const session = serverSessionRef.current;
+    const match = serverMatchRef.current;
+    if (!session || !match) return;
+    const deadline = Date.now() + 120_000;
+    let delay = 1500;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay * 1.5, 8000);
+      try {
+        const view = await getMatch(session, match.matchId);
+        applyServerMatch(view);
+        if (view.status === 'settled' || view.status === 'void') {
+          void finishServerMatch(bo3State.rounds, bo3State.userScore, bo3State.opponentScore, userTime, 0);
+          return;
+        }
+        const oppRaw = view.opponentTimes?.[String(roundIndex)];
+        if (oppRaw != null) {
+          applyServerRoundOutcome(roundIndex, userTime, Math.round(oppRaw));
+          return;
+        }
+      } catch {
+        // A read hiccup is not a reason to eject the player; keep waiting.
+      }
+    }
+    // The server's grace window will settle this match; say so honestly rather
+    // than forcing a settle the server will refuse.
+    setMatchResult({
+      outcome: 'void',
+      yourTime: userTime,
+      opponentTime: 0,
+      prize: 0,
+      reason: `Waiting for your opponent's result — the duel settles automatically within the ${REFUND_OPENS_AFTER_MINUTES}-minute escrow window.`,
+    });
+    setPhase('result');
+  };
+
   const applyServerRoundOutcome = (roundIndex: number, userTime: number, oppMs: number | null) => {
     // Audit #4: null opponent time is NOT a tie. We only score a round once
     // the opponent's time is actually disclosed; otherwise the match ends
     // unresolved, and the grace-window settlement on the server decides the
     // forfeits. This also makes a phantom round 4 impossible.
+    //
+    // Audit 2026-10-14 (found by the phase-10 ranked E2E, from the server's own
+    // 409): this branch called `finishServerMatch` — which SETTLES. But an
+    // undisclosed opponent time means the match is still in progress, so the
+    // settle came back `409 "Match is not complete yet"`, the app rendered its
+    // error shell, and the player was EJECTED FROM A LIVE MATCH. Their stake
+    // stayed in the escrow and the opponent was left waiting for a round that
+    // could never be played.
+    //
+    // The server owns completion: it discloses an opponent's time once BOTH
+    // have submitted, and it settles on the majority, on all rounds played, or
+    // on the grace window. The client's job here is to WAIT for that, not to
+    // force it.
     if (oppMs == null) {
-      void finishServerMatch(
-        bo3State.rounds,
-        bo3State.userScore,
-        bo3State.opponentScore,
-        userTime,
-        0
-      );
+      void waitForOpponentDisclosure(roundIndex, userTime);
       return;
     }
     const roundWinner: 'user' | 'opponent' | 'tie' =
