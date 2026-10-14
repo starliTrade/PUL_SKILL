@@ -77,15 +77,48 @@ async function enterStakedDuel(
 test.describe('the money path fails honestly', () => {
   test.setTimeout(180_000);
 
-  // NOT TESTED HERE, and the reason is the finding: with an unreachable node
-  // (`failRpc`) the app renders a BLANK page. The connect button never appears,
-  // so a test cannot even reach the assertion — it hangs in setup and dies on a
-  // timeout, which is a worse signal than no test at all. Measured, not assumed:
-  // the page snapshot at the timeout is a single empty element.
-  //
-  // The honest fix is in the app (render an error shell when the chain is
-  // unreachable, as it already does for a refused transaction). Until then this
-  // is recorded in the plan rather than hidden behind a test that cannot run.
+  // DESKTOP ONLY. These failures are about the money path, not the viewport, and
+  // the suite reuses anvil's deterministic accounts: running the same spec on a
+  // second project means the second run finds the players already paired and
+  // cannot set up its own match. One project, one honest run.
+  test.skip(({ isMobile }) => isMobile, 'failure modes are not viewport-specific');
+
+  test('an unreachable node is reported, not hidden', async ({ browser }) => {
+    const stake = 5;
+    test.skip(!(await parkOpponent(7, stake)), "the opponent slot is already paired by another spec");
+    await mintTestUSDT(ANVIL_ACCOUNTS[6].address, 50);
+
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await installMockWallet(page, { accountIndex: 6, failRpc: true });
+    await page.goto('/lobby');
+    await clearEligibilityGate(page);
+    await page.getByRole('button', { name: /Connect Wallet/i }).first().click();
+    await page.waitForTimeout(1000);
+    await page.getByRole('button', { name: /MetaMask/i }).first().click();
+
+    // The app must SAY the node is unreachable. It does: the wallet modal shows
+    // "RPC endpoint unreachable" with a Dismiss action.
+    //
+    // This test exists because I first recorded the opposite — that the app
+    // renders a blank page. It does not. The modal COVERS the page, so a click
+    // on anything behind it hangs on Playwright's stability check and the test
+    // dies on a timeout, which I misread as a blank screen. The lesson is the
+    // one this phase keeps teaching: a timeout is not a diagnosis.
+    await expect(page.getByText(/RPC endpoint unreachable/i).first()).toBeVisible({
+      timeout: 45_000,
+    });
+
+    // Dismissing it must leave a usable page, not a stuck one.
+    await page.getByRole('button', { name: /Dismiss/i }).first().click();
+    await page.waitForTimeout(1000);
+    await expect(page.getByRole('button', { name: /Connect Wallet/i }).first()).toBeVisible({
+      timeout: 20_000,
+    });
+    // And the duel must not have started.
+    await expect(page.getByTestId('pulsar-target')).toHaveCount(0);
+    await ctx.close();
+  });
 
   test('a wallet that refuses the deposit moves no money and says so', async ({ browser }) => {
     const stake = 1;

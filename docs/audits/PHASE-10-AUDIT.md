@@ -23,19 +23,32 @@ did not survive re-measurement, it is called out as a correction.
 |---|---|---|
 | "coverage 84%" | `coverage report` → **83%** (2492 stmts, 434 missed) | The reports said 84%. The real number is **83%**. The gate (`fail_under = 79`) still passes with 4 points of headroom, so nothing is broken — but the figure I published was wrong by a point. |
 | "26 E2E" | `playwright test --list` → **32** | The "26" counted only the default project; the suite also runs mobile and the opt-in specs. The smaller number understated the suite. |
+| "RPC failure renders a blank page" | instrumented probe → **responsive page, 0 mutations, "RPC endpoint unreachable" + Dismiss** | **Wrong.** The modal covers the page, so a click behind it hangs and the test times out. I read the timeout as a blank screen. See below. |
 
-## The one open item in the phase
+## The "open item" was a misdiagnosis — corrected here
 
-**RPC failure at every step** — with `failRpc` the app renders a **blank page**. Not a
-message, not an error shell, not a way forward: the connect button never appears, so
-no test can reach an assertion. Measured, not assumed — the page snapshot at the
-timeout is a single empty element.
+I recorded that with an unreachable node (`failRpc`) the app **renders a blank page**,
+and left the item open on that basis. **That was wrong.**
 
-This is why there is no test for it rather than a test that cannot run. A test that
-hangs in setup and dies on a timeout is a **worse** signal than an honest gap: it
-looks like coverage while asserting nothing. The fix belongs in the app — render the
-same error shell it already renders for a refused transaction — and until then the
-item stays open in the plan.
+Re-measured with a probe that instruments the page instead of reading a timeout:
+
+- the page is **responsive** (`1 + 1` evaluates fine);
+- **0 DOM mutations in 2 seconds** — it is not re-rendering or looping;
+- the body text contains **"RPC endpoint unreachable"** with a **Dismiss** action.
+
+The app **does** report the failure. What actually happened: the wallet modal
+**covers the page**, so a click on anything behind it hangs on Playwright's
+stability check — and the run died on a timeout, which I read as a blank screen.
+
+`e2e/ranked-failure-modes.spec.ts` now asserts the real behaviour: the message is
+shown, Dismiss leaves a usable page, and no duel starts. **All three failure-mode
+tests pass.**
+
+**Phase 10 is therefore zero open items** — not one.
+
+The lesson is the one this phase keeps teaching, and this time I was the one who
+needed it: **a timeout is not a diagnosis.** A hanging action and a blank screen
+look identical from a test failure and are completely different bugs.
 
 ## What the phase actually delivered
 
