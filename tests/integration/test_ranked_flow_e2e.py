@@ -255,12 +255,16 @@ def test_the_ranked_flow_completes_and_settles(manifest: dict) -> None:
             )
             assert status == 200, f"round {index} result: {status} {result}"
 
-    # 5. Settle. NOT asserted yet: this driver produces a `void` settlement
-    #    rather than `settled`, and the reason is not yet understood — the same
-    #    rounds settle correctly through the browser (PR #23, a real on-chain
-    #    transaction). Asserting `settled` here before knowing why would be a
-    #    guess dressed as a test, so the assertion stops at the rounds, which is
-    #    what the deposit gate guards and what this driver proves.
+    # 5. Settle. NOT asserted as `settled` yet, and the reason is recorded
+    #    rather than guessed: this driver comes back
+    #      {"status": "void", "reason": "Match was voided — each stake refunds
+    #       on-chain via refundTimeoutMatch after the 40-minute escrow timeout."}
+    #    while the SAME rounds settle correctly through the browser (PR #23, a
+    #    real on-chain transaction). Something about this driver's inputs voids
+    #    the match — most likely the round times, which the server validates
+    #    against its own plausibility and RTT rules. Asserting `settled` before
+    #    understanding that would be a guess dressed as a test, so the assertion
+    #    stops at the rounds, which is what the deposit gate guards.
     status, settled = _api(f"/api/match/{match_id}/settle", {}, token_a)
     assert status == 200, f"settle: {status} {settled}"
     assert settled.get("status") in ("settled", "void"), settled
@@ -269,17 +273,27 @@ def test_the_ranked_flow_completes_and_settles(manifest: dict) -> None:
 def test_the_firestore_reads_per_match_are_measured(manifest: dict) -> None:
     """Plan item 10.3: reads per match, target < 20.
 
-    The counter is wired (`metrics.note_firestore_read` on every durable read);
-    this asserts the metric is REAL — that a match actually moves it — rather
-    than reporting `None` forever, which is what it did before the phase-10 fix.
+    The metric lives on `/api/metrics`, not `/api/health` — the first version of
+    this test looked for it in health and skipped, which would have hidden a
+    real regression behind a skip.
     """
-    status, health = _api("/api/health")
-    assert status == 200
-    ledger = health.get("ledger", {})
-    assert ledger.get("configured") is True, "the durable store must be configured"
+    try:
+        status, payload = _api("/api/metrics")
+    except Exception:  # noqa: BLE001
+        pytest.skip("no API on 127.0.0.1:8000 — run scripts/start_e2e_stack.sh")
+    assert status == 200, payload
 
-    metrics = health.get("metrics") or {}
-    reads = metrics.get("firestore", {}).get("reads")
-    if reads is None:
-        pytest.skip("metrics are not exposed on this deployment")
-    assert reads > 0, "a completed match must have produced Firestore reads"
+    firestore = payload.get("firestore") or {}
+    reads = firestore.get("reads")
+    settled = firestore.get("matchesSettled")
+    per_match = firestore.get("readsPerMatch")
+
+    assert reads is not None, "the reads counter must be exposed"
+    if not settled:
+        # No settled match yet in this process: the metric is honestly `None`
+        # rather than a flattering 0. Nothing to assert beyond its presence.
+        assert per_match is None, per_match
+        pytest.skip("no settled match in this process yet — readsPerMatch is None by design")
+
+    assert per_match is not None, firestore
+    assert per_match < 20, f"reads per match is {per_match}, the plan target is <20: {firestore}"
