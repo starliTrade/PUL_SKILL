@@ -251,19 +251,57 @@ def sign_settlement(
         )
 
     server_nonce = secrets.randbelow(2**48)
-    deadline = int(timebase.now()) + SETTLEMENT_DEADLINE_SECONDS
-    # Audit #10 (item 5): clamp to the on-chain refund horizon when the caller
-    # can identify the match (activated_at + contract MATCH_TIMEOUT). Without
-    # the clamp, a re-sign issued near minute 30 would mint a proof valid past
-    # the moment the contract refunds both stakes.
+
+    # THE DEADLINE IS ANCHORED TO THE CHAIN, NOT TO THIS PROCESS.
+    #
+    # Audit 2026-10-15 (found by a time-travel test, and left open until now):
+    # this used `timebase.now()` — the SERVER's clock — while the contract
+    # enforces `block.timestamp <= proof.deadline` on the CHAIN's. A drift larger
+    # than the deadline window makes every proof arrive ALREADY EXPIRED:
+    # settlement becomes impossible, the winner cannot claim, and the only
+    # remaining path is the refund — which pays both players and takes the win
+    # away from the player who earned it.
+    #
+    # So the clock is read from the chain the contract will use. If it cannot be
+    # read, fall back to the local clock and say so, because refusing to sign
+    # would be worse than a deadline that might be slightly off.
+    # Imported locally: `onchain` imports this module, so a module-level import
+    # would be a cycle. The same pattern is already used for `match_engine`.
+    _onchain: Any = None
+    try:
+        import onchain as _onchain_mod
+
+        _onchain = _onchain_mod
+    except Exception:  # noqa: BLE001
+        pass
+    chain_now = _onchain.chain_now() if _onchain is not None else None
+    base = chain_now if chain_now is not None else int(timebase.now())
+    deadline = int(base) + SETTLEMENT_DEADLINE_SECONDS
+
+    # Clamp to the on-chain refund horizon. Audit #10 (item 5): without the clamp,
+    # a re-sign issued near minute 30 would mint a proof valid past the moment the
+    # contract refunds both stakes.
     if matchish is not None:
         try:
             import match_engine as _me
 
-            deadline = min(deadline, _me.settlement_deadline(matchish))
-        except Exception:  # clamping must never block settlement
+            horizon = _me.settlement_deadline(matchish)
+            # The horizon is derived from the match's own activation instant. When
+            # the chain can tell us that instant directly, prefer it — the server's
+            # record and the contract's cannot then disagree.
+            match_id = getattr(matchish, "match_id", "")
+            if match_id:
+                activated = _onchain.duel_activated_at(str(match_id)) if _onchain else None
+                if activated:
+                    horizon = int(activated) + _me.MATCH_TIMEOUT_SECONDS
+            deadline = min(deadline, horizon)
+        except Exception:  # noqa: BLE001 — clamping must never block settlement
             pass
-    if deadline <= int(timebase.now()):
+
+    # Compare against the SAME clock the deadline was built from. Comparing a
+    # chain-anchored deadline to a server-anchored `now` would reintroduce the
+    # drift this whole block exists to remove.
+    if deadline <= int(base):
         raise ValueError(
             "Refusing to sign: the on-chain MATCH_TIMEOUT has elapsed — "
             "this duel can only refund via refundTimeoutMatch."
