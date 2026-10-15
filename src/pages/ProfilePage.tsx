@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { Shield, ShieldCheck, Award, Zap, Flame, Sparkles, Copy, Check, Cpu, Radio, Sliders, Trophy, Edit2, X, Loader2 } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
 import { PendingPayoutCard } from '../components/PendingPayoutCard';
+import { ResponsibleGamingCard } from '../components/ResponsibleGamingCard';
 
 import { PulsarCosmicBackground } from '../components/PulsarCosmicBackground';
 import { PulsarDynamicAvatar, getAvatarTier, AVATAR_STAGES } from '../components/PulsarDynamicAvatar';
@@ -346,6 +347,13 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
 
           {/* Audit H17b: a deferred payout the player can claim */}
           <PendingPayoutCard address={wallet.fullAddress || wallet.address} />
+
+
+          {/* Plan item 11.3/G3: the player's own controls. The API existed and
+
+              nothing could reach it — a control a player cannot find is not a control. */}
+
+          <ResponsibleGamingCard />
 
           {/* Seamless Integrated Progression Module */}
           <div className="mt-3.5 pt-3 border-t border-white/[0.04] relative z-10">
