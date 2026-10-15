@@ -51,7 +51,11 @@ TOKEN = os.environ["MOCK_USDT"]
 STAKE = float(os.environ.get("STAKE_USDT", "1"))
 P1 = Account.from_key(os.environ["PLAYER1_KEY"])
 P2 = Account.from_key(os.environ["PLAYER2_KEY"])
-DOMAIN = "rehearse.local"
+# The Host header the server must accept. Overridable because a LOCAL rehearsal
+# runs against an API whose TrustedHost allowlist is 127.0.0.1 — the first local
+# run failed with "Invalid host header", which reads like a server fault and is a
+# harness default.
+DOMAIN = os.environ.get("REHEARSE_DOMAIN", "rehearse.local")
 
 failures = []
 
@@ -197,6 +201,13 @@ def do_settle_mode():
     check(f"P2 has gas ({p2pol / 1e18:.4f} POL)", p2pol > 5_000_000_000_000_000)
     stake_units = int(STAKE * 1_000_000)
     check("stake >= contract MIN_STAKE", stake_units >= 1_000_000)
+    # NOTE (2026-10-15): a local rehearsal starts with an empty token, and the
+    # faucet call I added here did NOT work — the players were still unfunded and
+    # the run failed at the deposit. Reverted rather than left in with a silent
+    # `except: pass`, which would look like funding and be nothing.
+    # To rehearse locally, mint first:
+    #   cast send $MOCK_USDT "faucet(address,uint256)" $PLAYER 1000000000 \
+    #     --private-key $DEPLOYER_KEY --rpc-url $REHEARSE_RPC
     check("P1 holds enough MockUSDT", erc20_balance(TOKEN, P1.address) >= stake_units)
     check("P2 holds enough MockUSDT", erc20_balance(TOKEN, P2.address) >= stake_units)
     treasury_before = erc20_balance(TOKEN, os.environ.get("TREASURY_ADDRESS", "0x04627462540E866349bB0eF7155ecC8AAcE397B8"))

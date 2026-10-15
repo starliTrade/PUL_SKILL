@@ -20,6 +20,9 @@ EXAMPLE = (ROOT / ".env.example").read_text(encoding="utf-8")
 SCRIPT_ONLY = {
     "REHEARSE_SERVER",
     "REHEARSE_RPC",
+    # The rehearsal driver's Host header. Overridable because a LOCAL rehearsal
+    # runs against an API whose TrustedHost allowlist is 127.0.0.1, not Amoy.
+    "REHEARSE_DOMAIN",
     "STAKE_USDT",
     "MOCK_USDT",
     "PLAYER1_KEY",
