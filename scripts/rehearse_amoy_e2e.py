@@ -56,6 +56,17 @@ P2 = Account.from_key(os.environ["PLAYER2_KEY"])
 # run failed with "Invalid host header", which reads like a server fault and is a
 # harness default.
 DOMAIN = os.environ.get("REHEARSE_DOMAIN", "rehearse.local")
+# The chain the rehearsal runs against. Hardcoding 80002 made a LOCAL run
+# reconstruct the settlement digest for Amoy while the signature was made
+# for the local chain, so the cross-check recovered a different address —
+# and the contract, which checks the real thing, accepted the proof anyway.
+CHAIN_ID = int(os.environ.get("REHEARSE_CHAIN_ID", "80002"))
+# The explorer must match the chain the rehearsal actually used. A local
+# transaction rendered as an Amoy link is a dead end that looks like a fact.
+EXPLORER = os.environ.get(
+    "REHEARSE_EXPLORER",
+    "https://amoy.polygonscan.com" if CHAIN_ID == 80002 else "",
+)
 
 failures = []
 
@@ -124,6 +135,21 @@ def duel_status(match_bytes32):
     raw = eth_call(ESCROW, data)
     words = [int(raw[i:i + 64], 16) for i in range(2, len(raw), 64)]
     return words[6]
+
+
+def _key_str(account) -> str:
+    """The account's private key as a 0x-string.
+
+    `Account.from_key(...).key` can be a HexBytes, and `cast` takes STRINGS:
+    passing the raw bytes fails with "invalid UTF-8 was detected in one or more
+    arguments", and `str(HexBytes)` is its REPR (which fails with "Failed to
+    decode private key"). Neither message names the real cause, so the conversion
+    lives here, once.
+    """
+    key = account.key
+    if isinstance(key, str):
+        return key
+    return "0x" + key.hex()
 
 
 def tx_send(key_addr_hex, to, sig, *tx_args, gas_limit, value=0):
@@ -195,27 +221,33 @@ def match_bytes32(match_id):
 def do_settle_mode():
     print("== preflight ==")
     h = s.get("/api/health").json()
-    check("server up, escrow gate configured", h.get("escrowConfigured") is True and h.get("chainId") == 80002)
+    expected_chain = CHAIN_ID
+    check(
+        f"server up, escrow gate configured (chain {expected_chain})",
+        h.get("escrowConfigured") is True and h.get("chainId") == expected_chain,
+    )
     p1pol, p2pol = pol_balance(P1.address), pol_balance(P2.address)
     check(f"P1 has gas ({p1pol / 1e18:.4f} POL)", p1pol > 5_000_000_000_000_000)
     check(f"P2 has gas ({p2pol / 1e18:.4f} POL)", p2pol > 5_000_000_000_000_000)
     stake_units = int(STAKE * 1_000_000)
     check("stake >= contract MIN_STAKE", stake_units >= 1_000_000)
-    # NOTE (2026-10-15): a local rehearsal starts with an empty token, and the
-    # faucet call belongs here. It is NOT wired, because two attempts failed for
-    # reasons worth recording rather than hiding behind a silent `except: pass`:
-    #
-    #   1. `cast` takes STRING arguments — an int amount fails with "expected str,
-    #      bytes or os.PathLike object, not int".
-    #   2. An eth-account value can arrive as HexBytes, and `str(HexBytes)` is its
-    #      REPR, not its hex — which cast rejects with "Failed to decode private
-    #      key". The right call is `.hex()`.
-    #
-    # The faucet itself is verified to work:
-    #   cast send $MOCK_USDT "faucet(address,uint256)" $PLAYER 1000000000 \
-    #     --private-key $DEPLOYER_KEY --rpc-url $REHEARSE_RPC
-    # left the player holding 1e9. Wiring it needs the two coercions above, done
-    # per-argument rather than blanket-`str()`.
+    # A local rehearsal starts with an empty token. MockUSDT's faucet is
+    # permissionless, so fund the players rather than failing preflight on a
+    # balance nobody minted. On a real deployment the faucet call reverts (or the
+    # function does not exist) and the balance check below is the honest gate.
+    for player in (P1, P2):
+        if erc20_balance(TOKEN, player.address) < stake_units:
+            try:
+                tx_send(
+                    _key_str(player),
+                    TOKEN,
+                    "faucet(address,uint256)",
+                    player.address,
+                    str(1000 * 10**6),
+                    gas_limit=200_000,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[warn] faucet call failed for {player.address[:10]}: {exc}")
     check("P1 holds enough MockUSDT", erc20_balance(TOKEN, P1.address) >= stake_units)
     check("P2 holds enough MockUSDT", erc20_balance(TOKEN, P2.address) >= stake_units)
     treasury_before = erc20_balance(TOKEN, os.environ.get("TREASURY_ADDRESS", "0x04627462540E866349bB0eF7155ecC8AAcE397B8"))
@@ -298,7 +330,7 @@ def do_settle_mode():
     digest = oracle_mod.build_settlement_digest(
         {"matchId": mid, "winner": st["winner"], "winnerTimeMs": st["winnerTimeMs"],
          "loserTimeMs": st["loserTimeMs"], "deadline": st["deadline"]},
-        int(st["serverNonce"]), chain_id=80002, escrow_address=ESCROW)
+        int(st["serverNonce"]), chain_id=CHAIN_ID, escrow_address=ESCROW)
     if hasattr(Account, "recover_hash"):
         rec = Account.recover_hash(digest, signature=st["signature"])
     else:
@@ -322,7 +354,8 @@ def do_settle_mode():
         if "transactionHash" in line:
             txh = line.split()[-1].strip()
     print(f"settle tx: {txh}")
-    print(f"EXPLORER-TX: https://amoy.polygonscan.com/tx/{txh}")
+    if EXPLORER:
+        print(f"EXPLORER-TX: {EXPLORER}/tx/{txh}")
     receipt = tx_receipt(txh) if txh else None
     ok = bool(receipt) and receipt.get("status") == "0x1"
     check("duel Settled on-chain (receipt status 1)", ok)
@@ -341,7 +374,8 @@ def do_settle_mode():
     check("treasury got exactly 2%", tbal - treasury_before == fee)
     check("winner delta covers prize-minus-stake",
           wbal >= prize)  # absolute floor; exact delta needs pre-snapshot
-    print(f"EXPLORER: https://amoy.polygonscan.com/address/{ESCROW}#events")
+    if EXPLORER:
+        print(f"EXPLORER: {EXPLORER}/address/{ESCROW}#events")
 
 
 def do_refund_mode():
