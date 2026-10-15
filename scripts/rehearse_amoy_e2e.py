@@ -202,12 +202,20 @@ def do_settle_mode():
     stake_units = int(STAKE * 1_000_000)
     check("stake >= contract MIN_STAKE", stake_units >= 1_000_000)
     # NOTE (2026-10-15): a local rehearsal starts with an empty token, and the
-    # faucet call I added here did NOT work — the players were still unfunded and
-    # the run failed at the deposit. Reverted rather than left in with a silent
-    # `except: pass`, which would look like funding and be nothing.
-    # To rehearse locally, mint first:
+    # faucet call belongs here. It is NOT wired, because two attempts failed for
+    # reasons worth recording rather than hiding behind a silent `except: pass`:
+    #
+    #   1. `cast` takes STRING arguments — an int amount fails with "expected str,
+    #      bytes or os.PathLike object, not int".
+    #   2. An eth-account value can arrive as HexBytes, and `str(HexBytes)` is its
+    #      REPR, not its hex — which cast rejects with "Failed to decode private
+    #      key". The right call is `.hex()`.
+    #
+    # The faucet itself is verified to work:
     #   cast send $MOCK_USDT "faucet(address,uint256)" $PLAYER 1000000000 \
     #     --private-key $DEPLOYER_KEY --rpc-url $REHEARSE_RPC
+    # left the player holding 1e9. Wiring it needs the two coercions above, done
+    # per-argument rather than blanket-`str()`.
     check("P1 holds enough MockUSDT", erc20_balance(TOKEN, P1.address) >= stake_units)
     check("P2 holds enough MockUSDT", erc20_balance(TOKEN, P2.address) >= stake_units)
     treasury_before = erc20_balance(TOKEN, os.environ.get("TREASURY_ADDRESS", "0x04627462540E866349bB0eF7155ecC8AAcE397B8"))
