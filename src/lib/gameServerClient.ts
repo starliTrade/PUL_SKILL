@@ -158,6 +158,40 @@ export const ensureSession = async (address: string, signMessage: SignMessageFn)
   return authenticate(address, signMessage);
 };
 
+// --- Responsible gaming (plan item 11.3 / G3) --------------------------------
+
+export interface GamingLimits {
+  depositLimit: number | null;
+  pendingLimit: number | null;
+  pendingLimitAt: number | null;
+  excludedUntil: number;
+  cooloffUntil: number;
+  selfExcluded: boolean;
+  coolingOff: boolean;
+}
+
+export const fetchLimits = (session: ServerSession): Promise<GamingLimits> =>
+  request<GamingLimits>("/api/limits", undefined, session, "GET");
+
+/**
+ * Set a deposit ceiling.
+ *
+ * `null` clears it. The server decides what is immediate: lowering and clearing
+ * take effect at once, RAISING waits (api/limits.py) — because a limit a player
+ * can raise the moment they want to breach it is not a limit. The UI must say
+ * which happened rather than implying both are instant.
+ */
+export const setDepositLimit = (session: ServerSession, limit: number | null): Promise<GamingLimits> =>
+  request<GamingLimits>("/api/limits/deposit", { limit }, session);
+
+/** Exclude yourself from staked play. Cannot be lifted early, by design. */
+export const selfExclude = (session: ServerSession, seconds: number): Promise<GamingLimits> =>
+  request<GamingLimits>("/api/limits/self-exclude", { seconds }, session);
+
+/** A short, immediate pause. */
+export const coolOff = (session: ServerSession, seconds: number): Promise<GamingLimits> =>
+  request<GamingLimits>("/api/limits/cool-off", { seconds }, session);
+
 /**
  * Record the player's eligibility attestation SERVER-SIDE (plan item 11.3/G2).
  *
