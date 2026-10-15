@@ -52,6 +52,7 @@ except Exception:  # pragma: no cover - local dev without the SDK
     _gcf = None  # type: ignore[assignment]
 
 import eligibility
+import limits
 import metrics
 
 import oracle
@@ -1213,6 +1214,48 @@ def auth_logout(request: Request) -> dict[str, bool]:
     return {"ok": True}
 
 
+class DepositLimitRequest(BaseModel):
+    # None clears the limit. Lowering and clearing are immediate; raising waits.
+    limit: float | None = None
+
+
+class ExclusionRequest(BaseModel):
+    seconds: int
+
+
+@app.get("/api/limits")
+def limits_state(request: Request) -> dict[str, Any]:
+    """The caller's responsible-gaming controls (plan item 11.3 / G3)."""
+    return limits.state(_auth(request))
+
+
+@app.post("/api/limits/deposit")
+def limits_set_deposit(body: DepositLimitRequest, request: Request) -> dict[str, Any]:
+    """Set a deposit ceiling. Lowering and clearing are immediate; raising waits."""
+    try:
+        return limits.set_deposit_limit(_auth(request), body.limit)
+    except limits.LimitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/limits/self-exclude")
+def limits_self_exclude(body: ExclusionRequest, request: Request) -> dict[str, Any]:
+    """Exclude yourself from staked play. Cannot be lifted early."""
+    try:
+        return limits.self_exclude(_auth(request), body.seconds)
+    except limits.LimitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/limits/cool-off")
+def limits_cool_off(body: ExclusionRequest, request: Request) -> dict[str, Any]:
+    """A short, immediate pause."""
+    try:
+        return limits.cool_off(_auth(request), body.seconds)
+    except limits.LimitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 class EligibilityRequest(BaseModel):
     # The client asserts it; the SERVER records it. An attestation the browser
     # keeps to itself is not a gate — see api/eligibility.py.
@@ -1292,6 +1335,13 @@ def eligibility_status(request: Request) -> dict[str, Any]:
 def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     address = _auth_staked(request)
     _rl_check("queue", address, RL_QUEUE_MAX)
+    # Plan item 11.3/G3: the player's OWN controls. Checked after eligibility
+    # because it needs the stake, and because "you may not play at all" is a
+    # different answer from "not at this stake".
+    try:
+        limits.require(address, body.stake)
+    except limits.LimitError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if body.stake not in ALLOWED_STAKES:
         raise HTTPException(status_code=400, detail="Invalid stake")
     # Audit M27: a friend challenge is a reservation for one address. Validate
