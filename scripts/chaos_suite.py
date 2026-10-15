@@ -93,7 +93,12 @@ def sign_in(private_key: str | None = None) -> str | None:
     if not signature.startswith("0x"):
         signature = "0x" + signature
     code, body = http(f"{API}/api/auth/verify", "POST", {"message": message, "signature": signature})
-    return json.loads(body)["token"] if code == 200 else None
+    if code != 200:
+        return None
+    token = json.loads(body)["token"]
+    # Plan item 11.3/G2: the queue requires a server-recorded attestation.
+    http(f"{API}/api/eligibility/confirm", "POST", {"ageConfirmed": True}, token=token)
+    return token
 
 
 # Anvil's deterministic accounts. The manifest only names two players, and a

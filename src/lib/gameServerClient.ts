@@ -158,6 +158,20 @@ export const ensureSession = async (address: string, signMessage: SignMessageFn)
   return authenticate(address, signMessage);
 };
 
+/**
+ * Record the player's eligibility attestation SERVER-SIDE (plan item 11.3/G2).
+ *
+ * The client gate is one localStorage key — its own comment says clearing storage
+ * bypasses it. A gate a player can remove with a devtools command is not a gate,
+ * so the server records the attestation against the authenticated address and
+ * refuses staked play without it.
+ *
+ * Idempotent: confirming twice is a no-op, so this is safe on every entry.
+ */
+export const confirmEligibility = async (session: ServerSession): Promise<void> => {
+  await request<{ ok: boolean }>("/api/eligibility/confirm", { ageConfirmed: true }, session);
+};
+
 // --- Authenticated request helper -------------------------------------------
 
 // P0-fix — typed request method. The old helper sent POST for EVERY call,

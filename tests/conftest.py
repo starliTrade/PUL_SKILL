@@ -250,3 +250,28 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):  # type
         report.longrepr = (
             f"SKIPPED, and PULSAR_FAIL_ON_SKIP=1 — a skip is not coverage.\n{reason}"
         )
+
+
+# --- eligibility: attested by default in tests --------------------------------
+#
+# Plan item 11.3/G2 put a server-side eligibility gate on `/api/queue`. That is
+# correct for production and wrong for ~20 tests that are about something else —
+# they queue a match to test the sweep, the ledger, settlement, and so on, and do
+# not care about eligibility. Without this they all get 403 and stop testing what
+# they name.
+#
+# So eligibility is ATTESTED BY DEFAULT in the test process, and the gate's own
+# tests (`tests/integration/test_eligibility_gate.py`) opt out with the marker
+# below so they exercise the real thing. A bypass that is invisible is a lie;
+# this one is named, documented, and has a test that proves the gate still refuses
+# when it is not applied.
+@pytest.fixture(autouse=True)
+def _eligibility_attested(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    if request.node.get_closest_marker("real_eligibility"):
+        return
+    try:
+        import eligibility  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+    monkeypatch.setattr(eligibility, "attested", lambda _address: True)
+    monkeypatch.setattr(eligibility, "require", lambda _address: None)

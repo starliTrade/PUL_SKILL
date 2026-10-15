@@ -43,6 +43,15 @@ async function signIn(privateKey: string): Promise<Session> {
     body: JSON.stringify({ message: nonce.message, signature }),
   });
   const verified = (await verifyRes.json()) as { token: string };
+  // Plan item 11.3/G2: staked play requires a SERVER-RECORDED eligibility
+  // attestation. The gate is on `/api/queue` — the entry — not on the
+  // round/settle/claim endpoints, so committed money is never trapped.
+  const confirmed = await fetch(`${API}/api/eligibility/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${verified.token}` },
+    body: JSON.stringify({ ageConfirmed: true }),
+  });
+  if (!confirmed.ok) throw new Error(`eligibility confirm failed: ${confirmed.status}`);
   return { address: account.address.toLowerCase(), token: verified.token, issuedAt: Date.now() };
 }
 

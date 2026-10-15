@@ -59,6 +59,8 @@ vi.mock('../lib/realWeb3', () => ({
 
 vi.mock('../lib/gameServerClient', () => ({
   ensureSession: vi.fn(),
+  // Plan item 11.3/G2: the game page records the eligibility attestation
+  confirmEligibility: vi.fn(async () => undefined),
   clearServerSession: vi.fn(),
   claimUsername: vi.fn(),
   GameServerUnavailableError: class extends Error {},

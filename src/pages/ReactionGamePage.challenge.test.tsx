@@ -18,6 +18,8 @@ const queueForMatch = vi.fn(async () => ({ matchId: 'm1', status: 'active', stak
 vi.mock('../lib/gameServerClient', () => ({
   gameServerConfigured: () => true,
   ensureSession: vi.fn(async () => ({ token: 't', address: ME })),
+  // Plan item 11.3/G2: the game page records the eligibility attestation
+  confirmEligibility: vi.fn(async () => undefined),
   measureServerRttMs: async () => 20,
   queueForMatch: (...a: unknown[]) => queueForMatch(...(a as [])),
   commitRound: vi.fn(async () => undefined),

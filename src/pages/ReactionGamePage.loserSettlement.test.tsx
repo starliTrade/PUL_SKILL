@@ -50,6 +50,8 @@ const ensureSession = vi.fn(async () => ({ token: 't', address: ME }));
 vi.mock('../lib/gameServerClient', () => ({
   gameServerConfigured: () => true,
   ensureSession: (...a: unknown[]) => ensureSession(...(a as [])),
+  // Plan item 11.3/G2: the game page records the eligibility attestation
+  confirmEligibility: vi.fn(async () => undefined),
   measureServerRttMs: async () => 20,
   queueForMatch: vi.fn(async () => ({ status: 'active' })),
   commitRound: vi.fn(async () => undefined),

@@ -51,6 +51,7 @@ try:  # optional dependency — absent until Firestore credentials exist
 except Exception:  # pragma: no cover - local dev without the SDK
     _gcf = None  # type: ignore[assignment]
 
+import eligibility
 import metrics
 
 import oracle
@@ -1066,6 +1067,29 @@ def _is_address(value: str) -> bool:
     return bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", value or ""))
 
 
+def _auth_staked(request: Request) -> str:
+    """Authenticate AND require the eligibility attestation (plan item 11.3/G2).
+
+    Used on `/api/queue` — the ENTRY to staked play — and deliberately NOT on the
+    round, settle or claim endpoints.
+
+    That is not an oversight. A gate on the downstream endpoints would TRAP FUNDS:
+    a player who reached a duel and then failed an attestation check could not
+    play, could not settle, and could not claim — their stake would sit in the
+    escrow until the refund window. A compliance gate that can strand money is
+    worse than the gap it closes. Gate the door, never the exit.
+
+    Free play is not gated either: it involves no money, and a gate that blocks
+    practice only teaches players to bypass gates.
+    """
+    address = _auth(request)
+    try:
+        eligibility.require(address)
+    except eligibility.EligibilityError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return address
+
+
 def _auth(request: Request) -> str:
     header = request.headers.get("authorization", "")
     if not header.startswith("Bearer "):
@@ -1189,9 +1213,31 @@ def auth_logout(request: Request) -> dict[str, bool]:
     return {"ok": True}
 
 
+class EligibilityRequest(BaseModel):
+    # The client asserts it; the SERVER records it. An attestation the browser
+    # keeps to itself is not a gate — see api/eligibility.py.
+    ageConfirmed: bool
+
+
+@app.post("/api/eligibility/confirm")
+def eligibility_confirm(body: EligibilityRequest, request: Request) -> dict[str, Any]:
+    """Record the caller's eligibility attestation, server-side."""
+    address = _auth(request)
+    if not body.ageConfirmed:
+        raise HTTPException(status_code=400, detail="Eligibility was not confirmed")
+    return {"ok": True, "confirmedAt": eligibility.record(address)}
+
+
+@app.get("/api/eligibility")
+def eligibility_status(request: Request) -> dict[str, Any]:
+    """Whether this session may play for money."""
+    address = _auth(request)
+    return {"attested": eligibility.attested(address)}
+
+
 @app.post("/api/queue")
 def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
-    address = _auth(request)
+    address = _auth_staked(request)
     _rl_check("queue", address, RL_QUEUE_MAX)
     if body.stake not in ALLOWED_STAKES:
         raise HTTPException(status_code=400, detail="Invalid stake")

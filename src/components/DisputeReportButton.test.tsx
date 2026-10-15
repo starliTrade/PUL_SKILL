@@ -16,6 +16,8 @@ const MATCH_ID = 'a'.repeat(32);
 const h = vi.hoisted(() => ({
   reportDispute: vi.fn(async () => ({ ok: true, matchId: 'a'.repeat(32) })),
   ensureSession: vi.fn(async () => ({ token: 't', address: '0x' + '11'.repeat(20) })),
+  // Plan item 11.3/G2: the game page records the eligibility attestation
+  confirmEligibility: vi.fn(async () => undefined),
 }));
 
 vi.mock('../lib/gameServerClient', () => ({

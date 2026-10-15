@@ -11,6 +11,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   checkUsername: vi.fn(),
   ensureSession: vi.fn(),
+  // Plan item 11.3/G2: the game page records the eligibility attestation
+  confirmEligibility: vi.fn(async () => undefined),
   getDoc: vi.fn(),
 }));
 
