@@ -51,6 +51,7 @@ try:  # optional dependency — absent until Firestore credentials exist
 except Exception:  # pragma: no cover - local dev without the SDK
     _gcf = None  # type: ignore[assignment]
 
+import abuse
 import eligibility
 import limits
 import metrics
@@ -1214,6 +1215,36 @@ def auth_logout(request: Request) -> dict[str, bool]:
     return {"ok": True}
 
 
+class BanRequest(BaseModel):
+    address: str
+    seconds: int
+    # REQUIRED: an unexplained ban is not auditable (api/abuse.py).
+    reason: str
+
+
+@app.get("/api/abuse")
+def abuse_state(request: Request) -> dict[str, Any]:
+    """The caller's own abuse state (plan item 11.3 / G6)."""
+    return abuse.state(_auth(request))
+
+
+@app.post("/api/admin/ban")
+def admin_ban(body: BanRequest, request: Request) -> dict[str, Any]:
+    """Ban an address. Operator action; requires the admin secret."""
+    _require_admin(request)
+    try:
+        return abuse.ban(body.address, body.seconds, body.reason)
+    except abuse.AbuseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/unban")
+def admin_unban(body: BanRequest, request: Request) -> dict[str, Any]:
+    """Lift a ban. Operator action; requires the admin secret."""
+    _require_admin(request)
+    return abuse.unban(body.address)
+
+
 class DepositLimitRequest(BaseModel):
     # None clears the limit. Lowering and clearing are immediate; raising waits.
     limit: float | None = None
@@ -1342,6 +1373,13 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
         limits.require(address, body.stake)
     except limits.LimitError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    # Plan item 11.3/G6: bans and velocity. Last, because it is the only check
+    # that can be about the PERSON rather than the request.
+    try:
+        abuse.require(address)
+    except abuse.AbuseError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    abuse.note_start(address)
     if body.stake not in ALLOWED_STAKES:
         raise HTTPException(status_code=400, detail="Invalid stake")
     # Audit M27: a friend challenge is a reservation for one address. Validate
