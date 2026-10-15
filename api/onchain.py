@@ -260,6 +260,72 @@ _rpc_reachable_cache: bool | None = None
 _rpc_probed_at = 0.0
 
 
+def chain_now() -> int | None:
+    """The CHAIN's current time, or None when it cannot be read.
+
+    Audit 2026-10-15 (found by a time-travel test, recorded as an open item):
+    the settlement deadline was computed from the SERVER's clock while the
+    contract enforces `block.timestamp <= proof.deadline` on the CHAIN's. A drift
+    larger than the deadline window makes every proof arrive already expired —
+    settlement becomes impossible and the winner can only wait for the refund.
+
+    The fix is to stop guessing which clock the contract will use: ask it.
+    """
+    try:
+        out = _rpc_call("eth_getBlockByNumber", ["latest", False])
+        result = (out or {}).get("result") or {}
+        stamp = result.get("timestamp")
+        return int(stamp, 16) if isinstance(stamp, str) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def duel_activated_at(match_id: str) -> int | None:
+    """The escrow's `activatedAt[matchId]`, or None.
+
+    The contract's own clock origin for the play window (audit H20). Reading it
+    means the server's clamp cannot disagree with the contract's.
+    """
+    try:
+        key = _match_id_to_bytes32(match_id)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        ret = _eth_call(os.environ["ESCROW_ADDRESS"], _activated_at_selector() + key[2:])
+    except Exception:  # noqa: BLE001
+        return None
+    if not ret or len(ret) < 66:
+        return None
+    try:
+        return int(ret, 16)
+    except ValueError:
+        return None
+
+
+def _activated_at_selector() -> str:
+    return _selector("activatedAt(bytes32)")
+
+
+def _rpc_call(method: str, params: list) -> dict | None:
+    """A raw JSON-RPC call. Returns None on any failure — never raises."""
+    import json as _json
+    import urllib.request as _url
+
+    url = os.environ.get("ESCROW_RPC_URL", "")
+    if not url:
+        return None
+    try:
+        req = _url.Request(
+            url,
+            data=_json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with _url.urlopen(req, timeout=RPC_TIMEOUT_SECONDS) as res:
+            return _json.loads(res.read() or b"{}")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _rpc_reachable() -> bool:
     """Whether the configured RPC answered recently (cooldown-cached).
 
