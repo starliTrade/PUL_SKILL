@@ -1036,6 +1036,25 @@ class DurableMatchStore:
             return match
         return self.memory.get(match_id)
 
+    def recent_matches(self, limit: int = 2000) -> list[Match]:
+        """Recent matches, newest first — the input to the analytics snapshot.
+
+        Reads the durable collection: analytics is about what was PERSISTED, and
+        the in-process cache only holds what this process touched. A store outage
+        returns an empty list and the caller reports `available: false` rather
+        than pretending the numbers are zero.
+        """
+        if self._fs_store is None:
+            return list(self.memory.matches.values())[:limit]
+        out: list[Match] = []
+        for snap in self._fs_store.db.collection(COLLECTION).stream():
+            try:
+                out.append(_match_from_doc(snap.to_dict() or {}))
+            except Exception:  # noqa: BLE001 — one unreadable doc must not kill the snapshot
+                continue
+        out.sort(key=lambda m: m.created_at, reverse=True)
+        return out[:limit]
+
     def settled_matches(self, limit: int = 50) -> list[Match]:
         """Settled matches, newest first — the public settlement log (G11).
 

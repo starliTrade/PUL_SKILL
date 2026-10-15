@@ -95,6 +95,12 @@ def note_firestore_read(count: int = 1) -> None:
     _firestore_reads += count
 
 
+def endpoint_counts() -> dict[str, int]:
+    """route -> request count. The funnel is built from these."""
+    with _lock:
+        return {path: int(entry["count"]) for path, entry in _endpoints.items()}
+
+
 def firestore_reads_total() -> int:
     """The counter, for attributing a request's reads to its route."""
     return _firestore_reads
