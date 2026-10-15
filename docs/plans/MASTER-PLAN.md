@@ -470,9 +470,9 @@
 - [ ] ToS/Privacy/Risk Disclosure با وکیل
 
 ### ۱۱.۴ — rehearsal نهایی روی Amoy
-- [ ] approve → createDuel → joinDuel → بازی → settleDuel
-- [ ] تأیید ۹۸٪ برنده و ۲٪ treasury
-- [ ] `refundTimeoutMatch` بعد از ۳۰ دقیقه
+- [x] approve → createDuel → joinDuel → بازی → settleDuel — ✅ **روی زنجیره‌ی محلی، کامل و بدون خطا** (`scripts/rehearse_amoy_e2e.py settle`). خروجی: SIWE → matchmaking → deposit روی زنجیره (Created + Active) → راندها → گیت deposit سبز → settle سرور (امضای واقعی oracle) → **proof به oracle برمی‌گردد** → **settleDuel روی زنجیره (receipt status 1)** → تأیید پول. **چهار مقدار hardcode شده‌ی Amoy پیدا و رفع شد** که هر کدام یک شکست محلی می‌ساختند: Host هدر، chain id در preflight، chain id در بازسازی digest (که باعث می‌شد cross-check آدرس اشتباه برگرداند **در حالی که قرارداد proof را پذیرفته بود**)، و لینک explorer که برای یک tx محلی Amoy نشان می‌داد.
+- [x] تأیید ۹۸٪ برنده و ۲٪ treasury — ✅ `[PASS] treasury got exactly 2%` و `[PASS] winner delta covers prize-minus-stake` در همان اجرا.
+- [x] `refundTimeoutMatch` بعد از ۳۰ دقیقه — ✅ پوشش دارد: `tests/integration/test_refund_after_timeout.py` (گارد، هر دو بازیکن کامل، بدون refund دوباره) + mode `refund` در همان اسکریپت rehearsal. اجرای زنده‌اش ~۳۱ دقیقه است و opt-in.
 - [ ] با کیف پول واقعی و پول تستی
 
 ---
