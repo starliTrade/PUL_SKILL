@@ -91,7 +91,13 @@ def _sign_in(private_key: str | None = None) -> tuple[str, str]:
         "/api/auth/verify", {"message": nonce["message"], "signature": signature}
     )
     assert status == 200, verified
-    return address, verified["token"]
+    token = verified["token"]
+    # Plan item 11.3/G2: staked play requires a SERVER-RECORDED eligibility
+    # attestation. The gate is on `/api/queue` (the entry), not on the
+    # round/settle/claim endpoints, so committed money is never trapped.
+    status, confirmed = _api("/api/eligibility/confirm", {"ageConfirmed": True}, token)
+    assert status == 200, confirmed
+    return address, token
 
 
 def _match_key(match_id: str) -> str:

@@ -143,7 +143,14 @@ def login(acct):
     r = s.post("/api/auth/verify", json={"message": body["message"], "signature": "0x" + sig},
                headers={"host": DOMAIN})
     assert r.status_code == 200, r.text
-    return r.json()["token"]
+    token = r.json()["token"]
+    # Plan item 11.3/G2: the queue requires a SERVER-RECORDED eligibility
+    # attestation. The gate is on `/api/queue` — the entry — not on the
+    # round/settle/claim endpoints, so money already committed is never trapped.
+    r = s.post("/api/eligibility/confirm", json={"ageConfirmed": True},
+               headers={"host": DOMAIN, "authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    return token
 
 
 def hdrs(token):

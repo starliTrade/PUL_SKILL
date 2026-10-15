@@ -456,7 +456,7 @@
 
 ### ۱۱.۳ — گیت محصول و حقوقی (تصمیم شما)
 - [ ] **G1** KYC/AML
-- [ ] **G2** age-gate سمت سرور — ⚠️ **ساخته و تست شد، ولی مرج نشد (۲۰۲۶-۱۰-۱۵).** پیاده‌سازی کامل بود: `api/eligibility.py` (رکورد سمت سرور، durable)، `POST /api/eligibility/confirm`، و گیت روی **`/api/queue`** — عمداً نه روی round/settle/claim، چون گیتی که پول را گیر بیندازد از شکافی که می‌بندد بدتر است. ۵ تست هم داشت (از جمله همان «پول گیر نمی‌افتد»). **چرا مرج نشد:** گیت ۲۰ تست موجود + ۵ گیت را شکست — legacy suites و E2E و drill همه بدون attestation queue می‌کنند. یک bypass فقط برای pytest کافی نبود. **کاری که لازم است:** attestation را به helperهای legacy/E2E اضافه کن (یا یک مسیر تست مشترک بساز)، بعد مرج کن. کد در تاریخ git است.
+- [x] **G2** age-gate سمت سرور — ✅ **پیاده و مرج شد (۲۰۲۶-۱۰-۱۵).** `api/eligibility.py` (رکورد سمت سرور، durable، یک Firestore client برای کل پروسه)، `POST /api/eligibility/confirm` + `GET /api/eligibility`، و گیت روی **`/api/queue`** — عمداً **نه** روی round/settle/claim، چون گیتی که پول را گیر بیندازد از شکافی که می‌بندد بدتر است. ۵ تست، از جمله همان «پول گیر نمی‌افتد». **درس:** بار اول ۲۰ تست + ۵ گیت را شکست چون فقط pytest را bypass کرده بودم؛ legacy scripts و E2E و drill هم queue می‌زنند. حالا **همه‌ی** callerها attestation می‌دهند.
 - [ ] **G3** ابزار مسئولانه‌بازی (deposit limit، self-exclusion، cool-off)
 - [ ] **G4** geo-blocking در لبه (CDN/server)
 - [ ] **G6** سیستم ban/velocity limit

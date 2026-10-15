@@ -29,6 +29,8 @@ const revealRoundTarget = vi.fn(async () => ({ targetMs: 100, resultProof: 'proo
 vi.mock('../lib/gameServerClient', () => ({
   gameServerConfigured: () => true,
   ensureSession: (...a: unknown[]) => ensureSession(...(a as [])),
+  // Plan item 11.3/G2: the game page records the eligibility attestation
+  confirmEligibility: vi.fn(async () => undefined),
   // Audit H1: the submit path measures the round trip.
   measureServerRttMs: async () => 20,
   queueForMatch: vi.fn(async () => ({ status: 'active' })),

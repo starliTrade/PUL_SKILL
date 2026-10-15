@@ -66,9 +66,23 @@ def _sign_in() -> str | None:
     )
     try:
         with urllib.request.urlopen(req, timeout=20) as res:
-            return json.loads(res.read()).get("token")
+            token = json.loads(res.read()).get("token")
     except Exception:  # noqa: BLE001
         return None
+    if token is None:
+        return None
+    # Plan item 11.3/G2: the queue requires a server-recorded attestation.
+    req = urllib.request.Request(
+        API + "/api/eligibility/confirm",
+        data=json.dumps({"ageConfirmed": True}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=20).read()
+    except Exception:  # noqa: BLE001
+        return None
+    return token
 
 
 def _pair_a_match() -> str | None:

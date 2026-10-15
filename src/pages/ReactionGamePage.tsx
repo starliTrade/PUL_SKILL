@@ -6,7 +6,7 @@ import { GamePhase, MouseTrajectoryPoint, MatchResolution, TargetVectorDirection
 import { AntiCheat, getRandomOpponent, TargetSpawnConfig } from '../lib/antiCheat';
 import { usePulsarStore } from '../store/usePulsarStore';
 import { XPSummary } from '../lib/xpSystem';
-import { gameServerConfigured, ensureSession, measureServerRttMs, queueForMatch, commitRound, revealRoundTarget, submitRoundResult, settleMatch, claimMatch, getMatch, matchIdToBytes32, type ServerSession, type MatchView } from '../lib/gameServerClient';
+import { gameServerConfigured, ensureSession, confirmEligibility, measureServerRttMs, queueForMatch, commitRound, revealRoundTarget, submitRoundResult, settleMatch, claimMatch, getMatch, matchIdToBytes32, type ServerSession, type MatchView } from '../lib/gameServerClient';
 import { settleDuel as settleDuelOnChain, refundTimeoutMatch, approveUsdt, createDuel, joinDuel, getDuelState, getTokenDecimals, findSettlementTx } from '../lib/escrowFlow';
 import { isEscrowConfigured, CHAIN, REFUND_OPENS_AFTER_MINUTES, prizeForStake } from '../lib/chain';
 import { BO3_TARGET_WINS, bo3Decided } from '../lib/bo3';
@@ -315,6 +315,10 @@ function isWalletCancel(msg: string): boolean {
         }
       });
       applyServerSession(session);
+      // Plan item 11.3/G2: the server refuses staked play without a recorded
+      // attestation, so the client records it here — before the queue call,
+      // which is the gated entry point. Idempotent.
+      await confirmEligibility(session).catch(() => undefined);
       // Audit H1: measure the round trip BEFORE queueing, so the ping cap is
       // evaluated at the entry gate rather than after the first round.
       const queueRtt = await measureServerRttMs(session).catch(() => undefined);
@@ -472,6 +476,10 @@ function isWalletCancel(msg: string): boolean {
         }
       });
       applyServerSession(session);
+      // Plan item 11.3/G2: the server refuses staked play without a recorded
+      // attestation, so the client records it here — before the queue call,
+      // which is the gated entry point. Idempotent.
+      await confirmEligibility(session).catch(() => undefined);
       const view = await getMatch(session, saved.matchId);
       applyServerMatch(view);
       if (view.opponent) setOpponent(view.opponent);

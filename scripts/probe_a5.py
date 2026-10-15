@@ -314,7 +314,17 @@ def session(acct) -> tuple[str, str]:
         sig = "0x" + sig
     r = client.post("/api/auth/verify", json={"message": msg, "signature": sig}, headers={"host": "t.test"})
     assert r.status_code == 200, r.text
-    return r.json()["token"], addr
+    token = r.json()["token"]
+    # Plan item 11.3/G2: the queue requires a SERVER-RECORDED eligibility
+    # attestation. The gate is on `/api/queue` — the entry — not on the
+    # round/settle/claim endpoints, so money already committed is never trapped.
+    r = client.post(
+        "/api/eligibility/confirm",
+        json={"ageConfirmed": True},
+        headers={"host": "t.test", "authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    return token, addr
 
 
 t1, a1 = session(acct)
