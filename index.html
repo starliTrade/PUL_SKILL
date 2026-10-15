@@ -10,6 +10,11 @@
     <title>PUL_SKILL</title>
     <meta name="description" content="Compete in real-time skill duels. Prove you are human. Winner takes all." />
     <meta name="theme-color" content="#050505" />
+    <!-- Plan item 11.3 / G15: installable. The service worker is registered in
+         src/main.tsx and deliberately never caches /api — see public/sw.js. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta property="og:title" content="PULSAR — Skill Battles" />
     <meta property="og:description" content="Challenge your skill. Winner takes all." />
     <meta name="twitter:card" content="summary" />

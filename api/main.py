@@ -1219,6 +1219,59 @@ class EligibilityRequest(BaseModel):
     ageConfirmed: bool
 
 
+@app.get("/api/settlements")
+def settlements(limit: int = 50) -> dict[str, Any]:
+    """A PUBLIC, verifiable log of settled duels (plan item 11.3 / G11).
+
+    Unauthenticated on purpose. The point of a settlement log is that a player —
+    or anyone — can check that the server did not invent a winner, so requiring
+    a login to read it would defeat it.
+
+    Every entry carries the ORACLE SIGNATURE the contract accepted. That is what
+    makes it verifiable rather than a claim: the same bytes can be checked
+    against `PulsarEscrow.settleDuel` on-chain, so a log entry that does not
+    verify is provably not a settlement.
+
+    It exposes only what is already public on-chain: the match id, the two
+    addresses, the winner, the times, the signature, and the settlement tx hash
+    once a player has claimed. No balances, no emails, no history beyond the
+    duel itself.
+    """
+    capped = max(1, min(int(limit), 200))
+    out: list[dict[str, Any]] = []
+    try:
+        for snap in store.settled_matches(limit=capped):
+            m = snap
+            env = m.signed_settlement or {}
+            out.append(
+                {
+                    "matchId": m.match_id,
+                    "stake": m.stake,
+                    "players": sorted(m.players.keys()),
+                    "winner": m.winner,
+                    "settledAt": m.settled_at,
+                    "roundWins": env.get("roundWins", {}),
+                    "forfeits": env.get("forfeits", {}),
+                    # The proof, not a promise: this is what the contract checked.
+                    "oracleAddress": env.get("oracleAddress", ""),
+                    "signature": env.get("signature", ""),
+                    "deadline": env.get("deadline"),
+                    "settlementTx": (m.signed_settlement or {}).get("settlementTx", ""),
+                }
+            )
+    except Exception as exc:  # noqa: BLE001
+        # A public endpoint must never 500. An empty log with a reason is honest;
+        # a stack trace is not.
+        return {"available": False, "reason": type(exc).__name__, "settlements": []}
+    return {
+        "available": True,
+        # Published so a verifier knows which signer to check against.
+        "oracleAddress": _oracle_address_or_none(),
+        "count": len(out),
+        "settlements": out,
+    }
+
+
 @app.post("/api/eligibility/confirm")
 def eligibility_confirm(body: EligibilityRequest, request: Request) -> dict[str, Any]:
     """Record the caller's eligibility attestation, server-side."""

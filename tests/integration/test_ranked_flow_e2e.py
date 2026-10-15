@@ -354,3 +354,39 @@ def test_the_reads_are_attributed_to_routes(manifest: dict) -> None:
     # The round endpoints dominate a match; if they are missing, the attribution
     # is measuring the wrong thing.
     assert any("/api/round/" in route for route in by_route), by_route
+
+
+def test_the_public_settlement_log_shows_the_duel_we_just_settled(manifest: dict) -> None:
+    """Plan item 11.3 / G11 — a settlement log anyone can verify.
+
+    The point is not that a log exists; it is that the log carries the ORACLE
+    SIGNATURE the contract accepted. That is what makes it verifiable rather than
+    a claim: the same bytes can be checked against `settleDuel` on-chain, so an
+    entry that does not verify is provably not a settlement.
+
+    This runs after the flow test, so the duel it settled must appear.
+    """
+    try:
+        status, payload = _api("/api/settlements")
+    except Exception:  # noqa: BLE001
+        pytest.skip("no API on 127.0.0.1:8000 — run scripts/start_e2e_stack.sh")
+    assert status == 200, payload
+    assert payload.get("available") is True, payload
+    # The signer is published so a verifier knows what to check against.
+    assert payload.get("oracleAddress"), "the log must publish the oracle address"
+
+    entries = payload.get("settlements") or []
+    if not entries:
+        pytest.skip("no settled duel in this store yet — run the flow test first")
+
+    entry = entries[0]
+    # Everything a verifier needs, and nothing that is not already public.
+    for field in ("matchId", "winner", "players", "signature", "oracleAddress", "settledAt"):
+        assert field in entry, f"the log entry is missing {field}: {entry}"
+    assert entry["signature"], "an entry without a signature is a claim, not a proof"
+    assert entry["oracleAddress"].lower() == payload["oracleAddress"].lower()
+    assert entry["winner"] in entry["players"], "the winner must be one of the players"
+
+    # It must NOT leak anything that is not already public on-chain.
+    leaked = {"balance", "email", "token", "session", "nonce"} & set(entry)
+    assert not leaked, f"the public log leaks {leaked}"

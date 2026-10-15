@@ -62,4 +62,21 @@ export default tseslint.config(
     files: ['contracts/**/*.js'],
     languageOptions: { globals: { ...globals.node } },
   },
+  {
+    // public/sw.js runs in a ServiceWorkerGlobalScope, not a window: `self`,
+    // `caches`, `clients` and `fetch` are its globals, and the browser config
+    // does not know them. Scoped to that file so the rest of the app keeps the
+    // strict set — a service worker is the one place where a global typo is
+    // silent and the cache is the thing that breaks.
+    files: ['public/sw.js'],
+    languageOptions: {
+      globals: {
+        self: 'readonly',
+        caches: 'readonly',
+        clients: 'readonly',
+        fetch: 'readonly',
+        URL: 'readonly',
+      },
+    },
+  },
 );

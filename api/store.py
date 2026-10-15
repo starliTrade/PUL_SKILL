@@ -1036,6 +1036,29 @@ class DurableMatchStore:
             return match
         return self.memory.get(match_id)
 
+    def settled_matches(self, limit: int = 50) -> list[Match]:
+        """Settled matches, newest first — the public settlement log (G11).
+
+        Reads the durable collection directly: the log is about what was
+        PERSISTED, and the in-process cache only holds what this process has
+        touched. An empty result on a store outage is the honest answer; the
+        endpoint reports `available: false` rather than pretending.
+        """
+        if self._fs_store is None:
+            return [
+                m
+                for m in self.memory.matches.values()
+                if m.status == "settled" and m.signed_settlement
+            ][:limit]
+        out: list[Match] = []
+        for snap in self._fs_store.db.collection(COLLECTION).stream():
+            data = snap.to_dict() or {}
+            if data.get("status") != "settled" or not data.get("signed_settlement"):
+                continue
+            out.append(_match_from_doc(data))
+        out.sort(key=lambda m: m.settled_at, reverse=True)
+        return out[:limit]
+
     def identity(self, match_id: str) -> Match:
         """The match's IMMUTABLE identity (players, stake, creator) — cheaply.
 
