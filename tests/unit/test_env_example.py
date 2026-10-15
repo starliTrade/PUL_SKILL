@@ -23,6 +23,12 @@ SCRIPT_ONLY = {
     # The rehearsal driver's Host header. Overridable because a LOCAL rehearsal
     # runs against an API whose TrustedHost allowlist is 127.0.0.1, not Amoy.
     "REHEARSE_DOMAIN",
+    # The rehearsal driver's chain and explorer. Both were HARDCODED to Amoy and
+    # each made a local run fail for a reason that looked like a server fault —
+    # including a digest rebuilt for the wrong chain, which made the cross-check
+    # disagree with a contract that had accepted the proof.
+    "REHEARSE_CHAIN_ID",
+    "REHEARSE_EXPLORER",
     "STAKE_USDT",
     "MOCK_USDT",
     "PLAYER1_KEY",
