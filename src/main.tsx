@@ -47,6 +47,22 @@ if (typeof window !== 'undefined') {
   } catch {}
 }
 
+// Plan item 11.3 / G15: register the service worker so the app is installable
+// and opens offline. `public/sw.js` NEVER caches /api — a stale balance is a lie
+// about money — so this only affects the static shell.
+//
+// Only in a production build: a service worker in dev serves stale modules and
+// makes every edit look like it did not apply.
+const _env = (import.meta as unknown as { env?: { PROD?: boolean } }).env ?? {};
+if (_env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // A failed registration must never break the app; it only costs
+      // installability.
+    });
+  });
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <LanguageProvider>
