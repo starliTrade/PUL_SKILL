@@ -52,6 +52,7 @@ except Exception:  # pragma: no cover - local dev without the SDK
     _gcf = None  # type: ignore[assignment]
 
 import abuse
+import analytics
 import eligibility
 import limits
 import metrics
@@ -1226,6 +1227,18 @@ class BanRequest(BaseModel):
 def abuse_state(request: Request) -> dict[str, Any]:
     """The caller's own abuse state (plan item 11.3 / G6)."""
     return abuse.state(_auth(request))
+
+
+@app.get("/api/admin/analytics")
+def admin_analytics(request: Request) -> dict[str, Any]:
+    """Product analytics, computed from the server's own records.
+
+    Admin-only: it is operator data, not player data. And it is computed rather
+    than collected — no third party, no cookies, no client script, no PII. See
+    api/analytics.py for why that is the whole design.
+    """
+    _require_admin(request)
+    return analytics.snapshot(store, metrics.endpoint_counts())
 
 
 @app.post("/api/admin/ban")
