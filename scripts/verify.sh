@@ -292,6 +292,19 @@ else
   skip_gate "alerting (healthy server must be quiet)" "scripts/check_alerts.py is missing"
 fi
 
+# --- 8c3. Runbook drill — plan item 11.2 -------------------------------------
+#
+# "Runbook rehearsed" means an operator who has never seen this system can follow
+# the document and reach the right conclusion. So this tests the DOCUMENT: it
+# breaks the RPC and asserts every signal the runbook names reads what the
+# runbook says it will.
+if [[ -f "$ROOT/scripts/runbook_drill.py" ]]; then
+  run_gate "runbook drill (the document matches the server)" bash -c \
+    "cd '$ROOT' && '$PY' scripts/runbook_drill.py"
+else
+  skip_gate "runbook drill (the document matches the server)" "scripts/runbook_drill.py is missing"
+fi
+
 # --- 8d. Chaos suite — plan item 10.4 ----------------------------------------
 #
 # Audit 2026-10-14: `scripts/chaos_suite.py` was referenced by NOTHING — not this

@@ -43,8 +43,16 @@ POST /api/admin/match/{matchId}/settle   force-settle
 
 ## 1. RPC is down or unreachable
 
-**Symptoms.** `rpc.reachable: false`; `tokenDecimals: "unread"`; players report
-"deposit could not be verified"; `/api/round/result` returns the deposit-gate error.
+**Symptoms.** `rpc.reachable: false`; players report "deposit could not be
+verified"; `/api/round/result` returns the deposit-gate error
+(`"On-chain deposit state is temporarily unreadable — retry shortly."`).
+
+**Corrected 2026-10-15 by the drill (`scripts/runbook_drill.py`):** this used to
+list `tokenDecimals: "unread"` as a symptom. It is not, in the common case — a
+**successful** decimals read is cached and the decimals do not change, so the
+field keeps its last good value (`6`) and an operator following the old text
+would see a healthy-looking number and look elsewhere. `"unread"` appears only
+when the RPC was already down at startup. The drill asserts the real behaviour.
 
 **What is at risk.** The deposit gate fails **closed** — a round cannot be
 played until the stake is confirmed on chain. That is the correct direction: no

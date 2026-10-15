@@ -37,6 +37,10 @@ SCRIPT_ONLY = {
     # configuration, not the server's. The server never reads either.
     "PULSAR_ALERT_URL",
     "PULSAR_ALERT_WEBHOOK",
+    "PULSAR_DRILL_API",
+    # The drill and the live-preview script name the anvil port so they can
+    # check the dependency directly rather than trusting a health endpoint.
+    "PULSAR_ANVIL_PORT",
 }
 
 # Public configuration, not secrets — a chain id is in every RPC request.
