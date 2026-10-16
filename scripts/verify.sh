@@ -226,7 +226,18 @@ if [[ -f "$ROOT/playwright.config.ts" ]]; then
     bash "$ROOT/scripts/start_e2e_stack.sh" --stop >/dev/null 2>&1 || true
     sleep 2
     bash "$ROOT/scripts/start_e2e_stack.sh" >/dev/null 2>&1 || true
-    run_gate "browser E2E (playwright)" bun run test:e2e
+    # Audit 2026-10-16: Playwright exits 0 when every test SKIPS, and three
+# money-path specs skip when the shared store holds a stale match. So this gate
+# could pass while executing nothing — the same false-green class the server
+# pytest job already guards against with a minimum-count check. Capture the
+# output and require that tests actually ran.
+run_gate "browser E2E (playwright, min 20 tests)" bash -c \
+  "cd '$ROOT' && bun run test:e2e 2>&1 | tee /tmp/pulsar-e2e.log; \
+   passed=\$(grep -oE '[0-9]+ passed' /tmp/pulsar-e2e.log | tail -1 | grep -oE '[0-9]+' || echo 0); \
+   if [ \"\$passed\" -lt 20 ]; then \
+     echo \"only \$passed E2E tests ran (expected >= 20) — skips are not coverage\"; \
+     exit 1; \
+   fi"
   else
     skip_gate "browser E2E (playwright)" "anvil is not running — run scripts/start_anvil.sh --bg"
   fi
@@ -249,10 +260,16 @@ if [[ -x "$ROOT/scripts/start_e2e_stack.sh" ]]; then
     # PULSAR_FAIL_ON_SKIP: this gate exists to prove these tests RUN. A skip is
     # not coverage, and pytest's exit code does not care about skips — so
     # without this the gate passed while executing nothing.
-    run_gate "live-stack integration (ranked flow + reads)" bash -c \
+    # Audit 2026-10-16: this gate ran ONLY the ranked flow. The eligibility gate's
+    # five tests skip without a live API, so they skipped in every other gate too
+    # — meaning `eligibility.require` in api/main.py was guarded by ZERO
+    # executing tests, and deleting that one line would have kept CI green.
+    run_gate "live-stack integration (ranked flow + reads + eligibility)" bash -c \
       "cd '$ROOT' && PULSAR_FAIL_ON_SKIP=1 \
        FIRESTORE_EMULATOR_HOST=127.0.0.1:${PULSAR_FIRESTORE_PORT:-8081} \
-       GCLOUD_PROJECT=demo-pulsar '$PY' -m pytest tests/integration/test_ranked_flow_e2e.py -q -p no:cacheprovider"
+       GCLOUD_PROJECT=demo-pulsar '$PY' -m pytest \
+         tests/integration/test_ranked_flow_e2e.py \
+         tests/integration/test_eligibility_gate.py -q -p no:cacheprovider"
   else
     skip_gate "live-stack integration (ranked flow + reads)" "the E2E stack did not start"
   fi
@@ -277,6 +294,17 @@ if [[ -f "$ROOT/tests/integration/test_refund_after_timeout.py" ]]; then
   pkill -f "anvil --port ${PULSAR_ANVIL_PORT:-8545}" 2>/dev/null || true
   sleep 2
   PATH="$PATH:/root/workspace/.foundry/bin" bash "$ROOT/scripts/start_anvil.sh" --bg >/dev/null 2>&1 || true
+  # The API must be restarted TOO, and this is not tidiness.
+  #
+  # Audit 2026-10-16: restarting anvil REDEPLOYS, so the escrow address changes.
+  # The API was left holding the old one, so every gate after this point — the
+  # runbook drill and the whole chaos suite — failed with "On-chain duel state
+  # cannot be verified", which reads like a server bug and was a stale address.
+  # Both gates PASSED when run alone and FAILED only in the full run, which is
+  # exactly the signature of an ordering dependency nobody had written down.
+  bash "$ROOT/scripts/start_e2e_stack.sh" --stop >/dev/null 2>&1 || true
+  sleep 1
+  bash "$ROOT/scripts/start_e2e_stack.sh" >/dev/null 2>&1 || true
 fi
 
 # --- 8c2. Alerting — plan item 11.2 ------------------------------------------
