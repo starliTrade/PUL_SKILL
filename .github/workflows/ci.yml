@@ -216,10 +216,12 @@ jobs:
           python-version: '3.12'
       - uses: oven-sh/setup-bun@v2
       - name: Install server deps
+        # `api/requirements-dev.txt`, not a root `requirements.txt` — that file
+        # does not exist, and the first version of this job died on it.
         run: |
           python3 -m venv .venv
-          .venv/bin/pip install --quiet -r requirements.txt
-          .venv/bin/pip install --quiet -r requirements-dev.txt || true
+          .venv/bin/pip install --quiet -r api/requirements-dev.txt
+          python3 -c "import sqlite3; print('sqlite3', sqlite3.sqlite_version)"
       - name: Install frontend deps
         run: bun install --frozen-lockfile
       - name: Install Foundry (anvil + forge)
