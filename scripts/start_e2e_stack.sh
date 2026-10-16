@@ -122,4 +122,31 @@ done
 
 echo "the E2E API did not become healthy — see $LOGFILE" >&2
 tail -20 "$LOGFILE" >&2 || true
-exit 1
+exit 1# --- 0. the manifest and the CHAIN must agree ---------------------------------
+#
+# Audit 2026-10-16: `start_anvil.sh` REDEPLOYS on every run, so the escrow address
+# changes each time. An API started before that points at an address with no code
+# on it — and it reports `escrowConfigured: true` and `rpc.reachable: true` while
+# every duel fails with "On-chain duel state cannot be verified right now". That
+# reads like a server bug and is a stale manifest.
+#
+# This cost a confusing chaos-suite failure and nearly a false "fail-open deposit
+# gate" finding. Check it here, loudly, before the API is started.
+_manifest="${ROOT}/contracts/deployments/local.json"
+if [[ -f "$_manifest" ]]; then
+  _escrow="$(python3 -c "import json;print(json.load(open('$_manifest'))['escrow'])" 2>/dev/null || true)"
+  if [[ -n "$_escrow" ]]; then
+    _code="$(curl -s -X POST -H 'Content-Type: application/json' \
+      --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"$_escrow\",\"latest\"]}" \
+      "${PULSAR_ANVIL_URL:-http://127.0.0.1:8545}" 2>/dev/null \
+      | python3 -c "import json,sys;print(json.load(sys.stdin).get('result','0x'))" 2>/dev/null || echo 0x)"
+    if [[ "$_code" == "0x" || -z "$_code" ]]; then
+      echo "REFUSING TO START: the manifest names escrow $_escrow but there is no"
+      echo "contract at that address on the chain. Run scripts/start_anvil.sh --bg"
+      echo "FIRST (it redeploys, which changes the address), then start this stack."
+      exit 1
+    fi
+  fi
+fi
+
+

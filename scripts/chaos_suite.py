@@ -325,6 +325,27 @@ def scenario_rpc_kill() -> None:
             f"status={code} body={body[:110]} — without this, a refusal below proves nothing",
         )
 
+    # A SECOND, freshly funded match, paired and funded while the RPC is ALIVE,
+    # whose deposit gate has NEVER been read. This is the only way to test the
+    # COLD path: a match whose gate was already answered would serve from the
+    # 60s positive cache without touching the dead RPC, and the check would pass
+    # for the wrong reason.
+    # FRESH accounts, not the manifest's pair: those are already in the control
+    # match, and the server refuses to queue a player who is mid-duel — which is
+    # why "a cold match could be created" failed with `pairing failed` and the
+    # cold path went untested. Anvil has ten funded accounts; the manifest uses
+    # two, so these two are free.
+    cold_keys = [
+        "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba",
+        "0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e",
+    ]
+    cold_match, cold_token = pair_two_players_with(cold_keys)
+    if cold_match is not None:
+        check(
+            "a second (cold) match is funded while the RPC is up",
+            fund_duel(cold_match, player_keys=cold_keys),
+        )
+
     stop_anvil()
     check("the RPC is down", not anvil_up())
 
@@ -342,32 +363,30 @@ def scenario_rpc_kill() -> None:
     # just a queue entry. Assert the contract that actually exists: a staked
     # round must be REFUSED while the escrow cannot be verified.
     #
-    # NOTE: this needs a REAL session — an unauthenticated 401 would look like a
-    # refusal and turn the check into a false green (it did, first run).
-    # A SECOND, freshly funded match whose gate has NEVER been read.
+    # A REAL session is required: an unauthenticated 401 would look like a
+    # refusal and turn this into a false green (it did, on the first run).
     #
-    # Audit 2026-10-14: the first version of this check reused the control's
-    # match and got 200 — because a VERIFIED deposit is cached for 60s, so the
-    # gate answered from cache without touching the dead RPC. That is correct
-    # behaviour (a verified deposit does not un-verify because a node went
-    # away), but it means "fail-closed" is only true on a COLD read. Testing it
-    # on a warm one would have been a false green in the other direction.
-    # OPEN QUESTION, recorded rather than asserted either way.
-    #
-    # The gate is documented as fail-CLOSED: `duel_info` returning None (a dead
-    # RPC) must raise 409. A freshly funded match whose gate had never been read
-    # came back **200** instead — so either the positive cache was warm from
-    # somewhere, or the cold path does not fail closed the way the docstring
-    # says. I could not settle which within this pass, and asserting either
-    # answer would be a guess dressed as a test.
-    #
-    # What IS settled: the original check was a false green (it queued a match
-    # and never funded it, so 409 was guaranteed whatever the RPC did), and the
-    # CONTROL above now catches that class of mistake.
-    note(
-        "a COLD gate on a dead RPC returned 200, not the 409 its docstring "
-        "promises — OPEN QUESTION, see docs/audits/PHASE-10-AUDIT-RUTHLESS.md"
-    )
+    # Audit 2026-10-16 — this check did not exist. It was a `note()` describing a
+    # run whose code was no longer in the file, so the most important behaviour
+    # here (a dead RPC must not let an unverified stake play) was enforced by
+    # nothing at all. A note cannot fail the gate; only a check can.
+    cold_code, cold_body = 0, ""
+    if cold_match is not None and cold_token is not None:
+        cold_code, cold_body = http(
+            f"{API}/api/round/commit",
+            "POST",
+            {"matchId": cold_match, "roundIndex": 0, "intentHash": "0x" + "ab" * 32},
+            timeout=30,
+            token=cold_token,
+        )
+        check(
+            "a COLD gate on a dead RPC fails CLOSED (409), as its docstring promises",
+            cold_code == 409,
+            f"status={cold_code} body={cold_body[:140]} — a fail-OPEN gate lets an "
+            "unverified stake play",
+        )
+    else:
+        check("a cold match could be created to test the gate", False, "pairing failed")
 
     # And the warm case, asserted for what it IS rather than left implicit: a
     # deposit verified before the outage keeps working, because the money is
