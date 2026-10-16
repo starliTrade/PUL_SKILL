@@ -95,6 +95,12 @@ def note_firestore_read(count: int = 1) -> None:
     _firestore_reads += count
 
 
+def reset_endpoint_counts() -> None:
+    """Clear the per-endpoint counters. Tests and the drill call this."""
+    with _lock:
+        _endpoints.clear()
+
+
 def endpoint_counts() -> dict[str, int]:
     """route -> request count. The funnel is built from these."""
     with _lock:

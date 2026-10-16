@@ -74,7 +74,7 @@ Do not spend your budget re-finding these. Each was found, fixed, and has a test
 
 | Item | Why it is open |
 |---|---|
-| **The oracle's settlement deadline uses the SERVER's clock; the contract enforces the CHAIN's.** A drift > 600s makes every proof arrive expired. | Found by a time-travel test. The fix belongs in `api/oracle.py` (clamp against chain time) and is not done. |
+| ~~The oracle's settlement deadline uses the SERVER's clock~~ **FIXED 2026-10-15/16, and the fix had two bugs of its own.** Anchored to the chain (`onchain.chain_now`), and the horizon now mirrors the contract's `max(activatedAt, createdAt)`. Two defects the second audit found in the first fix: it put **blocking RPC inside the store transaction** (the H10 bug class, reintroduced), and its comment claimed a duel could have `createdAt > activatedAt` — it cannot, because `joinDuel` sets `activatedAt` strictly later. Both fixed; the chain clock is now cached for 5s and the redundant read is gone. **Still not verified by an external party.** |
 | **`readsPerMatch` is 35 against a plan target of <20**, and excludes the client's polling. | Measured, recorded as an `xfail` with the number. Not optimised further. |
 | **The deposit gate's cold path returned 200, not 409, on a dead RPC** in one chaos run. | Recorded as a NOTE in `scripts/chaos_suite.py`. Not explained. |
 | **No KYC/AML, no geo-blocking, no fiat on-ramp.** | Product/legal decisions, not engineering. |
