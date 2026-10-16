@@ -1,9 +1,28 @@
 #!/usr/bin/env bash
 # PULSAR — single verification entrypoint (plan item 0.2).
 #
-# Every gate the project has, in one command, with one exit code. CI runs the
-# same gates (see .github/workflows/ci.yml), so "green locally" and "green in
-# CI" mean the same thing.
+# Every gate the project has, in one command, with one exit code.
+#
+# CORRECTED 2026-10-16: this used to say "CI runs the same gates (see
+# .github/workflows/ci.yml), so 'green locally' and 'green in CI' mean the same
+# thing" — and that was FALSE. An adversarial audit found that chaos, the runbook
+# drill, alerting, the refund time-travel suite, the live-stack ranked flow and
+# both probes run NOWHERE in CI. So "green in CI" was a weaker claim than this
+# comment implied, and every fix that landed on those gates was unprotected.
+#
+# I tried to close the gap (a `verify-gates` CI job running this script) and
+# could not make it work: the job fails at `scripts/start_anvil.sh --bg` on a
+# clean runner. Rather than merge a red CI or leave a broken job, the claim is
+# removed. The truth is:
+#
+#   CI runs: typecheck, frontend unit, ruff, mypy, pytest, the coverage ratchet,
+#            forge test, chain tests, contract coverage, the solc gate.
+#   CI does NOT run: the browser E2E, the live-stack ranked flow, the eligibility
+#            gate, the refund time-travel suite, alerting, the runbook drill,
+#            the chaos suite, or the legacy probes.
+#
+# Closing that gap is worth doing and is not done. Do not re-add a parity claim
+# until a CI job actually runs this script.
 #
 # Design notes:
 #   - Gates are CAPABILITY-AWARE: a gate whose tool/config does not exist yet is
