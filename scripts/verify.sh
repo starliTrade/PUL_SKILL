@@ -294,6 +294,17 @@ if [[ -f "$ROOT/tests/integration/test_refund_after_timeout.py" ]]; then
   pkill -f "anvil --port ${PULSAR_ANVIL_PORT:-8545}" 2>/dev/null || true
   sleep 2
   PATH="$PATH:/root/workspace/.foundry/bin" bash "$ROOT/scripts/start_anvil.sh" --bg >/dev/null 2>&1 || true
+  # The API must be restarted TOO, and this is not tidiness.
+  #
+  # Audit 2026-10-16: restarting anvil REDEPLOYS, so the escrow address changes.
+  # The API was left holding the old one, so every gate after this point — the
+  # runbook drill and the whole chaos suite — failed with "On-chain duel state
+  # cannot be verified", which reads like a server bug and was a stale address.
+  # Both gates PASSED when run alone and FAILED only in the full run, which is
+  # exactly the signature of an ordering dependency nobody had written down.
+  bash "$ROOT/scripts/start_e2e_stack.sh" --stop >/dev/null 2>&1 || true
+  sleep 1
+  bash "$ROOT/scripts/start_e2e_stack.sh" >/dev/null 2>&1 || true
 fi
 
 # --- 8c2. Alerting — plan item 11.2 ------------------------------------------
