@@ -49,17 +49,37 @@ def _percentile(sorted_values: list[float], fraction: float) -> float:
     return sorted_values[low] * (1 - weight) + sorted_values[high] * weight
 
 
+def _count_for(endpoint_counts: dict[str, int], path: str) -> int:
+    """The request count for `path`, whatever method prefix the caller uses.
+
+    Audit 2026-10-16 — a REAL bug, shipped and caught by an adversarial audit:
+    `metrics.endpoint_counts()` keys by `"<METHOD> <path>"` (metrics.py), while
+    this module looked up the bare path. Every lookup missed, so the funnel
+    reported zeros for a server with traffic — and no test saw it, because the
+    unit tests hand-built the un-prefixed dict that production never produces.
+
+    Matching on the suffix rather than assuming a shape means the two modules
+    cannot drift again, and a test now feeds this function the REAL metrics
+    output.
+    """
+    total = 0
+    for key, count in endpoint_counts.items():
+        if key == path or key.endswith(f" {path}"):
+            total += int(count)
+    return total
+
+
 def _funnel(endpoint_counts: dict[str, int]) -> dict[str, Any]:
     """Where people are lost, from the server's own request counts.
 
-    Each step is the number of DISTINCT requests to the endpoint that represents
-    it, so this is a request funnel rather than a person funnel — stated plainly
-    because reading it as "unique people" would overstate every step.
+    Each step is the number of requests to the endpoint that represents it, so
+    this is a request funnel rather than a person funnel — stated plainly because
+    reading it as "unique people" would overstate every step.
     """
-    arrived = int(endpoint_counts.get("/api/auth/nonce", 0))
-    connected = int(endpoint_counts.get("/api/auth/verify", 0))
-    queued = int(endpoint_counts.get("/api/queue", 0))
-    settled = int(endpoint_counts.get("/api/match/{match_id}/settle", 0))
+    arrived = _count_for(endpoint_counts, "/api/auth/nonce")
+    connected = _count_for(endpoint_counts, "/api/auth/verify")
+    queued = _count_for(endpoint_counts, "/api/queue")
+    settled = _count_for(endpoint_counts, "/api/match/{match_id}/settle")
 
     def rate(part: int, whole: int) -> float | None:
         return round(part / whole, 4) if whole else None

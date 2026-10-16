@@ -290,9 +290,18 @@ def sign_settlement(
             # the chain can tell us that instant directly, prefer it — the server's
             # record and the contract's cannot then disagree.
             match_id = getattr(matchish, "match_id", "")
-            if match_id:
-                activated = _onchain.duel_activated_at(str(match_id)) if _onchain else None
-                if activated:
+            if match_id and _onchain is not None:
+                # Mirror the contract's clock origin. It computes
+                # `max(activatedAt, createdAt)` — and because `joinDuel` sets
+                # `activatedAt` strictly AFTER `createDuel` set `createdAt`
+                # (PulsarEscrow.sol:337, 367), that max is ALWAYS `activatedAt`.
+                #
+                # Corrected 2026-10-16: the first version of this comment claimed
+                # a duel could have `createdAt > activatedAt`. It cannot. Reading
+                # `createdAt` as well cost a second eth_call inside the store
+                # transaction for a branch that never occurs.
+                activated = _onchain.duel_activated_at(str(match_id))
+                if activated is not None:
                     horizon = int(activated) + _me.MATCH_TIMEOUT_SECONDS
             deadline = min(deadline, horizon)
         except Exception:  # noqa: BLE001 — clamping must never block settlement

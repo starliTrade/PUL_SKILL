@@ -126,3 +126,32 @@ def test_a_store_failure_is_reported_not_faked_as_zero() -> None:
     assert out["available"] is False
     assert out["reason"] == "RuntimeError"
     assert "winLoss" not in out
+
+
+def test_the_funnel_reads_the_REAL_metrics_output() -> None:
+    """The test that would have caught a bug I shipped.
+
+    Audit 2026-10-16: the funnel looked up bare paths (`/api/auth/nonce`) while
+    `metrics.endpoint_counts()` keys by `"<METHOD> <path>"`. Every lookup missed,
+    so the funnel reported zeros for a server with traffic.
+
+    The eight tests above did not catch it because they hand-built the
+    un-prefixed dict that PRODUCTION NEVER PRODUCES. This one feeds the function
+    the real thing, which is the only version that proves the wiring.
+    """
+    import metrics
+
+    metrics.reset_endpoint_counts()
+    for path in ("/api/auth/nonce", "/api/auth/verify", "/api/queue"):
+        metrics.observe_request("POST", path, 5.0)
+
+    real = metrics.endpoint_counts()
+    # Guard the premise: if metrics ever stops prefixing, this test must still be
+    # meaningful rather than silently agreeing with the code.
+    assert any(" " in key for key in real), f"metrics no longer prefixes: {real}"
+
+    f = analytics._funnel(real)
+    assert f["arrived"] == 1, f"the funnel cannot read real metrics output: {real}"
+    assert f["connected"] == 1
+    assert f["queued"] == 1
+    assert f["connectRate"] == 1.0

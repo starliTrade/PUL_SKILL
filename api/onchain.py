@@ -260,8 +260,31 @@ _rpc_reachable_cache: bool | None = None
 _rpc_probed_at = 0.0
 
 
+# The chain clock is cached for a few seconds.
+#
+# Audit 2026-10-16 (HIGH): reading it live put up to ~15s of blocking network I/O
+# inside the store's transaction — the exact H10 bug class that was fixed for the
+# deposit gate and reintroduced here. In memory mode one slow RPC stalls every
+# match in the process; on Firestore it holds a transaction open across socket
+# I/O. If signing keeps failing, the refund window opens and the WINNER loses
+# their prize.
+#
+# A few seconds of staleness is free: the deadline is a 10-minute window.
+_CHAIN_NOW_TTL_SECONDS = 5.0
+_chain_now_cache: tuple[float, int] | None = None
+
+
+def reset_chain_now_cache() -> None:
+    """Forget the cached chain clock. Tests and the drill call this."""
+    global _chain_now_cache
+    _chain_now_cache = None
+
+
 def chain_now() -> int | None:
     """The CHAIN's current time, or None when it cannot be read.
+
+    Cached for `_CHAIN_NOW_TTL_SECONDS` so the signing path — which runs inside
+    the store's transaction — does not perform blocking I/O on every call.
 
     Audit 2026-10-15 (found by a time-travel test, recorded as an open item):
     the settlement deadline was computed from the SERVER's clock while the
@@ -271,11 +294,19 @@ def chain_now() -> int | None:
 
     The fix is to stop guessing which clock the contract will use: ask it.
     """
+    global _chain_now_cache
+    now = timebase.now()
+    if _chain_now_cache is not None and now - _chain_now_cache[0] < _CHAIN_NOW_TTL_SECONDS:
+        return _chain_now_cache[1]
     try:
         out = _rpc_call("eth_getBlockByNumber", ["latest", False])
         result = (out or {}).get("result") or {}
         stamp = result.get("timestamp")
-        return int(stamp, 16) if isinstance(stamp, str) else None
+        if not isinstance(stamp, str):
+            return None
+        value = int(stamp, 16)
+        _chain_now_cache = (now, value)
+        return value
     except Exception:  # noqa: BLE001
         return None
 
@@ -301,6 +332,15 @@ def duel_activated_at(match_id: str) -> int | None:
     except ValueError:
         return None
 
+
+# NOTE (2026-10-16): a `duel_created_at` reader was added here and then removed.
+# The contract computes `clockOrigin = max(activatedAt, createdAt)`, and I read
+# that as meaning createdAt can exceed activatedAt. It cannot: `joinDuel` sets
+# `activatedAt = block.timestamp` strictly after `createDuel` set `createdAt`
+# (PulsarEscrow.sol:337, 367), so `activatedAt >= createdAt` always and the max()
+# is always activatedAt. The extra eth_call was ~5s of blocking I/O inside the
+# store transaction for a branch that cannot occur. The mirror is exact without
+# it; the comment that claimed otherwise was wrong and is corrected in oracle.py.
 
 def _activated_at_selector() -> str:
     return _selector("activatedAt(bytes32)")

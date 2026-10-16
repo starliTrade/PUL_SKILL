@@ -19,6 +19,12 @@ import urllib.request
 
 import pytest
 
+# Marked `chain` so the chain gate SELECTS it. Audit 2026-10-16: without this
+# marker the module was selected by no gate at all — the general pytest gate runs
+# before anvil starts, and the `-m chain` gate did not include it. A test that
+# never runs is not coverage, and this one pins the money-path clock anchor.
+pytestmark = pytest.mark.chain
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 MANIFEST = os.path.join(ROOT, "contracts", "deployments", "local.json")
 
@@ -76,6 +82,11 @@ def test_chain_now_returns_none_instead_of_raising_when_unreachable(
     import onchain
 
     monkeypatch.setenv("ESCROW_RPC_URL", "http://127.0.0.1:9")
+    # The clock is CACHED for a few seconds (a fix for blocking I/O inside the
+    # store transaction), so a test that changes the RPC must forget it first —
+    # otherwise it reads the previous chain's value and the assertion is about
+    # the cache, not about the dead endpoint.
+    onchain.reset_chain_now_cache()
     assert onchain.chain_now() is None
 
 
@@ -114,3 +125,39 @@ def test_the_deadline_is_inside_the_chain_window() -> None:
     )
     # And it must not outlive the window it claims to be valid for.
     assert deadline <= chain_now + oracle.SETTLEMENT_DEADLINE_SECONDS + 5
+
+
+def test_the_horizon_mirrors_the_contracts_clock_origin() -> None:
+    """The contract's origin is max(activatedAt, createdAt) — NOT activatedAt.
+
+        uint256 clockOrigin = activatedAt[proof.matchId] > duel.createdAt
+            ? activatedAt[proof.matchId]
+            : duel.createdAt;
+
+    Audit 2026-10-16: the first version of the chain-anchoring fix read
+    `activatedAt` alone. A duel deposited long before it paired has
+    `createdAt > activatedAt`, so that horizon was SHORTER than the contract's —
+    and a valid settlement would be refused, leaving the winner unable to claim.
+    Found by reading the contract's own expression instead of assuming it.
+
+    This asserts both halves are readable, which is what the mirror needs.
+    """
+    import hashlib
+
+    import onchain
+
+    m = _manifest()
+    # A duel id the escrow has never seen: both reads must return None rather
+    # than raising, because the caller treats None as "no chain opinion".
+    unknown = hashlib.sha256(b"never-created").hexdigest()[:32]
+    assert onchain.duel_activated_at(unknown) in (None, 0)
+
+    # `duel_created_at` is deliberately NOT read: the contract's origin is
+    # `max(activatedAt, createdAt)`, and `joinDuel` sets `activatedAt` strictly
+    # after `createDuel` set `createdAt` (PulsarEscrow.sol:337, 367) — so the max
+    # is always `activatedAt`. Reading it cost a second eth_call inside the store
+    # transaction for a branch that cannot occur.
+    assert not hasattr(onchain, "duel_created_at"), (
+        "the redundant createdAt read must not come back without a reason"
+    )
+    assert m["escrow"], "the manifest must name an escrow"
