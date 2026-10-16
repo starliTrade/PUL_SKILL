@@ -167,7 +167,11 @@ test.describe('the money path fails honestly', () => {
 
     // The app must refuse, and must not claim a server-verified duel.
     await expect(
-      page.getByText(/chain|network|switch|Could not reach the duel server/i).first()
+      // Audit 2026-10-16: `Could not reach the duel server` is the app's
+      // CATCH-ALL server-failure string, so this assertion passed for any
+      // unrelated outage. The test is about the WRONG-CHAIN case (H15) — assert
+      // the chain-specific message, or the test proves nothing about H15.
+      page.getByText(/chain|network|switch/i).first()
     ).toBeVisible({ timeout: 60_000 });
     await expect(page.getByTestId('pulsar-target')).toHaveCount(0);
     await expect(page.getByTestId('pulsar-waiting')).toHaveCount(0);

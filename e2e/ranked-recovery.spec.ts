@@ -315,7 +315,12 @@ test.describe('the ranked duel survives a reload', () => {
     // A settled match must land on a terminal screen, not on the arena and not
     // on an error shell.
     await expect(
-      page2.getByText(/MATCH VICTORY|MATCH DEFEAT|Match voided|refunds/i).first()
+      // Audit 2026-10-16: this used to accept `Match voided|refunds` as well.
+      // The test's purpose is H11 — refresh after settlement → AUTO-SETTLE, i.e.
+      // the winner must be PAID. A void returns BOTH stakes and pays nobody, so
+      // accepting it meant a payout bug could ship green. Assert the outcome the
+      // test is named for.
+      page2.getByText(/MATCH VICTORY|MATCH DEFEAT/i).first()
     ).toBeVisible({ timeout: 60_000 });
     await ctx2.close();
   });
