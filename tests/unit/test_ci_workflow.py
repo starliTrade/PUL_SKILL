@@ -218,3 +218,33 @@ def test_the_contract_test_floor_is_near_the_real_count(workflow: dict):
     assert int(match.group(1)) >= 75, (
         f"the contract-test floor is {match.group(1)} while the suite has ~81 tests"
     )
+
+
+def test_ci_runs_the_same_gates_verify_does() -> None:
+    """The parity claim, asserted instead of assumed.
+
+    Audit 2026-10-16: `verify.sh` opened with "CI runs the same gates (see
+    .github/workflows/ci.yml), so 'green locally' and 'green in CI' mean the same
+    thing" — and it was FALSE. chaos, the runbook drill, alerting, the refund
+    time-travel suite, the live-stack ranked flow and both probes ran nowhere in
+    CI, so every Phase-A fix was unprotected: breaking `start_anvil.sh` would
+    have left CI green.
+
+    A claim in a comment cannot fail. This can: it reads both files and fails if
+    CI stops running the heavy gates.
+    """
+    ci = WORKFLOW.read_text(encoding="utf-8")
+    verify = (WORKFLOW.parents[2] / "scripts" / "verify.sh").read_text(encoding="utf-8")
+
+    # The heavy gates verify.sh runs, and the script each one invokes.
+    heavy = ["chaos_suite.py", "runbook_drill.py", "check_alerts.py", "test_refund_after_timeout.py", "test_ranked_flow_e2e.py"]
+    for name in heavy:
+        assert name in verify, f"verify.sh no longer runs {name} — the parity test is stale"
+
+    # CI does not have to name each one; it must run the SAME ENTRY POINT, which
+    # is the only way the two cannot drift.
+    assert "bash scripts/verify.sh" in ci, (
+        "CI does not run scripts/verify.sh, so the gates verify.sh runs are not "
+        "protected. Either add the verify-gates job back, or delete the parity "
+        "claim from verify.sh — do not leave the comment claiming something false."
+    )

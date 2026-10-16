@@ -197,3 +197,46 @@ jobs:
         run: python3 -m pytest -q -m chain
       - name: Contract compile gate (solc 0.8.20, paris + shanghai)
         run: bun run test:contract
+
+  # --- The gates CI was NOT running -------------------------------------------
+  #
+  # Audit 2026-10-16: verify.sh claimed "CI runs the same gates", and it did not.
+  # chaos, the runbook drill, alerting, the refund time-travel suite, the
+  # live-stack ranked flow and both probes ran NOWHERE in CI — so every fix in
+  # Phase A was unprotected: one could break start_anvil.sh and CI would stay
+  # green. This job runs the same entry point a human runs locally, so "green in
+  # CI" and "green locally" finally mean the same thing.
+  verify-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: oven-sh/setup-bun@v2
+      - name: Install server deps
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet -r requirements.txt
+          .venv/bin/pip install --quiet -r requirements-dev.txt || true
+      - name: Install frontend deps
+        run: bun install --frozen-lockfile
+      - name: Install Foundry (anvil + forge)
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Install Playwright browsers
+        run: bunx playwright install --with-deps chromium
+      - name: Deploy the escrow to a local anvil
+        run: bash scripts/start_anvil.sh --bg
+      - name: The full gate
+        # verify.sh starts the emulator, the API and the frontend itself. It is
+        # the same script a human runs, deliberately: a separate CI-only path is
+        # how the two drifted apart in the first place.
+        run: bash scripts/verify.sh
+      - name: Upload the verify log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-output
+          path: /tmp/pulsar-e2e.log
+          if-no-files-found: ignore
