@@ -100,7 +100,31 @@ JSON
 
 if curl -sf -o /dev/null -X POST -H 'Content-Type: application/json' \
      --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' "$RPC" 2>/dev/null; then
-  echo "anvil already running on $RPC"
+  # Anvil is up. Redeploy ONLY if the manifest's escrow is missing from the
+  # chain — otherwise leave the deployment alone.
+  #
+  # Audit 2026-10-16: this redeployed on EVERY run, so the escrow address changed
+  # each time. Anything already holding the old address (a running API, a test
+  # that just funded a duel) then pointed at an address with no code — and the
+  # server happily reported `escrowConfigured: true` while every duel failed with
+  # "On-chain duel state cannot be verified". That was the root cause of a
+  # confusing chaos-suite failure, of a near-miss "fail-open deposit gate"
+  # finding, and of two verify gates failing only when run in a particular order.
+  #
+  # A stable address across runs is worth more than a guaranteed-fresh deploy.
+  _escrow="$(python3 -c "import json;print(json.load(open('$MANIFEST'))['escrow'])" 2>/dev/null || true)"
+  _code="0x"
+  if [[ -n "$_escrow" ]]; then
+    _code="$(curl -s -X POST -H 'Content-Type: application/json' \
+      --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"$_escrow\",\"latest\"]}" "$RPC" 2>/dev/null \
+      | python3 -c "import json,sys;print(json.load(sys.stdin).get('result','0x'))" 2>/dev/null || echo 0x)"
+  fi
+  if [[ "$_code" != "0x" && -n "$_code" ]]; then
+    echo "anvil already running on $RPC, and the manifest's escrow is on-chain — keeping it"
+    echo "escrow=$_escrow"
+    exit 0
+  fi
+  echo "anvil already running on $RPC, but its deployment is gone — redeploying"
   deploy
   exit 0
 fi
