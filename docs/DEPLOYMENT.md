@@ -108,7 +108,7 @@ Server environment (all **secrets** — set on the host, never in git):
 | `ORACLE_CHAIN_ID` | **Must equal `VITE_CHAIN_ID`** (default 80002). The escrow hashes `block.chainid` — a mismatch invalidates every settlement signature |
 | `ESCROW_ADDRESS` | Deployed contract address (binds settlement signatures) |
 | `ESCROW_RPC_URL` | JSON-RPC endpoint for the deposit gate (e.g. an Alchemy/Infura Amoy URL). **Required in production**: with `ESCROW_ADDRESS` + `ESCROW_RPC_URL` set, the server independently verifies BOTH stakes are locked on-chain (read-only `eth_call`) before every round — fail-closed if the RPC is down. Unset = gate inactive (practice mode only) |
-| `PULSAR_MATCH_STORE` | `firestore` (or unset for in-memory dev fallback) |
+| `PULSAR_MATCH_STORE` | `firestore`. Unset/`auto` still means Firestore, but since audit H-06 the server **refuses to start** if it cannot be reached, instead of falling back to per-replica memory. `PULSAR_REQUIRE_DURABLE_STORE=0` is the explicit opt-out for a single-process demo |
 | `FIRESTORE_PROJECT_ID` | Your Firebase project ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Service-account JSON path (or use ambient Cloud Run credentials) |
 | `CORS_ALLOW_ORIGINS` | **Required in production.** Comma-separated origin allowlist. Audit 2026-10-13: this row said "optional — leave unset (`*`)", but the H6 fail-closed gate (`REQUIRED_PRODUCTION_ENV`) refuses to start without it, so following this doc produced a server that would not boot. An unset value is refused rather than defaulting to `*` |
@@ -138,9 +138,17 @@ Every query the server issues, and whether it needs a composite index:
 | `pulsar_matches.where(status == 'active')` | the sweep's expiry pass | single-field, automatic |
 | `pulsar_matches.where(players.<addr>.address == addr).limit(5)` | `player_live_match` (idempotent queueing) | single-field on a map subfield, automatic |
 | `pulsar_queue` documents (streamed) | matchmaking + pending challenges | collection scan, bounded by the number of stakes |
-| `matches.orderBy(timestamp desc).limit(15)` | the live arena feed (client) | single-field, automatic |
-| `leaderboard.orderBy(wins desc).limit(20)` | the podium (client) | single-field, automatic |
-| `users.where(playerId == tag).limit(10)` | friend search by tag (client) | single-field, automatic |
+| `pulsar_disputes.where(matchId == id)` | `/api/admin/match/{id}` and `disputes_for()` (audit H-10) | single-field, automatic |
+| `pulsar_profiles/{address}` (document get/set) | `GET`/`PUT /api/profile` (audit H-05) | keyed by address, no query |
+| `firebase_auth_sessions` / `used_nonces` (document get/set) | session revocation and SIWE replay protection (audit H-09) | keyed, no query |
+| `usernames/{normalized}` (document get/create) | the username registry, inside a transaction (audit H-18) | keyed by name, no query |
+| `leaderboard.orderBy(wins desc).limit(20)` | the podium (client read) | single-field, automatic |
+| `users.where(playerId == tag).limit(10)` | friend search by tag (client read) | single-field, automatic |
+
+The live-arena feed is **not** a Firestore query any more: `matches.orderBy(...)`
+was listed here but no client code issues it (audit H-04 moved the feed to the
+server's public settlement log). A documented query that does not exist is how a
+reader comes to trust an index table that is half fiction.
 
 `firestore.indexes.json` sets `fieldOverrides: []`, so nothing is excluded from
 the automatic single-field indexes — the map-subfield query above depends on
@@ -207,6 +215,44 @@ it under Project → Domains in the Reown dashboard — the same Project ID keep
 working, with zero code or env changes. WalletConnect is optional anyway: on
 desktop, users connect via injected providers (MetaMask/Rabby) without it; it
 only adds mobile-wallet support.
+
+---
+
+## 4b. Security headers for the static client (audit H-16)
+
+The API sets `X-Content-Type-Options`, `X-Frame-Options: DENY`,
+`Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`,
+`Content-Security-Policy` and (in production) `Strict-Transport-Security` on
+every response — see `_SECURITY_HEADERS` in `api/main.py`.
+
+That is **not enough**: the SPA's HTML is served by the static host, and the API
+cannot set headers for another origin. The host must send the same policy, or
+the page that holds the session token in `localStorage` has no CSP at all.
+Whatever host you use, configure these response headers for `/*`:
+
+```
+Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: strict-origin-when-cross-origin
+Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+```
+
+Notes that matter when you deploy this:
+
+- `connect-src` must include the game-server origin and the RPC/Firebase
+  endpoints you actually use. The list above allows any `https:` origin, which is
+  the loosest part of the policy: tighten it to your own hosts once the domain
+  exists, and re-test a wallet connect + a duel + a settlement.
+- `'unsafe-inline'` in `script-src` is required by the Vite build's inline
+  bootstrap. A nonce/hash-based policy needs server-side HTML rendering.
+- WalletConnect opens a modal that loads resources from WalletConnect's relay
+  (`wss://relay.walletconnect.com`) and, for some wallets, an iframe. Test the
+  connect flow after changing `connect-src`/`frame-src`, or mobile wallets stop
+  working — which is precisely the flow an Amoy rehearsal exists to check.
+- `frame-ancestors 'none'` must ALSO be present on the game server (it is), so a
+  framed copy of the API cannot be used to phish signatures.
 
 ---
 
