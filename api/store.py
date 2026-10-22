@@ -917,6 +917,20 @@ class FirestoreStore:
         return found
 
 
+def _requires_durable_store() -> bool:
+    """True in every deployment that has not explicitly opted out (audit H-06).
+
+    The default is production-like: a deployment opts OUT with PULSAR_ENV=dev.
+    `PULSAR_REQUIRE_DURABLE_STORE=0` is the escape hatch for a deliberate
+    single-process demo, and it must be set on purpose.
+    """
+    if os.environ.get("PULSAR_REQUIRE_DURABLE_STORE", "").strip().lower() in ("0", "false", "no"):
+        return False
+    if str(os.environ.get("PULSAR_ENV", "")).strip().lower() in ("dev", "test", "local", "ci"):
+        return False
+    return True
+
+
 class DurableMatchStore:
     """
     Facade with the MatchStore interface used by api/main.py:
@@ -976,6 +990,20 @@ class DurableMatchStore:
                 self._firestore = None
                 self._fs_store = None
                 self.backend_name = "memory"
+                # Audit H-06 (2026-10-22): in a production-like deployment the
+                # fallback is not a survivable mode — waiters and their matches
+                # would live in ONE replica's memory, so a re-poll routed to
+                # another replica answers "match not found" while the stake is
+                # already in escrow. Refuse to boot instead of serving traffic
+                # that cannot keep the promise the contract makes.
+                if _requires_durable_store():
+                    raise RuntimeError(
+                        "Refusing to start: the durable match store is required "
+                        f"(PULSAR_MATCH_STORE={backend}) but Firestore could not be "
+                        f"reached ({type(exc).__name__}: {exc}). Monetary play "
+                        "cannot run on per-replica memory. Fix credentials, or set "
+                        "PULSAR_ENV=dev for a local run."
+                    ) from exc
         elif backend == "firestore":
             raise RuntimeError(
                 "PULSAR_MATCH_STORE=firestore but google-cloud-firestore is not installed"
