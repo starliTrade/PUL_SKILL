@@ -990,6 +990,50 @@ def _oracle_address_or_none() -> str | None:
         return None
 
 
+# --- Security headers (audit H-16, 2026-10-22) -------------------------------
+#
+# The session token lives in localStorage and the app moves money. Without a CSP
+# and the standard browser hardening headers, any injected script — a compromised
+# dependency, a rogue translation string rendered as HTML, a malicious wallet
+# extension — reads the token and can drive the escrow. These headers cost
+# nothing and are enforced by the browser even when the code is not.
+#
+# Deliberately NOT a nonce-based CSP: the SPA is a static build with inline
+# bootstrapping, so nonces would require server-side HTML rendering. The
+# allowlist below is still far tighter than none: no third-party script origins.
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob: https:; "
+        "font-src 'self' data:; "
+        "connect-src 'self' https: wss: http: ws:; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "object-src 'none'"
+    ),
+}
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next: Any):
+    response = await call_next(request)
+    for name, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    if _prod_like:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
+
+
 @app.get("/api/ping")
 def ping() -> dict[str, Any]:
     """Zero-I/O round-trip probe (audit H-03, 2026-10-22).
