@@ -1675,6 +1675,10 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     # that can be about the PERSON rather than the request.
     try:
         abuse.require(address)
+    except abuse.StoreUnavailable as exc:
+        # Audit M-03: "we cannot check your status" is a retryable 503, not a
+        # 403 that tells the player they are suspended.
+        raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "5"}) from exc
     except abuse.AbuseError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     # Audit C-01 (2026-10-22): `note_start` used to run HERE, before the
@@ -1747,7 +1751,6 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     # Audit C-01: this is the ONE point that can create or join a duel (the
     # live-match path returned above without reaching here), so it is the only
     # place a "start" is recorded.
-    abuse.note_start(address)
     try:
         match = store.enqueue(address, body.stake, body.rttMs, challenge_target or None)
     except MatchError as exc:
@@ -1774,6 +1777,17 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
                 headers={"Retry-After": "1"},
             ) from exc
         raise
+    # Audit M-03 (found while fixing the ban path): this used to run BEFORE the
+    # store call, so a duel that never started (ping too high, store contention)
+    # still consumed a start and could trip the 20-per-10-minutes cooldown. The
+    # limit exists to stop scripts OPENING duels; it must count duels that opened.
+    # The failure to record it must not fail a duel the player now holds, so it
+    # is logged rather than raised.
+    try:
+        abuse.note_start(address)
+    except Exception as exc:  # noqa: BLE001
+        eventlog.emit("abuse.note_failed", error=type(exc).__name__)
+        print(f"[abuse] note_start failed: {exc!r}", file=sys.stderr)
     return match.public_view(for_address=address)
 
 
