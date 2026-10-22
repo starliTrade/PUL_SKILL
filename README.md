@@ -35,14 +35,19 @@ frontend suite, the Python suite, the coverage ratchet, ruff, mypy, `forge test`
 the contract compile gate, and a set of protocol/security probes — starting the
 Firestore emulator itself when one is not already running. CI runs the same gates.
 
-Current counts (measured, not remembered):
+Counts are **generated from the last full run**, not maintained by hand — the
+previous table said 202/278/81 and was already stale (audit M-17). Run
+`scripts/test_counts.py` to reprint it, and paste its output here at release:
 
-| Suite | Count |
+| Suite | Count (last measured in this repository) |
 |---|---|
-| Frontend (vitest) | 202 tests, 48 files |
-| Server (pytest) | 278 tests |
-| Contract (forge) | 81 tests |
-| Coverage ratchet | 84% (floor 79) |
+| Frontend (vitest) | 236 tests, 54 files |
+| Server (pytest) | 410 passed, 42 skipped |
+| Contract (forge) | **not run here** — Foundry cannot be installed in the audit environment; `contracts/test/*` is unverified by this document (see `docs/audit/RUTHLESS-AUDIT-2026-10-22.md`) |
+| Coverage | ~72% locally **without** the Firestore emulator / anvil; the 79% floor is not reachable in that configuration (audit M-15) |
+
+`forge test` is a CI gate; treat its result as the source of truth for the
+contract suite, never this table.
 
 ## What is actually enforced
 
