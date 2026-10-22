@@ -1239,8 +1239,15 @@ def auth_logout(request: Request) -> dict[str, bool]:
     if not verify_session(token):
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     jti = _auth_module.session_jti(token)
-    if jti:
-        _auth_module.revoke_session(jti)
+    if not jti:
+        # A token we cannot attribute to a jti cannot be revoked; saying "ok"
+        # here would be a lie the client acts on.
+        raise HTTPException(status_code=500, detail="Session has no revocation id")
+    if not _auth_module.revoke_session(jti):
+        raise HTTPException(
+            status_code=503,
+            detail="Logout could not be recorded — the session is still valid. Retry.",
+        )
     return {"ok": True}
 
 

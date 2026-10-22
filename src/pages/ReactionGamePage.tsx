@@ -46,7 +46,16 @@ export const ReactionGamePage: React.FC<ReactionGamePageProps> = ({
   const [phase, setPhase] = useState<GamePhase>('human-verify');
   const [countdown, setCountdown] = useState<number>(3);
   const [matchResult, setMatchResult] = useState<MatchResolution | null>(null);
-  const [opponent, setOpponent] = useState<string>(opponentName || getRandomOpponent());
+  /**
+   * Audit M-05 (2026-10-22): this used to seed a RANDOM fake name even in a
+   * staked duel, before any opponent existed. The scoreboard then showed a
+   * "rival" the player was never paired with — a fabricated identity on the
+   * money surface. A staked match starts with no opponent (the server supplies
+   * the real address on pairing); practice keeps the cosmetic name.
+   */
+  const [opponent, setOpponent] = useState<string>(
+    opponentName || (stakeAmount > 0 ? '' : getRandomOpponent())
+  );
   const [currentStake, setCurrentStake] = useState<number>(stakeAmount);
   const [showWalletModal, setShowWalletModal] = useState(false);
   const [showCertificateModal, setShowCertificateModal] = useState(false);
@@ -1886,7 +1895,7 @@ function isWalletCancel(msg: string): boolean {
                     </span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-zinc-400">{opponent}</span>
+                    <span className="text-zinc-400">{opponent || t('oppPlayer')}</span>
                     <span
                       className={cn(
                         'font-mono font-bold',
