@@ -1278,6 +1278,8 @@ def limits_set_deposit(body: DepositLimitRequest, request: Request) -> dict[str,
     """Set a deposit ceiling. Lowering and clearing are immediate; raising waits."""
     try:
         return limits.set_deposit_limit(_auth(request), body.limit)
+    except limits.StoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except limits.LimitError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1287,6 +1289,8 @@ def limits_self_exclude(body: ExclusionRequest, request: Request) -> dict[str, A
     """Exclude yourself from staked play. Cannot be lifted early."""
     try:
         return limits.self_exclude(_auth(request), body.seconds)
+    except limits.StoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except limits.LimitError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1296,6 +1300,8 @@ def limits_cool_off(body: ExclusionRequest, request: Request) -> dict[str, Any]:
     """A short, immediate pause."""
     try:
         return limits.cool_off(_auth(request), body.seconds)
+    except limits.StoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except limits.LimitError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1384,6 +1390,9 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     # different answer from "not at this stake".
     try:
         limits.require(address, body.stake)
+    except limits.StoreUnavailable as exc:
+        # H-02: a store outage must refuse staked play, not silently lift limits.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except limits.LimitError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     # Plan item 11.3/G6: bans and velocity. Last, because it is the only check
