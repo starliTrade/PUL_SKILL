@@ -5,6 +5,15 @@ untrusted by design: every result is committed/revealed through the game
 server, settled by an oracle signature, and paid out by an on-chain escrow —
 no custodial wallets anywhere.
 
+> **Deployment status: TESTNET ONLY. Not fit for real money yet.**
+> The application has not been audited by an external firm, the oracle signer
+> is a centralised authority, and there is **no KYC, no payout delay and no
+> withdrawal cap** — the escrow contract is permissionless, so a server-side
+> control can be bypassed by calling it directly. Read
+> [`docs/COMPLIANCE-C-02c.md`](docs/COMPLIANCE-C-02c.md) and
+> [`docs/audit/RUTHLESS-AUDIT-2026-10-22.md`](docs/audit/RUTHLESS-AUDIT-2026-10-22.md)
+> before pointing this at a mainnet token or real users.
+
 ## Stack
 
 - **Frontend**: Vite + React 19 + TypeScript + Tailwind CSS v4
