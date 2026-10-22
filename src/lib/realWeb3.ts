@@ -3,9 +3,9 @@
  * Zero mock accounts, zero fake duels. Pure real-time on-chain & cloud persistence.
  */
 
-import { doc, getDoc, setDoc, deleteDoc, collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
 import { getDb } from './firebase';
-import { checkUsername, ensureSession, logoutServerSession, fetchRecentSettlements, gameServerConfigured, type SettlementRecord } from './gameServerClient';
+import { checkUsername, ensureSession, logoutServerSession, fetchRecentSettlements, gameServerConfigured, loadServerSession, fetchProfile, saveProfile, type SettlementRecord } from './gameServerClient';
 import { CHAIN, TOKENS } from './chain';
 
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
@@ -201,6 +201,43 @@ export const settlementsToFeedRows = (settlements: SettlementRecord[]): MatchRec
     }
   }
   return rows;
+};
+
+/**
+ * Fill in every field the rest of the app assumes exists (audit H-17).
+ *
+ * `users/{address}` is written by the SETTLEMENT LEDGER, which knows about wins,
+ * XP and reaction times but not about `history` or `savedFriends`. It used to be
+ * cast straight to `UserWalletData`, so `recordMatch` then ran
+ * `[match, ...data.history]` on `undefined` and threw — the XP summary never
+ * appeared after the first ranked duel. Normalising at the I/O boundary is the
+ * only place that can guarantee the invariant for every consumer.
+ *
+ * Exported so the contract can be tested without Firestore: this is data the
+ * ledger writes and the UI reads, and "missing field" must never mean "crash".
+ */
+export const normalizeUserData = (
+  raw: Partial<UserWalletData> | null | undefined,
+  addr: string,
+  defaultTag: string
+): UserWalletData => {
+  const d = raw || {};
+  return {
+    address: String(d.address || addr).toLowerCase(),
+    playerId: d.playerId || defaultTag,
+    vaultBalance: Number(d.vaultBalance) || 0,
+    wins: Number(d.wins) || 0,
+    losses: Number(d.losses) || 0,
+    voids: Number(d.voids) || 0,
+    totalMatches: Number(d.totalMatches) || 0,
+    bestReactionMs: Number(d.bestReactionMs) || 0,
+    avgReactionMs: Number(d.avgReactionMs) || 0,
+    xp: Number(d.xp) || 0,
+    level: Number(d.level) || 1,
+    winStreak: Number(d.winStreak) || 0,
+    history: Array.isArray(d.history) ? d.history : [],
+    savedFriends: Array.isArray(d.savedFriends) ? d.savedFriends : [],
+  };
 };
 
 class RealWeb3Manager {
@@ -1393,10 +1430,31 @@ class RealWeb3Manager {
     return `${adj}${tit}#${num}`;
   }
 
+  private normalizeUserData(raw: Partial<UserWalletData> | null | undefined, addr: string): UserWalletData {
+    return normalizeUserData(raw, addr, RealWeb3Manager.getPlayerTagForAddress(addr));
+  }
+
   public async loadUserDataAsync(address: string): Promise<UserWalletData> {
     const cleanAddr = address.toLowerCase();
     const defaultTag = RealWeb3Manager.getPlayerTagForAddress(cleanAddr);
     
+    // 0. The player's OWN profile (audit H-05): tag + saved friends live in the
+    //    server's `pulsar_profiles` collection now, not in `users/{address}`
+    //    (which the ledger owns and clients may not write). Read it WITHOUT
+    //    prompting for a signature: a lobby visit must never open a wallet.
+    let profile: { playerId: string; savedFriends: string[] } | null = null;
+    try {
+      const session = loadServerSession();
+      if (session && session.address.toLowerCase() === cleanAddr && gameServerConfigured()) {
+        const p = await fetchProfile(session);
+        profile = { playerId: p.playerId || '', savedFriends: p.savedFriends || [] };
+      }
+    } catch (e) {
+      // Unreadable profile is NOT "no friends" (audit H-05). Keep whatever the
+      // local cache has and say so — never overwrite it with an empty list.
+      console.warn('Profile load failed; keeping the local copy:', e);
+    }
+
     // 1. Try Firebase Firestore with rapid timeout to stay lightning fast if offline
     try {
       const userDocRef = doc(getDb(), 'users', cleanAddr);
@@ -1406,9 +1464,13 @@ class RealWeb3Manager {
       );
       const snap = await Promise.race([snapPromise, timeoutPromise]);
       if (snap && snap.exists()) {
-        const cloudData = snap.data() as UserWalletData;
-        if (!cloudData.playerId) {
-          cloudData.playerId = defaultTag;
+        const cloudData = this.normalizeUserData(snap.data(), cleanAddr);
+        if (profile) {
+          if (profile.playerId) cloudData.playerId = profile.playerId;
+          cloudData.savedFriends = profile.savedFriends;
+        } else {
+          const local = this.loadFromLocal(cleanAddr);
+          if (local?.savedFriends?.length) cloudData.savedFriends = local.savedFriends;
         }
         this.saveToLocal(cloudData);
         return cloudData;
@@ -1417,14 +1479,16 @@ class RealWeb3Manager {
       console.warn('Firestore load skipped or offline, using local cache:', e);
     }
 
-    // 2. Try LocalStorage
-    const local = this.loadFromLocal(cleanAddr);
-    if (local) {
-      if (!local.playerId) {
-        local.playerId = defaultTag;
-        this.saveToLocal(local);
+    // 2. Try LocalStorage (normalised: a cache from an older build may miss fields)
+    const localRaw = this.loadFromLocal(cleanAddr);
+    if (localRaw) {
+      const local = this.normalizeUserData(localRaw, cleanAddr);
+      if (profile) {
+        if (profile.playerId) local.playerId = profile.playerId;
+        local.savedFriends = profile.savedFriends;
       }
-      this.syncToFirestore(local);
+      if (!local.playerId) local.playerId = defaultTag;
+      this.saveToLocal(local);
       return local;
     }
 
@@ -1510,29 +1574,36 @@ class RealWeb3Manager {
     return null;
   }
 
+  /**
+   * Persist the profile through the SERVER (audit H-05).
+   *
+   * The previous version wrote `users/{address}` from the browser. The rules
+   * deny every client write, so the call failed on every save and the failure
+   * was swallowed — a player's tag and friend list never left the tab. The
+   * server now owns `pulsar_profiles`; this sends the patch and surfaces the
+   * outcome instead of pretending.
+   *
+   * The local cache is written first (in `saveUserDataAsync`), so a network
+   * blip never loses the edit within this browser.
+   */
+  public lastProfileSyncError = '';
+
   private async syncToFirestore(data: UserWalletData): Promise<void> {
-    // Audit #7 R4 — CLIENT ECONOMY WRITES REMOVED. firestore.rules forbid
-    // client writes to the economy fields and to matches/leaderboard (only
-    // the settlement server may write them). The previous code spread
-    // {...data} over users/{addr}, which carried wins/xp/totalMatches and was
-    // therefore rejected wholesale — profile edits never landed and the
-    // console filled with "Firestore sync failed". The ledger itself is
-    // written by api/economy.py (Admin SDK) after each settlement.
-    // Cloud sync from the client is now PROFILE-ONLY.
+    const cleanAddr = data.address.toLowerCase();
     try {
-      const cleanAddr = data.address.toLowerCase();
-      const userDocRef = doc(getDb(), 'users', cleanAddr);
-      await setDoc(
-        userDocRef,
-        {
-          playerId: data.playerId || '',
-          savedFriends: data.savedFriends || [],
-          updatedAt: Date.now(),
-        },
-        { merge: true }
-      );
+      const session = loadServerSession();
+      if (!session || session.address.toLowerCase() !== cleanAddr) {
+        this.lastProfileSyncError = 'no session';
+        return;
+      }
+      await saveProfile(session, {
+        playerId: data.playerId || '',
+        savedFriends: data.savedFriends || [],
+      });
+      this.lastProfileSyncError = '';
     } catch (e) {
-      console.warn('Firestore profile sync failed:', e);
+      this.lastProfileSyncError = e instanceof Error ? e.message : 'profile sync failed';
+      console.warn('Profile sync failed (kept locally):', e);
     }
   }
 
@@ -1906,70 +1977,13 @@ class RealWeb3Manager {
   }
 
   /**
-   * Atomically claims and registers a globally unique username in Firestore for the user's wallet address.
+   * REMOVED (audit H-05, 2026-10-22): this method wrote `usernames/{tag}`
+   * directly from the browser. `firestore.rules` denies every client write, so
+   * it could only ever fail — but as a landmine it was worse than dead: any
+   * future rules relaxation would have reopened namespace squatting and
+   * identity takeover, which is exactly what the server-side claim closed
+   * (`POST /api/username/claim`, used by the store).
    */
-  public async claimUsername(
-    rawTag: string,
-    userAddress: string
-  ): Promise<{ success: boolean; cleanTag?: string; error?: string }> {
-    if (!userAddress) {
-      return { success: false, error: 'Please connect your Web3 wallet first.' };
-    }
-
-    const cleanAddr = userAddress.toLowerCase();
-    const check = await this.checkUsernameAvailability(rawTag, cleanAddr);
-
-    if (!check.available) {
-      return { success: false, error: check.error || 'Username is not available' };
-    }
-
-    const cleanTag = check.cleanTag;
-    const normalized = cleanTag.toLowerCase();
-
-    try {
-      // 1. Load current user data to see previous tag
-      const currentUserData = await this.loadUserDataAsync(cleanAddr);
-      const oldTag = currentUserData.playerId;
-
-      // 2. If user had a different registered username, release the old username document
-      if (oldTag && oldTag.toLowerCase() !== normalized) {
-        try {
-          const oldDocRef = doc(getDb(), 'usernames', oldTag.toLowerCase());
-          const oldDoc = await getDoc(oldDocRef);
-          if (oldDoc.exists() && oldDoc.data()?.address?.toLowerCase() === cleanAddr) {
-            await deleteDoc(oldDocRef);
-          }
-        } catch (e) {
-          console.warn('Old username release notice:', e);
-        }
-      }
-
-      // 3. Register the new username in the unique usernames collection
-      const usernameDocRef = doc(getDb(), 'usernames', normalized);
-      await setDoc(
-        usernameDocRef,
-        {
-          username: normalized,
-          tag: cleanTag,
-          address: cleanAddr,
-          updatedAt: Date.now(),
-        },
-        { merge: true }
-      );
-
-      // 4. Update the user's profile and save
-      currentUserData.playerId = cleanTag;
-      await this.saveUserDataAsync(currentUserData);
-
-      return { success: true, cleanTag };
-    } catch (err: any) {
-      console.error('Failed to claim unique username:', err);
-      return {
-        success: false,
-        error: err?.message || 'Failed to claim username on the network. Please try again.',
-      };
-    }
-  }
 }
 
 export { RealWeb3Manager };

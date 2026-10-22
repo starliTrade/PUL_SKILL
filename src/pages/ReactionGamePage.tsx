@@ -1358,9 +1358,19 @@ function isWalletCancel(msg: string): boolean {
         opponentTime: avgOppTime,
         yourTime: avgUserTime,
         timestamp: Date.now(),
-      }).then((xpRes) => {
-        setXpSummary(xpRes);
-      });
+      })
+        .then((xpRes) => {
+          setXpSummary(xpRes);
+        })
+        .catch((err: unknown) => {
+          // Audit H-17 (2026-10-22): this promise had no rejection handler. The
+          // profile document the ledger writes has no `history` field, so
+          // `recordMatch` threw on the FIRST ranked duel and the rejection was
+          // silent — the result screen simply never showed XP. The store now
+          // normalises the document; this handler makes any remaining failure
+          // visible instead of swallowing it again.
+          console.warn('Could not record the match locally:', err);
+        });
 
       if (finalWinner === 'win') {
         sounds.playWin();

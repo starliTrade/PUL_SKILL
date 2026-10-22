@@ -56,6 +56,7 @@ import analytics
 import eligibility
 import limits
 import metrics
+import profiles
 
 import oracle
 from auth import EXPECTED_CHAIN_ID as _CHAIN_ID
@@ -76,6 +77,7 @@ _rl_window: dict[str, list[float]] = {}
 # the quiet windows are dropped (see `_rl_check`).
 _RL_WINDOW_MAX_KEYS = 10_000
 RL_WINDOW_SECONDS = 60.0
+RL_PROFILE_MAX = 30    # profile reads/writes per minute per address
 RL_QUEUE_MAX = 40        # queue calls per minute per address (audit #6 C3:
                          # the client's 2.5s poll = 24/min; 20/min kicked
                          # honest waiting players out of matchmaking at t≈50s)
@@ -2036,6 +2038,54 @@ def username_lookup(name: str, request: Request) -> dict[str, Any]:
     if owner and owner == caller.lower():
         return {"available": True, "username": normalized, "alreadyOwned": True}
     return {"available": False, "username": normalized, "taken": True}
+
+
+class ProfileUpdate(BaseModel):
+    # None = leave unchanged; "" = clear the display tag.
+    playerId: str | None = Field(default=None, max_length=20)
+    savedFriends: list[str] | None = None
+
+
+@app.get("/api/profile")
+def get_profile(request: Request) -> dict[str, Any]:
+    """The caller's own profile (audit H-05, 2026-10-22).
+
+    The client used to write `users/{address}` directly, which `firestore.rules`
+    denies — so tags and saved friends were never stored, and the first
+    settlement (which writes that document) made the next load replace the local
+    friend list with nothing. Profile data lives here now, in its own collection,
+    written by the server for the authenticated caller.
+    """
+    address = _auth(request)
+    try:
+        return profiles.get(address)
+    except Exception as exc:  # noqa: BLE001
+        # A read failure must not be rendered as "no friends".
+        raise HTTPException(
+            status_code=503, detail=f"Profile is temporarily unreadable: {type(exc).__name__}"
+        ) from exc
+
+
+@app.put("/api/profile")
+def put_profile(body: ProfileUpdate, request: Request) -> dict[str, Any]:
+    """Update the caller's tag and/or saved friends. Omitted fields are kept."""
+    address = _auth(request)
+    _rl_check("profile", address, RL_PROFILE_MAX)
+    if body.playerId is not None:
+        try:
+            _clean_username(body.playerId)
+        except HTTPException:
+            raise
+    try:
+        return profiles.update(
+            address, player_id=body.playerId, saved_friends=body.savedFriends
+        )
+    except profiles.ProfileError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503, detail=f"Profile could not be saved: {type(exc).__name__}"
+        ) from exc
 
 
 @app.get("/api/player/{address}/stats")

@@ -212,7 +212,7 @@ export const confirmEligibility = async (session: ServerSession): Promise<void> 
 // including getMatch(), which the server only exposes as GET → 405
 // Method Not Allowed on the first in-game refresh, cutting the round flow.
 // Verbs are now explicit per call so client/server can never drift again.
-type RequestMethod = "GET" | "POST";
+type RequestMethod = "GET" | "POST" | "PUT";
 
 export class RateLimitedError extends Error {
   /** Seconds the server asks us to wait before retrying (audit #7 R3). */
@@ -571,6 +571,27 @@ export const claimMatch = (
 // caller's SIWE session, inside the server's idempotent transaction.
 export const claimUsername = (session: ServerSession, username: string): Promise<{ ok: boolean; cleanTag?: string; alreadyOwned?: boolean; detail?: string }> =>
   request(`/api/username/claim`, { username }, session);
+
+/** The caller's own profile (audit H-05, 2026-10-22). */
+export interface PlayerProfile {
+  address: string;
+  playerId: string;
+  savedFriends: string[];
+  updatedAt?: number | null;
+}
+
+export const fetchProfile = (session: ServerSession): Promise<PlayerProfile> =>
+  request<PlayerProfile>("/api/profile", undefined, session, "GET");
+
+/**
+ * Save a profile change. Omitted fields are left alone; `playerId: ""` clears
+ * the display tag. Throws on 4xx so the caller can show the reason — a silent
+ * failure here is what made saved friends disappear (audit H-05).
+ */
+export const saveProfile = (
+  session: ServerSession,
+  patch: { playerId?: string | null; savedFriends?: string[] }
+): Promise<PlayerProfile> => request<PlayerProfile>("/api/profile", patch, session, "PUT");
 
 /**
  * Convert a free-form server match id to the bytes32 the escrow contract uses.
