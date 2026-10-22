@@ -1972,7 +1972,16 @@ def username_claim(body: UsernameRequest, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="Username registry requires the durable store (Firestore)")
 
     try:
-        from google.cloud.firestore_v1.base_transaction import transactional  # type: ignore
+        # Audit C-04 (2026-10-22), found while fixing H-18: the module pinned in
+        # api/requirements.txt (google-cloud-firestore==2.20.0) has NO
+        # `transactional` in `base_transaction` — it lives in `transaction.py`.
+        # The ImportError was swallowed by the broad `except` below and reported
+        # as 409 "Username claim failed", so EVERY username claim in production
+        # failed and looked like a conflict with another player.
+        try:
+            from google.cloud.firestore_v1.transaction import transactional  # type: ignore
+        except ImportError:  # pragma: no cover - older/newer library layout
+            from google.cloud.firestore_v1.base_transaction import transactional  # type: ignore
 
         @transactional
         def _claim(tx) -> dict[str, Any]:
@@ -1996,8 +2005,14 @@ def username_claim(body: UsernameRequest, request: Request) -> dict[str, Any]:
                 if old_snap.exists and (old_snap.to_dict() or {}).get("address", "").lower() == address:
                     tx.delete(old_ref)
 
-            doc_ref.create({"username": normalized, "tag": tag, "address": address})
-            users.document(address).set({"playerId": tag}, merge=True)
+            # Audit H-18 (2026-10-22): `doc_ref.create()` is NOT a transactional
+            # write — `DocumentReference.create` builds its own batch and commits
+            # it immediately, so it escaped this transaction: the registry row
+            # could land while the profile write rolled back, and the "already
+            # taken" check was not serialized with the insert. The transaction's
+            # own `create` is the one that participates (and fails on conflict).
+            tx.create(doc_ref, {"username": normalized, "tag": tag, "address": address})
+            tx.set(users.document(address), {"playerId": tag}, merge=True)
             return {"ok": True, "cleanTag": tag, "alreadyOwned": False}
 
         result = _claim(db.transaction())
@@ -2005,7 +2020,12 @@ def username_claim(body: UsernameRequest, request: Request) -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=409, detail=f"Username claim failed: {e}")
+        # Audit C-04: this used to be 409 — a SERVER failure reported as "that
+        # name is taken", which is both untrue and unactionable. A transaction
+        # conflict is already surfaced as 409 from the handler above; anything
+        # reaching here is our bug or an outage, and 503 says so.
+        print(f"[username] claim failed: {e!r}", file=sys.stderr)
+        raise HTTPException(status_code=503, detail="Username registry unavailable")
 
 
 @app.get("/api/username/{name}")
