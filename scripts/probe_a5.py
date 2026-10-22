@@ -328,12 +328,12 @@ def session(acct) -> tuple[str, str]:
 
 
 t1, a1 = session(acct)
-r = client.post("/api/queue", json={"stake": 1.0}, headers={"host": "t.test", "Authorization": f"Bearer {t1}"})
+r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers={"host": "t.test", "Authorization": f"Bearer {t1}"})
 check(f"queue works (gate inactive) — {r.status_code}", r.status_code == 200)
 check("youAreCreator on first enqueue", r.json().get("youAreCreator") is True)
 
 t2, a2 = session(token_acct)
-r2 = client.post("/api/queue", json={"stake": 1.0}, headers={"host": "t.test", "Authorization": f"Bearer {t2}"})
+r2 = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers={"host": "t.test", "Authorization": f"Bearer {t2}"})
 check(f"second player matched — {r2.status_code}", r2.status_code == 200)
 check("joiner role exposed", r2.json().get("youAreJoiner") is True and r2.json().get("youAreCreator") is False)
 

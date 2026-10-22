@@ -313,10 +313,13 @@ export interface MatchView {
 export const queueForMatch = (
   session: ServerSession,
   stake: number,
-  rttMs?: number,
+  rttMs: number,
   opponent?: string
 ): Promise<MatchView> =>
   // Audit H1: the ping cap is evaluated at queue time.
+  // Audit H-03 (2026-10-22): `rttMs` is REQUIRED — the server refuses a queue
+  // request without it, because an omittable field is a skippable gate. Every
+  // caller measures with `measureServerRttMs` (the zero-I/O `/api/ping`).
   request<MatchView>("/api/queue", { stake, rttMs, opponent }, session);
 
 export const getMatch = (session: ServerSession, matchId: string): Promise<MatchView> =>
@@ -455,20 +458,41 @@ export const submitRoundResult = (
  * is a best-effort measurement: a failure returns `undefined` and the round is
  * submitted uncompensated rather than not at all.
  */
+/**
+ * Measure the player's round trip to the game server (audit H-03).
+ *
+ * The probe targets `/api/ping`, which does NO store, chain or RPC work. It used
+ * to hit `/api/health`, whose payload includes the RPC reachability check — so
+ * the "network latency" being compared against a 400ms cap also contained the
+ * operator's chain I/O, and a player on a perfect connection could be refused
+ * because the server's RPC was slow.
+ *
+ * Three samples, minimum taken: a single sample measures the worst moment of
+ * the connection (TCP/TLS setup, a GC pause), and the cap decides whether
+ * someone may play for money. The minimum is the closest estimate of the
+ * path's real latency, and the client cannot gain by under-reporting — the
+ * ranking uses the server-observed reaction, never this number.
+ */
 export const measureServerRttMs = async (session: ServerSession): Promise<number | undefined> => {
   if (!gameServerConfigured()) return undefined;
-  try {
-    const started = performance.now();
-    const res = await fetch(`${SERVER_URL}/api/health`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${session.token}` },
-    });
-    if (!res.ok) return undefined;
-    await res.json();
-    return Math.round(performance.now() - started);
-  } catch {
-    return undefined;
+  const samples: number[] = [];
+  for (let i = 0; i < 3; i += 1) {
+    try {
+      const started = performance.now();
+      const res = await fetch(`${SERVER_URL}/api/ping`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${session.token}` },
+        cache: "no-store",
+      });
+      if (!res.ok) return undefined;
+      await res.json();
+      samples.push(performance.now() - started);
+    } catch {
+      return undefined;
+    }
   }
+  if (samples.length === 0) return undefined;
+  return Math.round(Math.min(...samples));
 };
 
 export interface SettledMatch {

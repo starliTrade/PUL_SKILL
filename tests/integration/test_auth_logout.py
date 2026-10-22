@@ -73,13 +73,13 @@ def test_a_revoked_session_is_rejected(client):
     token = _token(client, Account.create())
     headers = {"Authorization": f"Bearer {token}"}
 
-    r = client.post("/api/queue", json={"stake": 1.0}, headers=headers)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers=headers)
     assert r.status_code == 200, f"a fresh session must work: {r.text}"
 
     r = client.post("/api/auth/logout", headers=headers)
     assert r.status_code == 200, r.text
 
-    r = client.post("/api/queue", json={"stake": 1.0}, headers=headers)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers=headers)
     assert r.status_code == 401, (
         f"the revoked token still authenticates (got {r.status_code}) — logout "
         "is cosmetic (audit H22)"
@@ -102,7 +102,7 @@ def test_logout_does_not_affect_another_session(client):
 
     client.post("/api/auth/logout", headers={"Authorization": f"Bearer {token_a}"})
 
-    r = client.post("/api/queue", json={"stake": 1.0}, headers={"Authorization": f"Bearer {token_b}"})
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers={"Authorization": f"Bearer {token_b}"})
     assert r.status_code == 200, "logging out one session revoked another"
 
     assert auth.verify_session(token_a) is None

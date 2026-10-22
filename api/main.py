@@ -981,6 +981,27 @@ def _oracle_address_or_none() -> str | None:
         return None
 
 
+@app.get("/api/ping")
+def ping() -> dict[str, Any]:
+    """Zero-I/O round-trip probe (audit H-03, 2026-10-22).
+
+    The client measures its RTT here and sends it with `POST /api/queue`, where
+    the ping cap decides whether the connection is fair enough to stake on.
+
+    This exists because `/api/health` was doing double duty: it reports RPC
+    reachability, chain id and token decimals, all of which can perform chain
+    I/O. Measuring "network latency" against an endpoint that may wait on a
+    remote node conflates the player's connection with the operator's RPC — a
+    player on fibre could be refused for the server's problem, and the number
+    was unstable by design.
+
+    Nothing here touches the store, the chain, or the clock beyond one integer.
+    Deliberately unauthenticated: it reveals nothing, and requiring a session
+    would add an auth round trip to the measurement.
+    """
+    return {"ok": True, "t": timebase.now_ms()}
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {
@@ -1117,7 +1138,14 @@ class QueueRequest(BaseModel):
     # Audit H1: the ping cap needs the round trip AT QUEUE TIME. It was only
     # sent with the round result, so the cap was unreachable from HTTP and the
     # gate existed only in the unit tests.
-    rttMs: float | None = Field(default=None, ge=0, le=10_000)
+    #
+    # Audit H-03 (2026-10-22): the field was OPTIONAL, so a client could omit it
+    # and skip the cap entirely — and the cap is the only place a laggy player is
+    # kept out of a fair match. A protocol field that can be left out is not a
+    # gate. It is required now, and the client measures it against the zero-I/O
+    # `/api/ping` (previously `/api/health`, which can perform RPC I/O and
+    # inflated the measurement it was supposed to bound).
+    rttMs: float = Field(ge=0, le=10_000)
     # Audit M27: a friend challenge names the address it is reserved for. The
     # match is not offered to anyone else, and it is satisfied when that
     # address queues (naming the challenger, or simply queueing).
@@ -1466,6 +1494,12 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     abuse.note_start(address)
     try:
         match = store.enqueue(address, body.stake, body.rttMs, challenge_target or None)
+    except MatchError as exc:
+        # L-10 (2026-10-22): the ping cap raises a DOMAIN error, and this handler
+        # did not catch it — an over-latency connection got an unhandled 500
+        # ("this is broken, do not retry") instead of the actionable 409 the
+        # message contains. The client shows the detail; 5xx hides it.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         # Audit 2026-10-14 (found by the 1000-poller load run, plan item 10.3):
         # under contention the Firestore transaction exhausts its retries and

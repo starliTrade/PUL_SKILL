@@ -321,7 +321,15 @@ function isWalletCancel(msg: string): boolean {
       await confirmEligibility(session).catch(() => undefined);
       // Audit H1: measure the round trip BEFORE queueing, so the ping cap is
       // evaluated at the entry gate rather than after the first round.
+      // Audit H-03: the server requires the number now — an unmeasurable
+      // connection is a refusal with a clear message, never a silent bypass of
+      // the cap that protects the opponent.
       const queueRtt = await measureServerRttMs(session).catch(() => undefined);
+      if (queueRtt === undefined) {
+        throw new Error(
+          'Could not measure your connection to the duel server. Check your network and try again — staked play needs a verified round trip.'
+        );
+      }
       // Audit M27: a friend challenge reserves the duel for the named address.
       const challengeTarget = challengeOpponent?.trim() || undefined;
       let view = await queueForMatch(session, currentStake, queueRtt, challengeTarget);
@@ -493,6 +501,9 @@ function isWalletCancel(msg: string): boolean {
         // Still unmatched — fall through to the normal queue loop by
         // re-queuing (idempotent) rather than dead-waiting.
         const requeueRtt = await measureServerRttMs(session).catch(() => undefined);
+        if (requeueRtt === undefined) {
+          throw new Error('Could not measure your connection to the duel server.');
+        }
         const queued = await queueForMatch(
           session,
           view.stake || currentStake,

@@ -258,8 +258,8 @@ def do_settle_mode():
     check("both players hold sessions", bool(t1) and bool(t2))
 
     print("== matchmaking ==")
-    m1 = s.post("/api/queue", json={"stake": STAKE}, headers=hdrs(t1)).json()
-    m2 = s.post("/api/queue", json={"stake": STAKE}, headers=hdrs(t2)).json()
+    m1 = s.post("/api/queue", json={"stake": STAKE, "rttMs": 40}, headers=hdrs(t1)).json()
+    m2 = s.post("/api/queue", json={"stake": STAKE, "rttMs": 40}, headers=hdrs(t2)).json()
     if m1["matchId"] == m2["matchId"] and m2["status"] == "active":
         check("paired into one active match", True)
     elif m1["matchId"] == m2["matchId"]:

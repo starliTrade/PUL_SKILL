@@ -127,31 +127,31 @@ r = client.post(
 check("SIWE rejects tampered message (401)", r.status_code == 401)
 
 # Unauthenticated privileged route must fail
-r = client.post("/api/queue", json={"stake": 1.0})
+r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40})
 check("Queue requires a bearer token (401)", r.status_code == 401)
 
 # --- 2. Stake gate (the old ALLOWED_STAKES NameError crash site) ---------------
-r = client.post("/api/queue", json={"stake": 999.0}, headers=auth_headers(token_a))
+r = client.post("/api/queue", json={"stake": 999.0, "rttMs": 40}, headers=auth_headers(token_a))
 check("Invalid stake rejected (400, no 500)", r.status_code == 400)
 
 # --- 3. Idempotent matchmaking over HTTP ---------------------------------------
-r1 = client.post("/api/queue", json={"stake": 2.0}, headers=auth_headers(token_a))
+r1 = client.post("/api/queue", json={"stake": 2.0, "rttMs": 40}, headers=auth_headers(token_a))
 check("Queue accepts a valid stake", r1.status_code == 200)
 m1 = r1.json()
 check("Creator sees waiting + youAreCreator=true", m1["status"] == "waiting" and m1["youAreCreator"] is True)
 
-r1b = client.post("/api/queue", json={"stake": 2.0}, headers=auth_headers(token_a))
+r1b = client.post("/api/queue", json={"stake": 2.0, "rttMs": 40}, headers=auth_headers(token_a))
 m1b = r1b.json()
 check("Creator re-poll returns the SAME waiting match (idempotent over HTTP)", m1b["matchId"] == m1["matchId"])
 
-r2 = client.post("/api/queue", json={"stake": 2.0}, headers=auth_headers(token_b))
+r2 = client.post("/api/queue", json={"stake": 2.0, "rttMs": 40}, headers=auth_headers(token_b))
 m2 = r2.json()
 check("Joiner pairs into the SAME match (active)", m2["matchId"] == m1["matchId"] and m2["status"] == "active")
 check("Joiner sees youAreCreator=false", m2["youAreCreator"] is False)
 check("Joiner sees the opponent address", (m2.get("opponent") or "").lower() == addr_a)
 
 # Creator must now learn the match went active — the old deadlock.
-r1c = client.post("/api/queue", json={"stake": 2.0}, headers=auth_headers(token_a))
+r1c = client.post("/api/queue", json={"stake": 2.0, "rttMs": 40}, headers=auth_headers(token_a))
 m1c = r1c.json()
 check("Creator re-poll sees the match ACTIVE (deadlock fixed)", m1c["status"] == "active")
 
