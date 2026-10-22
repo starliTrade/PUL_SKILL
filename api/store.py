@@ -941,8 +941,10 @@ class DurableMatchStore:
     """
 
     def __init__(self, backend: str | None = None) -> None:
-        # Phase 6.4: match id -> list of dispute reports.
+        # Phase 6.4: match id -> list of dispute reports (cache; durable copy
+        # lives in pulsar_disputes since audit H-10).
         self.disputes: dict[str, list[dict]] = {}
+        self._dispute_write_failures = 0
         backend = backend or os.environ.get("PULSAR_MATCH_STORE", "auto")
         self.backend_name = "memory"
         self._firestore: Any = None
@@ -1035,13 +1037,44 @@ class DurableMatchStore:
         return self.memory.enqueue(address, stake, rtt_ms, target)
 
     def record_dispute(self, match_id: str, report: dict) -> None:
-        """Attach a player's dispute report to a match (phase 6.4).
+        """Persist a player's dispute report (phase 6.4, audit H-10).
 
-        Kept on the match so an operator inspecting it finds the report
-        alongside the state it is about. In-process for now: persisting reports
-        durably needs their own collection, which is a separate change.
+        Audit H-10 (2026-10-22): this lived ONLY in a process-local dict. A
+        restart erased it and another replica never saw it, so the one artefact
+        an operator needs in a payout disagreement could silently not exist.
+
+        The report is written to `pulsar_disputes` (Admin SDK, rules deny
+        clients) keyed by a generated id, and mirrored in memory for tests and
+        for `disputes_for()` on the replica that took the report. A write
+        failure is COUNTED and surfaced on `/api/health` — losing a dispute
+        silently is worse than refusing it.
         """
         self.disputes.setdefault(match_id, []).append(report)
+        if self._fs_store is None:
+            return
+        try:
+            self._fs_store.db.collection("pulsar_disputes").add(
+                {"matchId": match_id, **report, "at": timebase.now()}
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._dispute_write_failures += 1
+            print(f"[dispute] durable write failed: {exc!r}", file=sys.stderr)
+
+    def disputes_for(self, match_id: str) -> list[dict[str, Any]]:
+        """Every dispute report for a match: durable first, cache as a fallback."""
+        out: list[dict[str, Any]] = []
+        if self._fs_store is not None:
+            try:
+                for snap in (
+                    self._fs_store.db.collection("pulsar_disputes")
+                    .where("matchId", "==", match_id)
+                    .stream()
+                ):
+                    out.append(dict(snap.to_dict() or {}))
+            except Exception as exc:  # noqa: BLE001
+                print(f"[dispute] durable read failed: {exc!r}", file=sys.stderr)
+        cached = list(self.disputes.get(match_id, []))
+        return out or cached
 
     def rating_for(self, address: str) -> float:
         """Audit H23: the durable store keeps ratings in the in-memory backend.

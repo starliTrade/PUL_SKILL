@@ -343,6 +343,10 @@ def sweep_health() -> dict[str, Any]:
         "lastRunAt": int(_last_sweep_at),
         "failures": dict(_sweep_failures),
         "lastError": dict(_sweep_last_error),
+        # Audit H-10: a dispute report that could not be persisted is an
+        # operator problem (a payout disagreement with no evidence), so it is
+        # visible here rather than only in a log line.
+        "disputeWriteFailures": int(getattr(store, "_dispute_write_failures", 0)),
     }
 
 
@@ -796,6 +800,9 @@ def admin_inspect_match(match_id: str, request: Request) -> dict[str, Any]:
     if m is None:
         raise HTTPException(status_code=404, detail="Match not found")
     return {
+        # Audit H-10: the reports an operator needs alongside the state they are
+        # about (durable first, in-memory cache as a fallback).
+        "disputes": store.disputes_for(match_id),
         "matchId": m.match_id,
         "status": m.status,
         "stake": m.stake,
