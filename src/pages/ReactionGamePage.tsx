@@ -1782,7 +1782,8 @@ function isWalletCancel(msg: string): boolean {
               </div>
             )}
 
-            {/* PHASE 4: Action Phase (DYNAMIC SPATIAL VECTOR TARGET - 100% Anti-Bot) */}
+            {/* PHASE 4: Action Phase (DYNAMIC SPATIAL VECTOR TARGET — audit C-02b: no
+                anti-bot check exists here; the server decides with the timing floor) */}
             {phase === 'action' && spawnConfig && (
               <div className="relative w-full h-[360px] linear-card overflow-hidden flex items-center justify-center">
                 {/* Ambient subtle radar ring centered at spawn position */}
@@ -1827,7 +1828,7 @@ function isWalletCancel(msg: string): boolean {
               </div>
             )}
 
-            {/* PHASE 5: Verifying Phase with Biometric Engine Telemetry */}
+            {/* PHASE 5: Verifying Phase — the server confirms the round */}
             {phase === 'verifying' && (
               <motion.div
                 initial={{ opacity: 0 }}
