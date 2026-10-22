@@ -325,6 +325,44 @@ export const queueForMatch = (
 export const getMatch = (session: ServerSession, matchId: string): Promise<MatchView> =>
   request<MatchView>(`/api/match/${encodeURIComponent(matchId)}`, undefined, session, "GET");
 
+/** One settled duel, as the PUBLIC settlement log publishes it. */
+export interface SettlementRecord {
+  matchId: string;
+  stake: number;
+  players: string[];
+  winner: string;
+  settledAt: number;
+  winnerTimeMs: number | null;
+  loserTimeMs: number | null;
+  prize: number;
+  oracleAddress: string;
+  signature: string;
+  settlementTx?: string;
+}
+
+/**
+ * The public settlement log (audit H-04, 2026-10-22).
+ *
+ * The lobby's "LIVE ARENA" feed used to subscribe to a Firestore collection the
+ * SERVER never writes in that shape (it reads `entryFee`, the ledger writes
+ * `stake`), so the feed was permanently empty — and every row defaulted to
+ * `result: 'win'` if it had ever rendered. This reads the server's own log,
+ * which is public on purpose: each entry carries the oracle signature the
+ * contract accepted, so the feed is verifiable rather than a claim.
+ *
+ * Unauthenticated: a settlement log that needs a login is not a public log.
+ */
+export const fetchRecentSettlements = async (limit = 15): Promise<SettlementRecord[]> => {
+  if (!gameServerConfigured()) return [];
+  const res = await fetch(`${SERVER_URL}/api/settlements?limit=${Math.max(1, Math.min(limit, 50))}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`settlements answered ${res.status}`);
+  const body = (await res.json()) as { available?: boolean; settlements?: SettlementRecord[] };
+  if (!body.available) return [];
+  return Array.isArray(body.settlements) ? body.settlements : [];
+};
+
 /** A player's server-authoritative progression (audit M31). */
 export interface PlayerStats {
   wins: number;

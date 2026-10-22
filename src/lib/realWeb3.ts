@@ -3,9 +3,9 @@
  * Zero mock accounts, zero fake duels. Pure real-time on-chain & cloud persistence.
  */
 
-import { doc, getDoc, setDoc, deleteDoc, collection, query, where, orderBy, limit, getDocs, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
 import { getDb } from './firebase';
-import { checkUsername, ensureSession, logoutServerSession } from './gameServerClient';
+import { checkUsername, ensureSession, logoutServerSession, fetchRecentSettlements, gameServerConfigured, type SettlementRecord } from './gameServerClient';
 import { CHAIN, TOKENS } from './chain';
 
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
@@ -159,6 +159,49 @@ export interface LeaderboardPlayer {
  * string — a typo here would silently disable the lock.
  */
 export const ACTIVE_RANKED_MATCH_KEY = 'pulsar_active_ranked_match';
+
+/** How often the lobby feed refreshes, and how many settlements it shows. */
+const FEED_POLL_MS = 20_000;
+const FEED_SIZE = 15;
+
+/**
+ * Turn settlement records into per-player feed rows (audit H-04).
+ *
+ * Pure and exported so the shape can be tested without a network: a settlement
+ * names one winner, the feed needs a row per side, and inventing a default for a
+ * missing side is exactly the fabrication class this project keeps fixing.
+ */
+export const settlementsToFeedRows = (settlements: SettlementRecord[]): MatchRecord[] => {
+  const rows: MatchRecord[] = [];
+  for (const s of settlements) {
+    if (!s || !s.matchId || !s.winner || !Array.isArray(s.players)) continue;
+    const winner = s.winner.toLowerCase();
+    const winnerTime = typeof s.winnerTimeMs === "number" ? s.winnerTimeMs : 0;
+    const loserTime = typeof s.loserTimeMs === "number" ? s.loserTimeMs : 0;
+    for (const player of s.players) {
+      const addr = String(player || "").toLowerCase();
+      if (!addr) continue;
+      const opponent = s.players.find((p) => String(p).toLowerCase() !== addr) || "";
+      const won = addr === winner;
+      rows.push({
+        id: `${s.matchId}:${addr}`,
+        matchId: s.matchId,
+        game: "Reaction Duel",
+        result: won ? "win" : "loss",
+        entryFee: s.stake,
+        stake: s.stake,
+        prize: won ? s.prize : 0,
+        yourTime: won ? winnerTime : loserTime,
+        opponentTime: won ? loserTime : winnerTime,
+        timestamp: Number(s.settledAt) > 0 ? Number(s.settledAt) * 1000 : Date.now(),
+        opponentName: opponent ? `${opponent.slice(0, 6)}…${opponent.slice(-4)}` : "Arena Duelist",
+        oracleSignature: s.signature,
+        hash: s.settlementTx || undefined,
+      });
+    }
+  }
+  return rows;
+};
 
 class RealWeb3Manager {
   private currentAccount: ConnectedAccountState = {
@@ -1496,43 +1539,48 @@ class RealWeb3Manager {
   // Audit #7 R4: recordGlobalMatchToFirestore removed — matches/ is
   // server-written only (firestore.rules allow write: if false for clients).
 
+  /**
+   * The public "LIVE ARENA" feed (audit H-04, 2026-10-22).
+   *
+   * This used to be an `onSnapshot` on Firestore's `matches` collection, reading
+   * `entryFee` — a field the settlement ledger never writes (it writes `stake`).
+   * The filter `fee > 0` therefore dropped every document and the feed was
+   * permanently empty; if a document had ever carried the field, `result`
+   * defaulted to `'win'` and every player in the feed would have looked like a
+   * winner.
+   *
+   * It now polls the server's PUBLIC settlement log, which is the same data the
+   * contract paid out on and carries the oracle signature. The feed reports a
+   * per-player row: a settlement has one winner and one loser, and a list of
+   * "matches" cannot say which side the viewer is looking at.
+   *
+   * An empty result is a FACT and is delivered as an empty list (audit M42).
+   */
   public subscribeGlobalMatches(callback: (matches: MatchRecord[]) => void): () => void {
-    try {
-      const matchesCol = collection(getDb(), 'matches');
-      const q = query(matchesCol, orderBy('timestamp', 'desc'), limit(15));
-      const unsubscribe = onSnapshot(
-        q,
-        (snapshot) => {
-          const list: MatchRecord[] = [];
-          snapshot.forEach((docSnap) => {
-            const d = docSnap.data();
-            const fee = Number(d.entryFee) || 0;
-            if (fee > 0) {
-              list.push({
-                id: d.id || docSnap.id,
-                game: d.game || 'reaction',
-                result: d.result || 'win',
-                entryFee: fee,
-                prize: Number(d.prize) || 0,
-                opponentTime: Number(d.opponentTime) || 0,
-                yourTime: Number(d.yourTime) || 0,
-                timestamp: Number(d.timestamp) || Date.now(),
-                oracleSignature: d.oracleSignature,
-                opponentName: d.opponentAddress || 'Arena Rival',
-              });
-            }
-          });
-          callback(list);
-        },
-        (error) => {
-          console.warn('Matches live onSnapshot listener handled:', error);
-        }
-      );
-      return unsubscribe;
-    } catch (e) {
-      console.warn('Error establishing Firestore match listener:', e);
+    if (!gameServerConfigured()) {
+      callback([]);
       return () => {};
     }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      try {
+        const rows = settlementsToFeedRows(await fetchRecentSettlements(FEED_SIZE));
+        if (!cancelled) callback(rows);
+      } catch (e) {
+        // A failed poll must not clear the feed: the last good snapshot is
+        // still true of the past, and an empty array would claim "no duels".
+        console.warn("Live feed poll failed:", e);
+      }
+      if (!cancelled) timer = setTimeout(poll, FEED_POLL_MS);
+    };
+
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }
 
   public async fetchGlobalLeaderboard(): Promise<LeaderboardPlayer[]> {

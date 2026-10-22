@@ -1377,6 +1377,21 @@ def settlements(limit: int = 50) -> dict[str, Any]:
                     "oracleAddress": env.get("oracleAddress", ""),
                     "signature": env.get("signature", ""),
                     "deadline": env.get("deadline"),
+                    # Audit H-04 (2026-10-22): the lobby feed was reading
+                    # `entryFee` from a collection the server never writes, so
+                    # "LIVE ARENA FEED" was permanently empty — and had it ever
+                    # rendered, every row would have said "win" because the
+                    # client defaulted the missing field. The public feed is
+                    # built from THIS log now, so it needs the per-duel facts:
+                    # both validated times and the prize the winner received.
+                    # These are already public on-chain (settleDuel's preimage
+                    # contains both times; MatchSettled carries the prize).
+                    "winnerTimeMs": env.get("winnerTimeMs"),
+                    "loserTimeMs": env.get("loserTimeMs"),
+                    # economy owns the fee constant (audit M20) — one definition, no drift.
+                    "prize": economy.prize_in_units(
+                        int(round(m.stake * 1_000_000)), 6
+                    ) / 1_000_000,
                     "settlementTx": (m.signed_settlement or {}).get("settlementTx", ""),
                 }
             )
