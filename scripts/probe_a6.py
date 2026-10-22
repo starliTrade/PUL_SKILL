@@ -6,8 +6,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
-os.environ.setdefault("ORACLE_SIGNING_SECRET", "probe-a6-secret")
-os.environ.setdefault("ORACLE_PRIVATE_KEY", "0x" + "11" * 32)
+# Audit H-13 (2026-10-22): `setdefault` let a pre-existing environment value win,
+# while the C4 assertion compares against this file's literal. Running the probe
+# with ORACLE_SIGNING_SECRET already exported therefore FAILED a check that the
+# code passes — a probe that reports on the shell instead of the code.
+os.environ["ORACLE_SIGNING_SECRET"] = "probe-a6-secret"
+os.environ["ORACLE_PRIVATE_KEY"] = "0x" + "11" * 32
 
 import match_engine as me  # noqa: E402
 import onchain  # noqa: E402
