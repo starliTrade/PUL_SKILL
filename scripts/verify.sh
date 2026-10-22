@@ -106,37 +106,57 @@ fi
 
 # --- 4. Server tests (pytest) — plan item 0.3 ---------------------------------
 if [[ -f "$ROOT/pytest.ini" ]] && "$PY" -m pytest --version >/dev/null 2>&1; then
-  # Integration tests need the Firestore emulator. Auto-detect a running one so
-  # `bun run verify` exercises the real Firestore path instead of skipping it.
+  # --- 4a. HERMETIC coverage gate (audit M-15, 2026-10-22) -------------------
   #
-  # The env is passed to THIS gate only, never exported: the legacy suites below
-  # assume the in-memory store, and a global FIRESTORE_EMULATOR_HOST makes
-  # `store.create_store()` connect to the emulator, which changes their
-  # behaviour (and made the HTTP E2E suite fail when this was exported).
-  # The coverage ratchet must be DETERMINISTIC, and the Firestore integration
-  # tests are what cover the Firestore code paths. Start the emulator if it is
-  # not already up, exactly like the chain gate does for anvil — otherwise the
-  # measured number wobbles by several points depending on whether those tests
-  # could run, and a ratchet that wobbles produces false failures.
+  # This runs FIRST and always: no emulator, no anvil, no network. The floor in
+  # `.coveragerc-hermetic` was measured on this configuration, so the number
+  # cannot move just because a service happens to be running (the old single
+  # gate reported 74% without the emulator and 79% with it — same code).
+  #
+  # FIRESTORE_EMULATOR_HOST is unset explicitly: some modules decide to skip
+  # their tests by reading it at import time, so an inherited value would change
+  # what runs and therefore what is measured.
+  if "$PY" -m coverage --version >/dev/null 2>&1; then
+    HERMETIC_ARGS=(-q -m "not emulator and not chain")
+    if [[ -n "${FIRESTORE_EMULATOR_HOST:-}" ]]; then
+      env -u FIRESTORE_EMULATOR_HOST "$PY" -m coverage erase --rcfile=.coveragerc-hermetic
+      run_gate "server tests (pytest, hermetic coverage)" \
+        env -u FIRESTORE_EMULATOR_HOST "$PY" -m coverage run --rcfile=.coveragerc-hermetic \
+        --source=api -m pytest "${HERMETIC_ARGS[@]}"
+    else
+      "$PY" -m coverage erase --rcfile=.coveragerc-hermetic
+      run_gate "server tests (pytest, hermetic coverage)" \
+        "$PY" -m coverage run --rcfile=.coveragerc-hermetic --source=api -m pytest "${HERMETIC_ARGS[@]}"
+    fi
+    run_gate "coverage ratchet, hermetic (fail_under in .coveragerc-hermetic)" \
+      "$PY" -m coverage report --rcfile=.coveragerc-hermetic --skip-covered
+    COVERAGE_ACTIVE=0   # the full session below starts a fresh data file
+  else
+    run_gate "server tests (pytest)" "$PY" -m pytest -q
+    COVERAGE_ACTIVE=0
+  fi
+
+  # --- 4b. COMPLETE coverage gate (emulator + anvil) -------------------------
+  #
+  # The higher number, and a separate gate whose NAME says what it needs. It is
+  # skipped — loudly — when the services are absent, because it cannot be
+  # measured there; the hermetic gate above is what must always be green.
   if ! curl -sf -o /dev/null "http://127.0.0.1:8081/" 2>/dev/null; then
-    echo "starting a background Firestore emulator for the coverage gate…"
+    echo "starting a background Firestore emulator for the complete coverage gate…"
     bash "$ROOT/scripts/start_emulator.sh" --bg >/dev/null 2>&1 || true
   fi
 
-  PYTEST_ENV=()
-  if [[ -z "${FIRESTORE_EMULATOR_HOST:-}" ]] && curl -sf -o /dev/null "http://127.0.0.1:8081/" 2>/dev/null; then
+  if curl -sf -o /dev/null "http://127.0.0.1:8081/" 2>/dev/null; then
     PYTEST_ENV=(env FIRESTORE_EMULATOR_HOST=127.0.0.1:8081 "GCLOUD_PROJECT=${GCLOUD_PROJECT:-demo-pulsar}")
-  fi
-  # Plan item 0.12: coverage is a ratchet. It is measured across the WHOLE
-  # server suite — pytest AND the legacy scripts — because measuring only pytest
-  # under-reported by ~20 points (49% vs 69%): the legacy suites are what cover
-  # api/store.py and api/auth.py until item 0.3 migrates them.
-  if "$PY" -m coverage --version >/dev/null 2>&1; then
-    "$PY" -m coverage erase
-    run_gate "server tests (pytest)" "${PYTEST_ENV[@]}" "$PY" -m coverage run --source=api -m pytest -q
-    COVERAGE_ACTIVE=1
+    if "$PY" -m coverage --version >/dev/null 2>&1; then
+      "$PY" -m coverage erase
+      run_gate "server tests + emulator (complete coverage)" \
+        "${PYTEST_ENV[@]}" "$PY" -m coverage run --source=api -m pytest -q
+      COVERAGE_ACTIVE=1
+    fi
   else
-    run_gate "server tests (pytest)" "${PYTEST_ENV[@]}" "$PY" -m pytest -q
+    skip_gate "complete coverage gate (emulator + anvil)" \
+      "no Firestore emulator on 127.0.0.1:8081 — the hermetic gate above is the one that must hold"
     COVERAGE_ACTIVE=0
   fi
 else

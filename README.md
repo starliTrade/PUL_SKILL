@@ -31,9 +31,15 @@ bun run test:contract  # Solidity compile gate (solc 0.8.20, paris + shanghai)
 ```
 
 `bun run verify` is the single source of truth for "is this green". It runs the
-frontend suite, the Python suite, the coverage ratchet, ruff, mypy, `forge test`,
-the contract compile gate, and a set of protocol/security probes — starting the
-Firestore emulator itself when one is not already running. CI runs the same gates.
+frontend suite, the Python suite, the hermetic coverage gate, ruff, mypy,
+`forge test`, the contract compile gate, and a set of protocol/security probes.
+
+Coverage is measured TWICE, on purpose (audit M-15). The hermetic gate deselects
+everything that needs a service, so its number cannot move depending on what
+happens to be running; the complete gate adds the emulator and anvil tests and
+carries the higher floor. A gate that only passes because you had an emulator
+started is not a gate, and the previous single measurement reported 74% and 79%
+for the same commit depending on exactly that.
 
 Counts are **generated from the last full run**, not maintained by hand — the
 previous table said 202/278/81 and was already stale (audit M-17). Run
@@ -44,7 +50,8 @@ previous table said 202/278/81 and was already stale (audit M-17). Run
 | Frontend (vitest) | 236 tests, 54 files |
 | Server (pytest) | 410 passed, 42 skipped |
 | Contract (forge) | **not run here** — Foundry cannot be installed in the audit environment; `contracts/test/*` is unverified by this document (see `docs/audit/RUTHLESS-AUDIT-2026-10-22.md`) |
-| Coverage | ~72% locally **without** the Firestore emulator / anvil; the 79% floor is not reachable in that configuration (audit M-15) |
+| Coverage, hermetic (`.coveragerc-hermetic`) | **74%** over 3937 statements, measured with no emulator and no anvil — this is the gate that must always be green (audit M-15) |
+| Coverage, complete (`.coveragerc`) | 79% floor, only measurable with the Firestore emulator + anvil running; reported as its own gate, skipped loudly when they are absent |
 
 `forge test` is a CI gate; treat its result as the source of truth for the
 contract suite, never this table.

@@ -26,6 +26,13 @@
 # itself, exactly as the chain gate does for anvil, so the measurement is
 # deterministic. Measured three times consecutively at 79% (392-393 missed).
 #
+# 2026-10-22 (audit M-15): this file is now the COMPLETE gate only — the run that
+# has the Firestore emulator on 127.0.0.1:8081, which is what makes 79 reachable.
+# The gate that must hold on every machine is `.coveragerc-hermetic` (floor 74,
+# `-m "not emulator and not chain"`, FIRESTORE_EMULATOR_HOST unset). Do not
+# "fix" a red hermetic run by lowering this file, and do not raise this floor
+# based on a run that had no emulator.
+#
 # Note: the legacy suites in scripts/ run as subprocesses and therefore do NOT
 # contribute to this number. It measures the pytest suite only — which is why
 # api/store.py and api/auth.py still read low: their coverage lives in the

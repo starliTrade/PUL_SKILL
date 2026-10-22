@@ -1,0 +1,40 @@
+# PULSAR — the HERMETIC coverage gate (audit M-15, 2026-10-22).
+#
+# The problem this file exists to solve:
+#
+#   The old gate measured one number over "whatever could run in this
+#   environment". With the Firestore emulator up, the integration tests run and
+#   the figure is ~79%; without it they skip and the figure is ~74%. Same code,
+#   same tests — a different number, and a floor of 79 that is only reachable on
+#   a machine that happens to have an emulator started. A ratchet that depends on
+#   the environment is not a ratchet; it is a coin flip that fails builds.
+#
+# The fix is a SPLIT, not a lower floor:
+#
+#   1. THIS gate is hermetic. It runs `pytest -m "not emulator and not chain"`
+#      with FIRESTORE_EMULATOR_HOST explicitly unset, so no test can silently
+#      become runnable or unrunnable. It must pass on every machine, in CI, and
+#      on a laptop with no network.
+#   2. The complete gate (.coveragerc, floor 79) still exists for the
+#      emulator+anvil configuration, and reports the higher number. It is
+#      reported as a SEPARATE gate whose name says it needs those services.
+#
+# Measured, not guessed: 74% / 3937 statements / 1011 missed, identical across
+# consecutive runs (two runs on 2026-10-22 produced byte-identical totals).
+#
+# Raise `fail_under` only in the commit that adds the tests.
+[run]
+source = api
+data_file = .coverage.hermetic
+omit =
+    api/requirements*.txt
+
+[report]
+fail_under = 74
+show_missing = True
+skip_covered = False
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    raise NotImplementedError
+    \.\.\.
