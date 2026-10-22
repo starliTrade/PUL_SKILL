@@ -98,7 +98,16 @@ export interface BestOfThreeState {
 }
 
 export interface MatchResolution {
-  outcome: 'win' | 'loss' | 'void';
+  /**
+   * Audit M-06 (2026-10-22): `pending` is NOT a synonym for `void`.
+   *
+   * `void` means the server decided the duel was refunded. `pending` means the
+   * client stopped waiting before the server decided — the money outcome is
+   * unknown, and the UI must say so instead of showing a loss. The old code
+   * turned a 120-second local timeout into `outcome: 'void'`, which the result
+   * screen rendered as "Defeat" and the certificate recorded as a loss.
+   */
+  outcome: 'win' | 'loss' | 'void' | 'pending';
   yourTime: number;
   opponentTime: number;
   prize: number;

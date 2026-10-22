@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion } from 'motion/react';
-import { ArrowLeft, RotateCcw, Trophy, XCircle, ShieldAlert, LoaderCircle, Zap, Fingerprint, ShieldCheck, ArrowUp, ArrowDown, ArrowLeft as ArrowLeftIcon, ArrowRight as ArrowRightIcon, Crosshair, Cpu, Sparkles, Coins, Wallet, Flame, Swords } from 'lucide-react';
+import { ArrowLeft, Clock, RotateCcw, Trophy, XCircle, ShieldAlert, LoaderCircle, Zap, Fingerprint, ShieldCheck, ArrowUp, ArrowDown, ArrowLeft as ArrowLeftIcon, ArrowRight as ArrowRightIcon, Crosshair, Cpu, Sparkles, Coins, Wallet, Flame, Swords } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { GamePhase, MouseTrajectoryPoint, MatchResolution, TargetVectorDirection, RoundResult, BestOfThreeState } from '../types';
 import { AntiCheat, getRandomOpponent, TargetSpawnConfig } from '../lib/antiCheat';
@@ -793,11 +793,23 @@ function isWalletCancel(msg: string): boolean {
    * reason to settle. Poll until the disclosure arrives, or until the server
    * reports the match terminal (settled/void), and only then finish.
    */
+  /**
+   * Wait for the opponent's disclosed time, then for the SERVER's verdict.
+   *
+   * Audit M-06 (2026-10-22): this used to give up after 120 seconds and call the
+   * result `void` — a money claim ("refunded") produced by a local timer, long
+   * before the server's own grace window (SETTLE_GRACE, 8 minutes) can decide.
+   * The result screen renders anything that is not a win as "Defeat", so a
+   * player who was about to win was told they had lost.
+   *
+   * Now the wait covers the server's horizon, and running out of patience is
+   * reported as `pending`: unknown, not decided by us.
+   */
   const waitForOpponentDisclosure = async (roundIndex: number, userTime: number) => {
     const session = serverSessionRef.current;
     const match = serverMatchRef.current;
     if (!session || !match) return;
-    const deadline = Date.now() + 120_000;
+    const deadline = Date.now() + (REFUND_OPENS_AFTER_MINUTES * 60 + 30) * 1000;
     let delay = 1500;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, delay));
@@ -818,14 +830,24 @@ function isWalletCancel(msg: string): boolean {
         // A read hiccup is not a reason to eject the player; keep waiting.
       }
     }
-    // The server's grace window will settle this match; say so honestly rather
-    // than forcing a settle the server will refuse.
+    // Still undecided, and it is NOT ours to decide. Ask once more (the last
+    // poll may have raced the settlement), then report `pending`.
+    try {
+      const finalView = await getMatch(session, match.matchId);
+      applyServerMatch(finalView);
+      if (finalView.status === 'settled' || finalView.status === 'void') {
+        void finishServerMatch(bo3State.rounds, bo3State.userScore, bo3State.opponentScore, userTime, 0);
+        return;
+      }
+    } catch {
+      /* fall through to pending */
+    }
     setMatchResult({
-      outcome: 'void',
+      outcome: 'pending',
       yourTime: userTime,
       opponentTime: 0,
       prize: 0,
-      reason: `Waiting for your opponent's result — the duel settles automatically within the ${REFUND_OPENS_AFTER_MINUTES}-minute escrow window.`,
+      reason: `The server has not decided this duel yet. It settles automatically within the ${REFUND_OPENS_AFTER_MINUTES}-minute escrow window; your result is recorded and your stake is in escrow until then.`,
     });
     setPhase('result');
   };
@@ -2023,11 +2045,15 @@ function isWalletCancel(msg: string): boolean {
                     'w-16 h-16 rounded-full flex items-center justify-center mb-3',
                     matchResult.outcome === 'win'
                       ? 'bg-emerald-500/15 border border-emerald-400/30'
-                      : 'bg-sky-950/50 border border-sky-400/30 shadow-[0_0_20px_rgba(56,189,248,0.15)]'
+                      : matchResult.outcome === 'pending'
+                        ? 'bg-amber-500/15 border border-amber-400/30'
+                        : 'bg-sky-950/50 border border-sky-400/30 shadow-[0_0_20px_rgba(56,189,248,0.15)]'
                   )}
                 >
                   {matchResult.outcome === 'win' ? (
                     <Trophy className="w-8 h-8 text-emerald-400" />
+                  ) : matchResult.outcome === 'pending' ? (
+                    <Clock className="w-8 h-8 text-amber-300" />
                   ) : (
                     <XCircle className="w-8 h-8 text-sky-400" />
                   )}
@@ -2037,12 +2063,31 @@ function isWalletCancel(msg: string): boolean {
                 <h2
                   className={cn(
                     'text-2xl font-bold tracking-tight',
-                    matchResult.outcome === 'win' ? 'text-emerald-400' : 'text-sky-300'
+                    matchResult.outcome === 'win'
+                      ? 'text-emerald-400'
+                      : matchResult.outcome === 'pending'
+                        ? 'text-amber-300'
+                        : 'text-sky-300'
                   )}
                 >
-                  {matchResult.outcome === 'win' ? t('matchVictory') : t('matchDefeat')}
+                  {matchResult.outcome === 'win'
+                    ? t('matchVictory')
+                    : matchResult.outcome === 'pending'
+                      ? t('matchPending')
+                      : matchResult.outcome === 'void'
+                        ? t('matchVoid')
+                        : t('matchDefeat')}
                 </h2>
                 </div>
+
+                {/* Audit M-06: a pending duel explains itself, because "the
+                    server has not decided" is not an outcome a player can read
+                    from a score line. */}
+                {matchResult.outcome === 'pending' && matchResult.reason && (
+                  <p className="text-[11px] leading-snug text-amber-200/80 mt-2">
+                    {matchResult.reason}
+                  </p>
+                )}
 
                 <div className="text-xs font-mono text-zinc-400 mt-1">
                   {t('finalScore')}: {matchResult.userScore} - {matchResult.opponentScore}
@@ -2266,14 +2311,17 @@ function isWalletCancel(msg: string): boolean {
       </main>
 
       {/* Duel Cryptographic Certificate Modal */}
-      {matchResult && (
+      {matchResult && matchResult.outcome !== 'pending' && (
         <DuelCertificateModal
           isOpen={showCertificateModal}
           onClose={() => setShowCertificateModal(false)}
           match={{
             id: serverMatch?.matchId || `PULSAR-${Date.now().toString(36).toUpperCase()}`,
             game: 'reaction',
-            result: matchResult.outcome === 'win' ? 'win' : 'loss',
+            // Audit M-06: an undecided duel is not a loss. The certificate is a
+            // record of a result; for `pending` there is no result yet, so it is
+            // not offered at all (the caller closes this path — see below).
+            result: matchResult.outcome === 'void' ? 'void' : matchResult.outcome === 'win' ? 'win' : 'loss',
             entryFee: currentStake,
             prize: matchResult.outcome === 'win' ? matchResult.prize || prizeForStake(currentStake) : 0,
             yourTime: matchResult.yourTime,
