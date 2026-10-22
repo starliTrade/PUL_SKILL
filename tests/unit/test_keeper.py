@@ -143,7 +143,6 @@ def test_a_transaction_is_signed_and_broadcast(monkeypatch):
     A wrong nonce/chainId/calldata produces a transaction that either reverts
     or is rejected; this pins the shape of what actually leaves the process.
     """
-    import json as _json
     import rlp
     from eth_utils import to_bytes
 
