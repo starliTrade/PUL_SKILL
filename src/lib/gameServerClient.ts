@@ -583,6 +583,34 @@ export interface PlayerProfile {
 export const fetchProfile = (session: ServerSession): Promise<PlayerProfile> =>
   request<PlayerProfile>("/api/profile", undefined, session, "GET");
 
+/** A public friend card (audit M-19) — five fields, never the ledger record. */
+export interface PublicPlayer {
+  address: string;
+  playerId: string;
+  level: number;
+  wins: number;
+  totalMatches: number;
+}
+
+/**
+ * Search players by tag or address THROUGH THE SERVER (audit M-19).
+ *
+ * The client used to read `users/*` directly. That document is the settlement
+ * ledger — wallet-linked counters, reaction averages, history — and it was
+ * world-readable only so a friend card could render. The server now returns the
+ * five fields a card needs; the collection is closed to clients.
+ */
+export const searchPlayers = (
+  session: ServerSession,
+  term: string
+): Promise<{ players: PublicPlayer[]; reason?: string }> =>
+  request<{ players: PublicPlayer[]; reason?: string }>(
+    `/api/players/search?q=${encodeURIComponent(term)}`,
+    undefined,
+    session,
+    "GET"
+  );
+
 /**
  * Save a profile change. Omitted fields are left alone; `playerId: ""` clears
  * the display tag. Throws on 4xx so the caller can show the reason — a silent

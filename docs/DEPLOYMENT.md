@@ -61,9 +61,39 @@ forge verify-contract <ESCROW_ADDRESS> contracts/PulsarEscrow.sol:PulsarEscrow \
 When moving to mainnet (137): set `PAYMENT_TOKEN_ADDRESS=0xc2132D05D31c914a87C6611C10748AEb04B58e8F`
 (canonical USDT), verify against `polygonscan.com`, and re-derive every address.
 
-⚠️ The oracle key signs real payouts. Use a dedicated key holding no funds;
-give it only signing authority. Consider moving production signing to AWS KMS
-or GCP KMS (the signing surface in `api/oracle.py` is designed for it).
+⚠️ The oracle key signs real payouts. Use a dedicated key holding no funds; give
+it only signing authority.
+
+**Since audit H-07 the signer is pluggable (`api/signer.py`), and a production-
+like deployment refuses to start with the key in the environment unless you say
+so explicitly.** Choose one:
+
+| Mode | Env | What holds the key |
+|---|---|---|
+| `local` (dev only) | `ORACLE_SIGNER=local`, `ORACLE_PRIVATE_KEY=0x…` | this process |
+| AWS KMS | `ORACLE_SIGNER=aws-kms`, `ORACLE_KMS_KEY_ID=<key-id>`, `ORACLE_PUBLIC_KEY=0x04…`, `AWS_REGION=…` | KMS (ECC_SECG_P256K1, `ECDSA_SHA_256`, digest type) |
+| GCP KMS | `ORACLE_SIGNER=gcp-kms`, `ORACLE_KMS_KEY_VERSION=projects/…/cryptoKeyVersions/1`, `ORACLE_PUBLIC_KEY=0x04…` | KMS (EC_SIGN_SECP256K1_SHA256) |
+
+Create the AWS key with `aws kms create-key --key-spec ECC_SECG_P256K1
+--key-usage SIGN_VERIFY`, then read the public key with `aws kms get-public-key
+--key-id <id> --query PublicKey --output text | base64 -d | xxd -p | tail -c 130`
+(that trailing 65 bytes, `04||X||Y`, is `ORACLE_PUBLIC_KEY`). The escrow must
+trust the address derived from that public key — verify it with
+`GET /api/health` → `oracleAddress` before opening the doors.
+
+`ORACLE_PUBLIC_KEY` is not optional bureaucracy: the server recovers the
+signature's signer from the digest and refuses to emit one that does not match.
+A KMS key that is not the one the escrow trusts fails at signing time, not as an
+on-chain revert after a payout was announced.
+
+Set `PULSAR_ALLOW_LOCAL_SIGNER=1` only for a short-lived rehearsal where KMS is
+not configured yet. It is a deliberate, visible exception: the server logs
+nothing about it because the boot check already made you type it.
+
+**What KMS does NOT fix (still open, see the audit):** whoever can call the
+signer still chooses the winner. Dual approval for large payouts, a payout
+delay, and a public transparency log are policy controls, tracked as C-02c/H-07
+follow-ups in `docs/audit/REMEDIATION-TODO-2026-10-22.md`.
 
 ⚠️ **Rotating the oracle or the treasury is a two-step, timelocked operation**
 (audit M24). `setOracleSigner` / `setTreasuryWallet` only SCHEDULE the change;
@@ -162,6 +192,30 @@ be swallowed by a bare `except Exception: pass`, so the sweep silently no-opped
 in production while still paying for the query (audit H9). It is now counted and
 surfaced on `/api/health` under `sweep` — check that field after deploying.
 
+## 3b-bis. Ledger health: outbox and reconciliation (audit H-14)
+
+The economy ledger is a shadow of what happened on-chain, written *after* the
+settlement is final. Two operational facts follow:
+
+- If a ledger write fails, the settlement is already irreversible. The server
+  queues it in `pulsar_ledger_outbox` and retries on the next sweep (any
+  authenticated queue poll). `GET /api/health` reports
+  `ledger.outbox.pending` and `ledger.outbox.oldestAgeSeconds`.
+  **Alert when `pending > 0` for more than a few minutes** — that is a player
+  whose wins/XP are visibly wrong while their money is already paid.
+- To measure drift that predates the outbox, run the read-only reconciler:
+
+```
+python scripts/reconcile_ledger.py          # exit 1 if counters disagree
+python scripts/reconcile_ledger.py --json   # for a cron job or dashboard
+```
+
+It recomputes wins/losses/totalMatches from the recorded `matches` documents and
+compares them with `users/*`. It never writes: applying a settlement again is
+the outbox's job (idempotent through the `settlements/{id}` gate).
+
+---
+
 ## 3c. Firestore TTL policies (audit 2026-10-13)
 
 Three collections are written by the server and never deleted by it. Without a
@@ -216,6 +270,33 @@ it under Project → Domains in the Reown dashboard — the same Project ID keep
 working, with zero code or env changes. WalletConnect is optional anyway: on
 desktop, users connect via injected providers (MetaMask/Rabby) without it; it
 only adds mobile-wallet support.
+
+---
+
+## 3d. Admin operations (audit M-10)
+
+`/api/admin/*` is gated by `PULSAR_ADMIN_SECRET` in the `X-Admin-Secret` header
+and **fails closed**: with the variable unset every admin route answers 404
+(refusing is indistinguishable from "no such route", which is deliberate).
+
+Since 2026-10-22 every administrative decision — force-void, force-settle, ban,
+unban, integrity review — appends an entry to `pulsar_admin_audit` with the
+action, target, reason, source IP and a unique id, and the same line is printed
+as JSON on stderr (`component":"admin_audit"`). Read it back with:
+
+```
+curl -H "X-Admin-Secret: $PULSAR_ADMIN_SECRET" https://<api>/api/admin/audit
+```
+
+Set `TRUST_PROXY_HEADERS=1` only when a proxy **overwrites** `X-Forwarded-For`;
+otherwise the source IP recorded is the socket's (correct, just coarser behind
+NAT). Without the flag a forged header cannot move the audited IP or a rate
+limit.
+
+What is still open on this surface (audit M-10): the secret is shared, not
+per-operator, and there is no 2FA/mTLS or IP allowlist. Treat it as a break-glass
+credential: rotate it after any use, keep it out of the web client, and put the
+admin routes behind a network policy that only your office/VPN can reach.
 
 ---
 

@@ -53,10 +53,13 @@ except Exception:  # pragma: no cover - local dev without the SDK
 
 import abuse
 import analytics
+import auditlog
 import eligibility
+import eventlog
 import integrity
 import limits
 import metrics
+import privacy
 import profiles
 
 import oracle
@@ -78,7 +81,11 @@ _rl_window: dict[str, list[float]] = {}
 # the quiet windows are dropped (see `_rl_check`).
 _RL_WINDOW_MAX_KEYS = 10_000
 RL_WINDOW_SECONDS = 60.0
-RL_PROFILE_MAX = 30    # profile reads/writes per minute per address
+RL_PROFILE_MAX = 30
+# Audit M-21: erasure and export are rare, deliberate operations.
+RL_EXPORT_MAX = 5
+RL_PLAYERS_SEARCH_MAX = 30
+RL_DELETE_MAX = 3    # profile reads/writes per minute per address
 RL_QUEUE_MAX = 40        # queue calls per minute per address (audit #6 C3:
                          # the client's 2.5s poll = 24/min; 20/min kicked
                          # honest waiting players out of matchmaking at t≈50s)
@@ -128,21 +135,26 @@ def _rl_check_ip(bucket: str, request: Request, limit: int) -> None:
     same Firestore-backed (cross-replica) window when Firestore mode is on,
     otherwise the in-process fallback.
 
-    Audit #10 (item 4): trusting X-Forwarded-For is now EXPLICIT, not inferred
-    from "the socket looks like a private IP". Private-socket inference still
-    trusts a proxy that rewrites XFF (Cloud Run / VPC L7 LB), but a deployment
-    behind a proxy that PASSES the header through unmodified (nginx default,
-    some edge workers) lets a client forge the first hop and shift its quota
-    onto a victim IP. Set TRUST_PROXY_HEADERS=1 for such a topology AND make
-    sure the proxy OVERWRITES X-Forwarded-For; leave it unset and the socket
-    address is used directly (spoof-proof, just coarser per-NAT).
+    Audit #10 (item 4) + M-09 (2026-10-22): X-Forwarded-For is honoured ONLY
+    when TRUST_PROXY_HEADERS=1. It is never inferred from a private-looking
+    socket address: every container network is private, including topologies
+    where the header passes through untouched and a client can therefore forge
+    the first hop. Set the flag only for a proxy that OVERWRITES the header;
+    leave it unset and the socket address is used (spoof-proof, coarser behind
+    NAT).
     """
     xff = request.headers.get("x-forwarded-for", "")
     hops = [h.strip() for h in xff.split(",") if h.strip()]
     socket_ip = request.client.host if request.client else "unknown"
     trust_xff = os.environ.get("TRUST_PROXY_HEADERS", "") in ("1", "true", "yes")
-    socket_is_private = socket_ip.startswith(("10.", "172.", "192.168.", "127."))
-    if hops and (trust_xff or (not trust_xff and socket_is_private)):
+    # Audit M-09 (2026-10-22): "the socket looks private" is NOT evidence of a
+    # trusted proxy. Any container network is private, including one where the
+    # client's X-Forwarded-For passes through untouched — and then the first hop
+    # is attacker-controlled, so a script rotates its quota across forged IPs
+    # (and pins the blame on a victim's address). The header is now honoured only
+    # when the operator says a proxy rewrites it; without that, the socket
+    # address is used (coarser behind NAT, and not forgeable).
+    if hops and trust_xff:
         # The proxy sits between us and the client; its REWRITTEN first hop is
         # the client. (A pass-through proxy makes this forgeable — that is why
         # the flag must only be set when the proxy overwrites the header.)
@@ -344,6 +356,11 @@ def sweep_health() -> dict[str, Any]:
         "lastRunAt": int(_last_sweep_at),
         "failures": dict(_sweep_failures),
         "lastError": dict(_sweep_last_error),
+        # Audit H-12: a steady `backlog: true` means more settled matches need a
+        # fresh signature than one page can serve — the prize-rescue sweep is
+        # falling behind, and the fix is a bigger page or more frequent sweeps,
+        # not a restart.
+        "backlog": bool(getattr(store, "sweep_backlog", False)),
         # Audit H-10: a dispute report that could not be persisted is an
         # operator problem (a payout disagreement with no evidence), so it is
         # visible here rather than only in a log line.
@@ -587,7 +604,9 @@ REQUIRED_PRODUCTION_ENV = (
     "ESCROW_ADDRESS",
     "ESCROW_RPC_URL",
     "ORACLE_SIGNING_SECRET",
-    "ORACLE_PRIVATE_KEY",
+    # ORACLE_PRIVATE_KEY is NOT in this list any more (audit H-07): with a KMS
+    # backend it must be ABSENT. The signer check below decides which of the two
+    # configurations is acceptable.
     # Audit 2026-10-13: this was missing, and both `auth` and `oracle` default it
     # to 80002 (Amoy). A production deployment that forgot it would sign SIWE
     # statements and settlement digests for a TESTNET while the escrow is on
@@ -597,10 +616,31 @@ REQUIRED_PRODUCTION_ENV = (
 )
 
 
+def _looks_deployed(environ: Any) -> str | None:
+    """The platform marker that says this process is running for real (M-08).
+
+    The opt-out is `PULSAR_ENV=dev`, and it is right there in `.env.example` for
+    local work. So the one mistake that actually happens is somebody copying the
+    dev environment file onto a host and disabling every safeguard with a single
+    word. These markers are set by the platform, not by us, so a dev-labelled
+    deploy on Cloud Run / Render / Fly / Heroku is detectable.
+    """
+    for marker in _DEPLOY_MARKERS:
+        if environ.get(marker):
+            return marker
+    if str(environ.get("NODE_ENV", "")).strip().lower() == "production":
+        return "NODE_ENV"
+    return None
+
+
 def _is_prod_like(environ: Any) -> bool:
     """True when this process must not run with insecure defaults (audit H6)."""
     if str(environ.get("PULSAR_ENV", "")).strip().lower() in _LOCAL_ENV_VALUES:
-        return False
+        # M-08: a dev label on a real platform is not a local run. The escape
+        # hatch is deliberate and means "keep the dev defaults on a staging box".
+        if environ.get("PULSAR_ALLOW_DEV_ON_PLATFORM") == "1":
+            return False
+        return _looks_deployed(environ) is not None
     return True
 
 
@@ -610,6 +650,25 @@ def _missing_production_env(environ: Any) -> list[str]:
 
 
 _prod_like = _is_prod_like(os.environ)
+_deployed_marker = _looks_deployed(os.environ)
+if (
+    _deployed_marker
+    and str(os.environ.get("PULSAR_ENV", "")).strip().lower() in _LOCAL_ENV_VALUES
+    and os.environ.get("PULSAR_ALLOW_DEV_ON_PLATFORM") != "1"
+):
+    # M-08: refuse rather than silently upgrade a dev app to production rules —
+    # the dev run has no ALLOWED_DOMAIN, no CORS list and probably a test key, so
+    # booting it as production would fail on the first request anyway. Better a
+    # clear message now than a half-configured service taking real traffic.
+    raise RuntimeError(
+        f"Refusing to start: PULSAR_ENV={os.environ.get('PULSAR_ENV')!r} but this "
+        f"process is running on {_deployed_marker} (audit M-08). A dev label "
+        "disables the SIWE domain check, CORS allow-list, signer policy and the "
+        "required-env gate. Set PULSAR_ENV=production (or unset it) for a real "
+        "deployment, or set PULSAR_ALLOW_DEV_ON_PLATFORM=1 if this is a deliberate "
+        "staging box."
+    )
+
 if _prod_like:
     _missing = _missing_production_env(os.environ)
     if _missing:
@@ -619,6 +678,34 @@ if _prod_like:
             + ". Refusing to start with an insecure default. "
             "Set PULSAR_ENV=dev to explicitly opt out for local testing."
         )
+
+# Audit H-07 (2026-10-22): a production-like deployment must not run the oracle
+# with a hot key in the environment without SAYING SO. The alternative — quietly
+# booting with ORACLE_PRIVATE_KEY — is how the key stays in env forever.
+#   * ORACLE_SIGNER=aws-kms | gcp-kms  -> the key is in the KMS (preferred)
+#   * ORACLE_SIGNER=local + PULSAR_ALLOW_LOCAL_SIGNER=1 -> a deliberate, visible
+#     exception for a small rehearsal where KMS is not set up yet.
+# Anything else refuses to boot, and ORACLE_PRIVATE_KEY is no longer a required
+# variable when a KMS backend is chosen (checked below).
+if _prod_like:
+    _signer_mode = os.environ.get("ORACLE_SIGNER", "local").strip().lower() or "local"
+    if _signer_mode == "local" and os.environ.get("PULSAR_ALLOW_LOCAL_SIGNER", "") != "1":
+        raise RuntimeError(
+            "Refusing to start: ORACLE_SIGNER=local keeps the payout key in the "
+            "server's environment (audit H-07). Set ORACLE_SIGNER=aws-kms or "
+            "gcp-kms, or set PULSAR_ALLOW_LOCAL_SIGNER=1 to accept the risk "
+            "explicitly. PULSAR_ENV=dev disables this check."
+        )
+    if _signer_mode in ("aws-kms", "gcp-kms"):
+        # The private key must NOT be needed in KMS mode. If it is still
+        # present, say so: a leftover variable is a key that can be stolen.
+        if os.environ.get("ORACLE_PRIVATE_KEY"):
+            print(
+                "[config] WARNING: ORACLE_SIGNER is a KMS backend but "
+                "ORACLE_PRIVATE_KEY is still set. Remove it — the KMS mode "
+                "exists so the key is not in this process.",
+                file=sys.stderr,
+            )
 
 # Audit #10 (item 2): an INCOHERENT escrow config (one half set, the other
 # missing) silently disables the deposit gate (onchain.escrow_configured()
@@ -791,6 +878,46 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Admin credential required")
 
 
+@app.middleware("http")
+async def _correlation_middleware(request: Request, call_next: Any) -> Any:
+    """Give every request an id and echo it (audit M-13).
+
+    A player's "my settlement never arrived" report is only actionable if the
+    server can be asked what it did FOR THAT REQUEST. The id is accepted from
+    the caller only when it is short and alphanumeric — it is a log correlation,
+    never an authorisation, and an attacker must not be able to inject newlines
+    or arbitrary text into the log stream.
+    """
+    supplied = request.headers.get("x-request-id", "")
+    if supplied and len(supplied) <= 64 and supplied.replace("-", "").replace("_", "").isalnum():
+        corr = supplied
+    else:
+        corr = eventlog.new_correlation()
+    token = eventlog.set_correlation(corr)
+    try:
+        response = await call_next(request)
+    finally:
+        eventlog.reset_correlation(token)
+    response.headers["X-Request-Id"] = corr
+    return response
+
+
+@app.get("/api/admin/audit")
+def admin_audit_trail(request: Request, limit: int = 50) -> dict[str, Any]:
+    """Recent administrative decisions (audit M-10).
+
+    Read-only. The point of the log is that an operator can answer "who voided
+    this duel, when, and why" without grepping a rotated stderr stream.
+    """
+    _require_admin(request)
+    entries = auditlog.recent(limit)
+    return {"count": len(entries), "entries": entries}
+
+
+def _admin_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
 @app.get("/api/admin/review")
 def admin_review_queue(request: Request) -> dict[str, Any]:
     """Accounts the integrity scorer flagged (audit C-02a).
@@ -813,6 +940,12 @@ def admin_review_decide(review_id: str, body: ReviewDecision, request: Request) 
     _require_admin(request)
     if not integrity.resolve(review_id, body.status, body.note):
         raise HTTPException(status_code=404, detail="Review entry not found")
+    auditlog.record(
+        "review.decide",
+        target=review_id,
+        detail=f"{body.status}: {body.note}",
+        source_ip=_admin_ip(request),
+    )
     return {"ok": True, "id": review_id, "status": body.status}
 
 
@@ -905,9 +1038,8 @@ def admin_force_void(match_id: str, body: AdminActionRequest, request: Request) 
     outcome = store.update(match_id, _void)
     if outcome != "void":
         raise HTTPException(status_code=409, detail=f"Match is already {outcome}")
-    print(
-        f"[admin] force-void {match_id} reason={body.reason!r}",
-        file=sys.stderr,
+    auditlog.record(
+        "match.force_void", target=match_id, detail=body.reason, source_ip=_admin_ip(request)
     )
     return {"matchId": match_id, "status": "void", "reason": body.reason}
 
@@ -932,9 +1064,8 @@ def admin_force_settle(match_id: str, body: AdminActionRequest, request: Request
     except MatchError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     _ledger_settlement(match_id)
-    print(
-        f"[admin] force-settle {match_id} reason={body.reason!r}",
-        file=sys.stderr,
+    auditlog.record(
+        "match.force_settle", target=match_id, detail=body.reason, source_ip=_admin_ip(request)
     )
     return {"matchId": match_id, "reason": body.reason, "settlement": signed}
 
@@ -1106,6 +1237,10 @@ def health() -> dict[str, Any]:
         # Audit C-02a: is the integrity scorer alive, and how many accounts are
         # waiting for a human? (Advisory: it never changes a payout.)
         "integrity": integrity.health(),
+        # Audit M-10: the admin trail is only useful if you can tell whether it
+        # is being written at all.
+        "adminAudit": auditlog.health(),
+        "events": eventlog.counts(),
         # Audit 6.2: the three questions an operator asks during an incident and
         # could not previously answer from the server. No secret and no URL:
         # this endpoint is unauthenticated, so anything here is public.
@@ -1363,16 +1498,25 @@ def admin_ban(body: BanRequest, request: Request) -> dict[str, Any]:
     """Ban an address. Operator action; requires the admin secret."""
     _require_admin(request)
     try:
-        return abuse.ban(body.address, body.seconds, body.reason)
+        out = abuse.ban(body.address, body.seconds, body.reason)
     except abuse.AbuseError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    auditlog.record(
+        "player.ban",
+        target=body.address,
+        detail=f"{body.seconds}s: {body.reason}",
+        source_ip=_admin_ip(request),
+    )
+    return out
 
 
 @app.post("/api/admin/unban")
 def admin_unban(body: BanRequest, request: Request) -> dict[str, Any]:
     """Lift a ban. Operator action; requires the admin secret."""
     _require_admin(request)
-    return abuse.unban(body.address)
+    out = abuse.unban(body.address)
+    auditlog.record("player.unban", target=body.address, source_ip=_admin_ip(request))
+    return out
 
 
 class DepositLimitRequest(BaseModel):
@@ -1573,6 +1717,14 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
             _resign_stale_settlements()
         except Exception as exc:
             _note_sweep_failure("resign", exc)
+        # Audit H-14: retry settlements whose ledger write failed. Without this
+        # the outbox was a record of permanent divergence: the prize was paid
+        # on-chain and the player's wins/XP never advanced. Idempotent through
+        # the ledger's own settlement gate.
+        try:
+            economy.drain_outbox(store)
+        except Exception as exc:
+            _note_sweep_failure("ledger_outbox", exc)
     # Audit #8 F-13: durable idempotency — check Firestore for a live match
     # containing this address BEFORE enqueueing, so a re-poll that lands on a
     # different replica (or a recycled process) cannot mint an orphan match
@@ -1782,7 +1934,16 @@ def _ledger_settlement(match_id: str) -> None:
     except MatchError:
         return
     if match.status == "settled":
-        economy.record_settlement(match)
+        # Audit M-13: whether the ledger row landed is a separate fact from the
+        # signature — a dispute needs both, and they can fail independently.
+        try:
+            economy.record_settlement(match)
+        except Exception as exc:
+            eventlog.emit(
+                "ledger.write_failed", matchId=match_id, error=type(exc).__name__
+            )
+            raise
+        eventlog.emit("ledger.written", matchId=match_id)
 
 
 def _attach_signed_envelope(m: Any, result: dict[str, Any]) -> dict[str, Any]:
@@ -1796,14 +1957,33 @@ def _attach_signed_envelope(m: Any, result: dict[str, Any]) -> dict[str, Any]:
         # Audit #10 (item 5): pass the match so the signature deadline is
         # clamped to activation + contract MATCH_TIMEOUT.
         envelope = sign_settlement(result, matchish=m)
-    except Exception:
+    except Exception as exc:
         # Phase 6.1: a failing oracle means winners cannot claim, and from
-        # outside it looks identical to a quiet period. Count it.
+        # outside it looks identical to a quiet period. Count it — and say WHY
+        # in the event stream, because the metric alone cannot be debugged.
         metrics.note_signature(False)
+        eventlog.emit(
+            "match.sign_failed",
+            matchId=getattr(m, "match_id", ""),
+            error=type(exc).__name__,
+            detail=str(exc)[:200],
+        )
         m.status, m.winner, m.settled_at, m.signed_settlement = saved
         raise
     metrics.note_signature(True)
     metrics.note_match_settled()
+    # Audit M-13: the money decision, in one parseable line, tagged with the
+    # request that asked for it and the match it belongs to.
+    eventlog.emit(
+        "match.settled",
+        matchId=getattr(m, "match_id", ""),
+        winner=getattr(m, "winner", ""),
+        # The signer names it `serverNonce` (api/oracle.py); logging `nonce`
+        # would have written null for every settlement — useless in a dispute.
+        nonce=envelope.get("serverNonce"),
+        deadline=envelope.get("deadline"),
+        stake=getattr(m, "stake", None),
+    )
     envelope["roundWins"] = result.get("roundWins", {})
     # Audit 2026-10-13: the ledger reads `forfeits` off this envelope; without
     # the copy it recorded every duel as non-forfeit.
@@ -1974,6 +2154,7 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
         # at the HTTP boundary, instead of inside the persistence layer.
         raise HTTPException(status_code=409, detail=str(e))
     _ledger_settlement(match_id)
+    eventlog.emit("settle.served", matchId=match_id, by=address)
     return envelope
 
 
@@ -2161,6 +2342,107 @@ def username_lookup(name: str, request: Request) -> dict[str, Any]:
     if owner and owner == caller.lower():
         return {"available": True, "username": normalized, "alreadyOwned": True}
     return {"available": False, "username": normalized, "taken": True}
+
+
+class DeletionRequest(BaseModel):
+    # A short, explicit acknowledgement. A mistyped tap must not erase an
+    # account, and this endpoint is irreversible on the profile data.
+    confirm: str = Field(pattern="^DELETE$")
+
+
+@app.get("/api/players/search")
+def players_search(request: Request, q: str = "") -> dict[str, Any]:
+    """Find a player by tag or address (audit M-19).
+
+    This endpoint exists so the CLIENT no longer reads `users/*`. That collection
+    is the settlement ledger: it holds wallet-linked counters, reaction averages
+    and history, and it was world-readable purely so the friend search could
+    render a card. A public read of an economic record is a privacy leak (and a
+    cheap reconnaissance feed for a cheater).
+
+    Only the five fields a friend card needs are returned, the caller must hold a
+    session, and the query is exact-match — no prefix scan, which would be both
+    an enumeration oracle and a Firestore bill.
+    """
+    caller = _auth(request)
+    _rl_check("players_search", caller, RL_PLAYERS_SEARCH_MAX)
+    term = (q or "").strip()
+    if len(term) < 3:
+        return {"players": []}
+
+    db = None
+    try:
+        import store as _store_mod
+
+        db = _store_mod.durable_db()
+    except Exception:  # noqa: BLE001
+        db = None
+    if db is None:
+        return {"players": [], "reason": "search requires the durable store"}
+
+    found: list[dict[str, Any]] = []
+    try:
+        if re.fullmatch(r"0x[0-9a-fA-F]{40}", term):
+            snap = db.collection("users").document(term.lower()).get()
+            if snap.exists:
+                found.append({"address": term.lower(), **(snap.to_dict() or {})})
+        else:
+            for snap in db.collection("users").where("playerId", "==", term).limit(10).stream():
+                found.append(dict(snap.to_dict() or {}))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[players] search failed: {exc!r}", file=sys.stderr)
+        raise HTTPException(status_code=503, detail="Player search unavailable") from exc
+
+    players = []
+    for row in found:
+        addr = str(row.get("address", "")).lower()
+        if not addr:
+            continue
+        players.append(
+            {
+                "address": addr,
+                # A cleared tag after an erasure request must not reappear.
+                "playerId": str(row.get("playerId", "") or ""),
+                "level": int(row.get("level", 1) or 1),
+                "wins": int(row.get("wins", 0) or 0),
+                "totalMatches": int(row.get("totalMatches", 0) or 0),
+            }
+        )
+    return {"players": players}
+
+
+@app.get("/api/account/export")
+def account_export(request: Request) -> dict[str, Any]:
+    """Everything the server holds about me (audit M-21).
+
+    Data portability is a legal requirement in the EU/UK and California, and it
+    is also the honest answer to "what do you actually store about me".
+    """
+    address = _auth(request)
+    _rl_check("export", address, RL_EXPORT_MAX)
+    return privacy.export(address)
+
+
+@app.post("/api/account/delete")
+def account_delete(body: DeletionRequest, request: Request) -> dict[str, Any]:
+    """Erase the caller's profile data (audit M-21).
+
+    `confirm` must be the literal DELETE: this cannot be undone, and a wallet
+    signature is one tap away from a mistaken request. The response says what
+    was removed AND what is retained, so the player is not promised more than
+    the system does.
+    """
+    address = _auth(request)
+    _rl_check("delete", address, RL_DELETE_MAX)
+    result = privacy.erase(address)
+    auditlog.record(
+        "account.erase",
+        target=address,
+        detail=",".join(result["removed"]),
+        actor="player",
+        source_ip=_admin_ip(request),
+    )
+    return result
 
 
 class ProfileUpdate(BaseModel):

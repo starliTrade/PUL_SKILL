@@ -5,11 +5,12 @@
 
 import { doc, getDoc, collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
 import { getDb } from './firebase';
-import { checkUsername, ensureSession, logoutServerSession, fetchRecentSettlements, gameServerConfigured, loadServerSession, fetchProfile, saveProfile, type SettlementRecord } from './gameServerClient';
+import { checkUsername, ensureSession, logoutServerSession, fetchRecentSettlements, gameServerConfigured, loadServerSession, fetchProfile, saveProfile, searchPlayers as searchPlayersOnServer, type SettlementRecord } from './gameServerClient';
 import { CHAIN, TOKENS } from './chain';
 
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
 import { isMobileDevice, isWalletInAppBrowser, getWalletConnectDeepLink, getNativeSchemeUri, openWalletConnectInNativeApp } from './web3DeepLinks';
+import { clearSaveFailure, reportSaveFailure } from './saveStatus';
 
 export const getWalletConnectProjectId = (): string => {
   if (typeof window !== 'undefined') {
@@ -1449,9 +1450,12 @@ class RealWeb3Manager {
         const p = await fetchProfile(session);
         profile = { playerId: p.playerId || '', savedFriends: p.savedFriends || [] };
       }
+      clearSaveFailure('profile', 'read');
     } catch (e) {
       // Unreadable profile is NOT "no friends" (audit H-05). Keep whatever the
       // local cache has and say so — never overwrite it with an empty list.
+      // Audit M-24: "say so" has to reach the player, not the console.
+      reportSaveFailure('profile', 'read', e);
       console.warn('Profile load failed; keeping the local copy:', e);
     }
 
@@ -1594,6 +1598,8 @@ class RealWeb3Manager {
       const session = loadServerSession();
       if (!session || session.address.toLowerCase() !== cleanAddr) {
         this.lastProfileSyncError = 'no session';
+        // Not a network failure: there is nobody to save FOR. The banner would
+        // be a lie ("retry"), so it stays quiet; the caller's UI explains it.
         return;
       }
       await saveProfile(session, {
@@ -1601,8 +1607,13 @@ class RealWeb3Manager {
         savedFriends: data.savedFriends || [],
       });
       this.lastProfileSyncError = '';
+      clearSaveFailure('profile', 'write');
     } catch (e) {
       this.lastProfileSyncError = e instanceof Error ? e.message : 'profile sync failed';
+      // Audit M-24: the local cache was written first, so the player SEES their
+      // change. Without this the change is silently rolled back on the next
+      // device. Report it; the banner renders it and the next success clears it.
+      reportSaveFailure('profile', 'write', e);
       console.warn('Profile sync failed (kept locally):', e);
     }
   }
@@ -1726,73 +1737,42 @@ class RealWeb3Manager {
     }
   }
 
+  /**
+   * Find players by tag or address (audit M-19).
+   *
+   * This used to read `users/*` from the browser. That collection is the
+   * settlement ledger — wallet-linked counters, reaction averages, history —
+   * and it was world-readable so a friend card could render. The server now
+   * answers with the five display fields a card needs, and the collection is
+   * closed to clients.
+   *
+   * No fabricated people: a search that matches nothing returns nothing. (An
+   * address that has never played is NOT invented into a "new challenger"
+   * profile — the old code did exactly that for any 42-character hex string.)
+   */
   public async searchPlayers(searchQuery: string): Promise<FriendProfile[]> {
-    const q = searchQuery.trim().toLowerCase();
+    const q = searchQuery.trim();
     if (!q) return [];
+    const session = loadServerSession();
+    if (!session) return [];
 
-    const matched: FriendProfile[] = [];
-    const toProfile = (data: UserWalletData): FriendProfile => ({
-      address: data.address,
-      playerId: data.playerId || `Player#${data.address.slice(2, 6)}`,
-      shortAddress: `${data.address.slice(0, 6)}...${data.address.slice(-4)}`,
-      level: data.level || 1,
-      xp: data.xp || 0,
-      wins: data.wins || 0,
-      totalMatches: data.totalMatches || 0,
-      bestReactionMs: data.bestReactionMs || 0,
-      winRate: data.totalMatches > 0 ? Math.round((data.wins / data.totalMatches) * 100) : 0,
-      status: 'online',
-    });
-
-    // Only real registered players are returned. No fabricated profiles.
-    if (q.startsWith('0x') && q.length >= 6) {
-      const alreadyAdded = matched.some((m) => m.address.toLowerCase() === q);
-      if (!alreadyAdded) {
-        try {
-          const userDoc = await getDoc(doc(getDb(), 'users', q));
-          if (userDoc.exists()) {
-            const data = userDoc.data() as UserWalletData;
-            matched.push(toProfile(data));
-          } else if (q.length === 42) {
-            // New valid EVM address
-            matched.push({
-              address: q,
-              playerId: `Player#${q.slice(2, 6)}`,
-              shortAddress: `${q.slice(0, 6)}...${q.slice(-4)}`,
-              level: 1,
-              xp: 0,
-              wins: 0,
-              totalMatches: 0,
-              bestReactionMs: 0,
-              winRate: 0,
-              status: 'online',
-              bio: 'New challenger on EVM',
-            });
-          }
-        } catch {}
-      }
-    } else {
-      // Audit M26: search by playerId too. The tag is what players actually
-      // share with each other — address-only search made the feature useless
-      // to anyone who does not know their friend's 42-character hex address.
-      try {
-        const snap = await getDocs(
-          query(
-            collection(getDb(), 'users'),
-            where('playerId', '==', searchQuery.trim()),
-            limit(10)
-          )
-        );
-        snap.forEach((docSnap) => {
-          const data = docSnap.data() as UserWalletData;
-          if (!data?.address) return;
-          if (matched.some((m) => m.address.toLowerCase() === data.address.toLowerCase())) return;
-          matched.push(toProfile(data));
-        });
-      } catch {}
+    try {
+      const { players } = await searchPlayersOnServer(session, q);
+      return players.map((p) => ({
+        address: p.address,
+        playerId: p.playerId || `Player#${p.address.slice(2, 6)}`,
+        shortAddress: `${p.address.slice(0, 6)}...${p.address.slice(-4)}`,
+        level: p.level || 1,
+        xp: 0,
+        wins: p.wins || 0,
+        totalMatches: p.totalMatches || 0,
+        bestReactionMs: 0,
+        winRate: p.totalMatches > 0 ? Math.round((p.wins / p.totalMatches) * 100) : 0,
+        status: 'online',
+      }));
+    } catch {
+      return [];
     }
-
-    return matched;
   }
 
   public getSavedFriendsList(userAddress: string): FriendProfile[] {

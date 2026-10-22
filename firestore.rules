@@ -20,12 +20,16 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
-      // Audit #10 (item 8): profile documents are PUBLIC READ (leaderboard
-      // cards render from them) but the payload is frozen to the display
-      // fields the UI actually consumes — reaction times, wallet-linked
-      // history, and friend graphs are server/ledger data, not a public feed.
-      // The economy counters stay readable for the podium UI.
-      allow read: if true;
+      // Audit M-19 (2026-10-22): this used to be `allow read: if true`.
+      //
+      // The document is the SETTLEMENT LEDGER: wallet address, wins/losses/XP,
+      // reaction averages, history and friend graph. World-readable meant any
+      // visitor could enumerate every player and their economic profile, and a
+      // cheater could scout an opponent's reaction average before choosing a
+      // stake. The only reason it was public was the friend search — which now
+      // runs through GET /api/players/search (five display fields, session
+      // required), and the podium reads the separate `leaderboard` collection.
+      allow read: if false;
       // New profiles must start with a zeroed economy — no self-granted stats.
       // OWNERSHIP (audit #10 item 8): a create must address the caller's OWN
       // wallet. There is no Firebase Auth in this deployment, so ownership is
@@ -79,7 +83,11 @@ service cloud.firestore {
     // idempotent /api/username/claim (Admin SDK), so clients get read-only
     // access here.
     match /usernames/{username} {
-      allow read: if true;
+      // Audit M-19: `read: if true` turned the registry into a name→address
+      // enumeration oracle (who owns "nova"?). Availability is answered by the
+      // authenticated, rate-limited GET /api/username/{name}, which reports only
+      // whether the caller may take the name.
+      allow read: if false;
       allow write: if false;
     }
   }
