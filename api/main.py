@@ -1392,7 +1392,17 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
         abuse.require(address)
     except abuse.AbuseError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    abuse.note_start(address)
+    # Audit C-01 (2026-10-22): `note_start` used to run HERE, before the
+    # "already have a live match" early return below — so every QUEUE POLL of a
+    # waiting player counted as a new duel. With VELOCITY_MAX_MATCHES=20 per
+    # 10 minutes and the client polling every 2.5–10s, two searches (~11 polls
+    # each) locked an honest player out for 15 minutes. A velocity limit that
+    # fires on waiting is worse than none: it punishes exactly the behaviour it
+    # is supposed to encourage and cannot distinguish a poller from a bot.
+    #
+    # The counter now moves ONLY when this request actually starts something:
+    # a new waiting match or a join. Everything that returns an existing match
+    # (the poll path) is free.
     if body.stake not in ALLOWED_STAKES:
         raise HTTPException(status_code=400, detail="Invalid stake")
     # Audit M27: a friend challenge is a reservation for one address. Validate
@@ -1441,6 +1451,10 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
                 f"Finish or leave it before queueing at {body.stake:g}."
             ),
         )
+    # Audit C-01: this is the ONE point that can create or join a duel (the
+    # live-match path returned above without reaching here), so it is the only
+    # place a "start" is recorded.
+    abuse.note_start(address)
     try:
         match = store.enqueue(address, body.stake, body.rttMs, challenge_target or None)
     except Exception as exc:  # noqa: BLE001
