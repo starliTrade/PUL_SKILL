@@ -1,6 +1,10 @@
 fastapi==0.115.6
 uvicorn==0.34.0
 eth-account==0.13.6
+# scripts/keeper.py ABI-encodes settleDuel/refundTimeoutMatch. Already installed
+# as a transitive dependency of eth-account; pinned here because the keeper
+# imports it directly and a transitive bump must not break a money path.
+eth-abi==6.0.0
 pycryptodome==3.21.0
 pydantic==2.10.5
 google-cloud-firestore==2.20.0
