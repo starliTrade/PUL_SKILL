@@ -611,6 +611,35 @@ export const searchPlayers = (
     "GET"
   );
 
+/** A podium row (audit M-04) — display fields only, never the ledger record. */
+export interface LeaderboardRow {
+  address: string;
+  playerId?: string;
+  wins: number;
+  totalMatches: number;
+  earnedUSDT: number;
+  bestReactionMs: number;
+  xp: number;
+  level: number;
+}
+
+/**
+ * The public leaderboard, through the server.
+ *
+ * No session: the podium is shown to visitors deciding whether to sign up, and
+ * it contains nothing but a display row. The server caches it for 15 seconds.
+ */
+export const fetchLeaderboard = async (
+  limit = 20
+): Promise<{ players: LeaderboardRow[]; reason?: string }> => {
+  if (!gameServerConfigured()) return { players: [], reason: "no game server configured" };
+  const capped = Math.max(1, Math.min(limit, 50));
+  const res = await fetch(`${SERVER_URL}/api/leaderboard?limit=${capped}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`leaderboard answered ${res.status}`);
+  const body = (await res.json()) as { players?: LeaderboardRow[]; reason?: string };
+  return { players: Array.isArray(body.players) ? body.players : [], reason: body.reason };
+};
+
 /**
  * Save a profile change. Omitted fields are left alone; `playerId: ""` clears
  * the display tag. Throws on 4xx so the caller can show the reason — a silent

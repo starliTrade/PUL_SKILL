@@ -1,11 +1,14 @@
 /**
- * Pulsar Real Web3 & Firebase Firestore Real-Time Database Manager
- * Zero mock accounts, zero fake duels. Pure real-time on-chain & cloud persistence.
+ * Pulsar Web3 + game-server data manager.
+ *
+ * Audit M-04 (2026-10-22): this module no longer reads Firestore. Every
+ * collection it used to query (`users`, `usernames`, `leaderboard`, `matches`)
+ * is now closed to clients or server-written only, and the read is replaced by
+ * a server endpoint that returns a fixed display shape. The name is kept for
+ * import compatibility; there is no Firebase dependency left in this file.
  */
 
-import { doc, getDoc, collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
-import { getDb } from './firebase';
-import { checkUsername, ensureSession, logoutServerSession, fetchRecentSettlements, gameServerConfigured, loadServerSession, fetchProfile, saveProfile, searchPlayers as searchPlayersOnServer, type SettlementRecord } from './gameServerClient';
+import { checkUsername, ensureSession, logoutServerSession, fetchLeaderboard, fetchPlayerStats, fetchRecentSettlements, gameServerConfigured, loadServerSession, fetchProfile, saveProfile, searchPlayers as searchPlayersOnServer, type SettlementRecord } from './gameServerClient';
 import { CHAIN, TOKENS } from './chain';
 
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
@@ -1459,28 +1462,42 @@ class RealWeb3Manager {
       console.warn('Profile load failed; keeping the local copy:', e);
     }
 
-    // 1. Try Firebase Firestore with rapid timeout to stay lightning fast if offline
+    // 1. The ledger is the source of truth for progression — and since audit
+    //    M-19 closed the `users` collection to clients, the browser cannot read it any more.
+    //    Ask the SERVER (the same numbers the podium and the payout use).
+    //
+    //    No signature prompt here: a lobby visit must never open a wallet
+    //    (H-05), so this only uses a session that already exists.
     try {
-      const userDocRef = doc(getDb(), 'users', cleanAddr);
-      const snapPromise = getDoc(userDocRef);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Firestore timeout')), 8000)
-      );
-      const snap = await Promise.race([snapPromise, timeoutPromise]);
-      if (snap && snap.exists()) {
-        const cloudData = this.normalizeUserData(snap.data(), cleanAddr);
-        if (profile) {
-          if (profile.playerId) cloudData.playerId = profile.playerId;
-          cloudData.savedFriends = profile.savedFriends;
-        } else {
-          const local = this.loadFromLocal(cleanAddr);
-          if (local?.savedFriends?.length) cloudData.savedFriends = local.savedFriends;
+      const session = loadServerSession();
+      if (session && session.address.toLowerCase() === cleanAddr && gameServerConfigured()) {
+        const stats = await fetchPlayerStats(session, cleanAddr);
+        if (stats.available) {
+          const base = this.normalizeUserData(this.loadFromLocal(cleanAddr), cleanAddr);
+          const merged: UserWalletData = {
+            ...base,
+            wins: stats.wins,
+            losses: stats.losses,
+            voids: stats.voids,
+            totalMatches: stats.totalMatches,
+            xp: stats.xp,
+            level: stats.level,
+            winStreak: stats.winStreak,
+            bestReactionMs: stats.bestReactionMs || base.bestReactionMs,
+            avgReactionMs: stats.avgReactionMs || base.avgReactionMs,
+          };
+          if (profile) {
+            if (profile.playerId) merged.playerId = profile.playerId;
+            merged.savedFriends = profile.savedFriends;
+          }
+          this.saveToLocal(merged);
+          return merged;
         }
-        this.saveToLocal(cloudData);
-        return cloudData;
+        // available: false means the ledger could not answer. Fall through to
+        // the local copy and do NOT report zeros as if they were facts.
       }
     } catch (e) {
-      console.warn('Firestore load skipped or offline, using local cache:', e);
+      console.warn('Server progression unavailable, using local cache:', e);
     }
 
     // 2. Try LocalStorage (normalised: a cache from an older build may miss fields)
@@ -1666,53 +1683,32 @@ class RealWeb3Manager {
   }
 
   public async fetchGlobalLeaderboard(): Promise<LeaderboardPlayer[]> {
+    // Audit M-04 (2026-10-22): the podium used to be a direct Firestore query
+    // from the browser. That forced the `leaderboard` collection to be world-readable (every
+    // address on the podium enumerable), made each page load billable reads with
+    // no cache, and turned the document shape into the API — which is how the
+    // client ended up reading `totalEarnedUSDT`, a field the server never wrote.
+    //
+    // The server now answers with a fixed display row and a 15-second cache.
+    // The local cache is still the offline story, and an empty result is still
+    // the truth rather than a fabricated player.
     try {
-      const lbCol = collection(getDb(), 'leaderboard');
-      const q = query(lbCol, orderBy('wins', 'desc'), limit(20));
-      const getPromise = getDocs(q);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Leaderboard query timeout')), 8000)
-      );
-      const querySnapshot = await Promise.race([getPromise, timeoutPromise]);
-      
-      const results: LeaderboardPlayer[] = [];
-      querySnapshot.forEach((d) => {
-        const val = d.data();
-        // Audit 2026-10-13 — HONESTY: this read `totalEarnedUSDT`, which the
-        // settlement server NEVER writes (it writes `earnedUSDT`), so every
-        // podium row fell back to a computed guess — `wins * 1.96` — and
-        // presented it as USDT earned. A reaction time was invented the same way
-        // (`|| 185`), and a missing address became a RANDOM hex string. Three
-        // fabricated numbers on the money surface of a product whose pitch is
-        // cryptographic proof.
-        //
-        // The server now writes `earnedUSDT` and `bestReactionMs`; a row that
-        // lacks them reports 0 / no time rather than a plausible-looking guess.
-        if (!val.address) return; // no identity → not a player row
-        const earned =
-          typeof val.earnedUSDT === 'number'
-            ? val.earnedUSDT
-            : typeof val.totalEarnedUSDT === 'number'
-              ? val.totalEarnedUSDT
-              : 0;
-        const tag = val.playerId || val.name || RealWeb3Manager.getPlayerTagForAddress(val.address);
-        const bestReaction = typeof val.bestReactionMs === 'number' ? val.bestReactionMs : 0;
-        results.push({
-          address: val.address,
-          shortAddress: val.shortAddress || `${val.address.slice(0, 6)}...${val.address.slice(-4)}`,
-          name: tag,
-          playerId: tag,
-          wins: val.wins || 0,
-          totalMatches: val.totalMatches || 0,
-          bestReactionMs: bestReaction,
-          reactionTime: bestReaction,
-          winRate: val.winRate || 0,
-          totalEarnedUSDT: earned,
-          totalWinnings: earned,
-          xp: val.xp || 0,
-          level: val.level || 1,
-        });
-      });
+      const response = await fetchLeaderboard(20);
+      const results: LeaderboardPlayer[] = (response.players || []).map((row) => ({
+        address: row.address,
+        shortAddress: `${row.address.slice(0, 6)}...${row.address.slice(-4)}`,
+        name: row.playerId || RealWeb3Manager.getPlayerTagForAddress(row.address),
+        playerId: row.playerId || RealWeb3Manager.getPlayerTagForAddress(row.address),
+        wins: row.wins,
+        totalMatches: row.totalMatches,
+        bestReactionMs: row.bestReactionMs,
+        reactionTime: row.bestReactionMs,
+        winRate: row.totalMatches > 0 ? row.wins / row.totalMatches : 0,
+        totalEarnedUSDT: row.earnedUSDT,
+        totalWinnings: row.earnedUSDT,
+        xp: row.xp,
+        level: row.level,
+      }));
 
       if (results.length > 0) {
         try {
@@ -1720,12 +1716,11 @@ class RealWeb3Manager {
         } catch {}
         return results;
       }
-
-      // HONESTY RULE: no fabricated players. An empty leaderboard is the truth
-      // until real duels are recorded.
       return [];
     } catch (e) {
-      console.warn('Leaderboard query handled with local cache fallback:', e);
+      // Offline or server down: serve the last podium THIS browser saw, marked
+      // by its age in the console. Never invent rows.
+      reportSaveFailure('leaderboard', 'read', e);
       try {
         const cached = localStorage.getItem('pulsar_cached_leaderboard');
         if (cached) {
@@ -1740,7 +1735,7 @@ class RealWeb3Manager {
   /**
    * Find players by tag or address (audit M-19).
    *
-   * This used to read `users/*` from the browser. That collection is the
+   * This used to read the `users` collection from the browser. That one is the
    * settlement ledger — wallet-linked counters, reaction averages, history —
    * and it was world-readable so a friend card could render. The server now
    * answers with the five display fields a card needs, and the collection is
@@ -1904,56 +1899,25 @@ class RealWeb3Manager {
           error: `Username "${cleanTag}" is already taken by another player`,
         };
       } catch {
-        /* no session / offline → fall through to the direct read */
+        // no session / offline — there is no direct read any more (M-04); the
+        // answer below is "could not check", never "available".
       }
     }
 
-    try {
-      // 1. Check usernames registry document (primary index for O(1) collision detection)
-      const usernameDocRef = doc(getDb(), 'usernames', normalized);
-      const usernameDoc = await getDoc(usernameDocRef);
-
-      if (usernameDoc.exists()) {
-        const ownerAddr = (usernameDoc.data()?.address || '').toLowerCase();
-        if (cleanUserAddr && ownerAddr === cleanUserAddr) {
-          // The current user already owns this username
-          return { available: true, cleanTag };
-        }
-        return {
-          available: false,
-          cleanTag,
-          error: `Username "${cleanTag}" is already taken by another player`,
-        };
-      }
-
-      // 2. Secondary check against users collection to prevent any edge collision
-      const usersCol = collection(getDb(), 'users');
-      const q = query(usersCol, where('playerId', '==', cleanTag));
-      const userSnapshot = await getDocs(q);
-
-      if (!userSnapshot.empty) {
-        let isOwnedByCurrentUser = false;
-        userSnapshot.forEach((d) => {
-          if (cleanUserAddr && d.id.toLowerCase() === cleanUserAddr) {
-            isOwnedByCurrentUser = true;
-          }
-        });
-
-        if (!isOwnedByCurrentUser) {
-          return {
-            available: false,
-            cleanTag,
-            error: `Username "${cleanTag}" is already taken by another player`,
-          };
-        }
-      }
-
-      return { available: true, cleanTag };
-    } catch (err) {
-      console.warn('Firestore username availability check handled gracefully:', err);
-      // If network is offline, allow if local storage doesn't have duplicate
-      return { available: true, cleanTag };
-    }
+    // Audit M-04 (2026-10-22): this used to fall back to reading the `usernames`
+    // and `users` collections from the browser. Both collections are closed to clients now
+    // (M-19), so the read always throws and the `catch` returned
+    // `available: true` — the app told a player a taken name was free, and the
+    // claim only failed after they had typed it twice.
+    //
+    // There is no offline answer to "is this name free": it is a fact about other
+    // people's data. Say "could not check" and let the server's atomic claim be
+    // the authority — it returns 409 with the real reason.
+    return {
+      available: false,
+      cleanTag,
+      error: 'Could not check that name right now — please try again in a moment.',
+    };
   }
 
   /**

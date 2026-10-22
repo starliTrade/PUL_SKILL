@@ -57,6 +57,7 @@ import auditlog
 import eligibility
 import eventlog
 import integrity
+import leaderboard
 import limits
 import metrics
 import privacy
@@ -84,6 +85,7 @@ RL_WINDOW_SECONDS = 60.0
 RL_PROFILE_MAX = 30
 # Audit M-21: erasure and export are rare, deliberate operations.
 RL_EXPORT_MAX = 5
+RL_LEADERBOARD_MAX = 60
 RL_PLAYERS_SEARCH_MAX = 30
 RL_DELETE_MAX = 3    # profile reads/writes per minute per address
 RL_QUEUE_MAX = 40        # queue calls per minute per address (audit #6 C3:
@@ -1074,6 +1076,35 @@ class DisputeRequest(BaseModel):
     matchId: str = Field(pattern=r"^[0-9a-f]{32}$")
     # Bounded: an unbounded field is a way to fill the database.
     reason: str = Field(min_length=3, max_length=1000)
+
+
+@app.get("/api/leaderboard")
+def get_leaderboard(request: Request, limit: int = 20) -> dict[str, Any]:
+    """The public podium, served by the server (audit M-04).
+
+    No session: a leaderboard is shown to visitors deciding whether to sign up,
+    and it already contains nothing but a display row. Rate limited per IP so a
+    scraper cannot turn it into a cheap read amplifier.
+    """
+    _rl_check_ip("leaderboard", request, RL_LEADERBOARD_MAX)
+    from store import durable_db as _durable_db
+
+    db = _durable_db()
+    if db is None:
+        # Memory mode: the ledger lives only in the durable store, so there IS no
+        # podium. Saying so is better than an empty list that looks like "nobody
+        # has won yet".
+        return {"players": [], "reason": "leaderboard requires the durable store"}
+    try:
+        players = leaderboard.top(db, limit)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[leaderboard] read failed: {exc!r}", file=sys.stderr)
+        raise HTTPException(
+            status_code=503,
+            detail="The leaderboard is temporarily unavailable.",
+            headers={"Retry-After": "5"},
+        ) from exc
+    return {"players": players}
 
 
 @app.post("/api/dispute")

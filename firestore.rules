@@ -58,12 +58,19 @@ service cloud.firestore {
     // Self-reported match results and leaderboard rows are not trustworthy.
     // Only the settlement server writes these collections.
     match /matches/{matchId} {
-      allow read: if true;
+      // Audit M-04 (2026-10-22): the live feed moved to GET /api/settlements
+      // (H-04) and nothing in the client reads this collection any more. Left
+      // world-readable, it was a free enumeration of every duel — who played
+      // whom, for how much, and who won — for anyone with a project id.
+      allow read: if false;
       allow write: if false;
     }
 
     match /leaderboard/{entry} {
-      allow read: if true;
+      // Audit M-04: the podium is served by GET /api/leaderboard (fixed display
+      // fields, 15-second cache, capped rows). Reading the collection directly
+      // exposed every address on it and made the document shape the API.
+      allow read: if false;
       allow write: if false;
     }
 

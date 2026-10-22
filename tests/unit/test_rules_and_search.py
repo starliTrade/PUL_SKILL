@@ -48,10 +48,16 @@ def test_the_username_registry_is_not_client_readable():
     assert "allow read: if false;" in block
 
 
-def test_the_leaderboard_stays_public_because_it_is_pseudonymous():
+def test_the_leaderboard_and_the_match_log_are_not_client_readable():
+    """Audit M-04: both moved to server endpoints (GET /api/leaderboard,
+    GET /api/settlements). A readable collection re-exposes what those endpoints
+    deliberately shape — every address on the podium, and who played whom."""
     rules = (ROOT / "firestore.rules").read_text(encoding="utf-8")
-    block = rules[rules.index("match /leaderboard/") : rules.index("match /rate_limits/")]
-    assert "allow read: if true;" in block
+    for name, end in (("match /leaderboard/", "match /rate_limits/"),
+                      ("match /matches/", "match /leaderboard/")):
+        block = rules[rules.index(name) : rules.index(end)]
+        assert "allow read: if false;" in block, f"{name} is readable again"
+        assert not re.search(r"^\s*allow read: if true", block, re.MULTILINE)
 
 
 def test_search_returns_only_display_fields(monkeypatch):
