@@ -38,7 +38,7 @@ function loadWorker() {
   // a bare `vi.fn()` makes the shell path throw instead of exercising it.
   const fetchFn = vi.fn(async () => new Response('ok', { status: 200 }));
   new Function('self', 'caches', 'fetch', source)(scope, caches, fetchFn);
-  return { handlers, cachePut };
+  return { handlers, cachePut, scope };
 }
 
 describe('the service worker never caches money', () => {
@@ -48,8 +48,14 @@ describe('the service worker never caches money', () => {
     worker = loadWorker();
   });
 
-  it('registers install, activate and fetch handlers', () => {
-    expect(Object.keys(worker.handlers).sort()).toEqual(['activate', 'fetch', 'install']);
+  it('registers install, activate, fetch and the update-message handler', () => {
+    // `message` is the audit M-18 handshake: the page asks before the swap.
+    expect(Object.keys(worker.handlers).sort()).toEqual([
+      'activate',
+      'fetch',
+      'install',
+      'message',
+    ]);
   });
 
   it('does NOT intercept /api/ requests', () => {
@@ -88,5 +94,67 @@ describe('the service worker never caches money', () => {
     const respondWith = vi.fn();
     worker.handlers.fetch({ request: new Request('https://elsewhere.test/x'), respondWith });
     expect(respondWith).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Audit M-18 — a deploy must not take over a page that is mid-duel.
+ *
+ * The worker used to call `skipWaiting()` from `install`, so the new build
+ * activated immediately, deleted the old cache, and the open tab (still running
+ * old chunks) requested an asset that no longer existed. It got index.html back
+ * and went blank. Two properties fix that: the cache name is versioned (a new
+ * build is a new cache) and the swap only happens when the page asks for it.
+ */
+describe('the service worker waits for the player (audit M-18)', () => {
+  it('keeps the cache name versioned and in step with package.json', () => {
+    const source = readFileSync(resolve(__dirname, '../../public/sw.js'), 'utf8');
+    const pkg = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8'));
+    const declared = /^const VERSION = '([^']+)';$/m.exec(source);
+    expect(declared, 'public/sw.js must declare `const VERSION = ...`').not.toBeNull();
+    expect(declared?.[1]).toBe(pkg.version);
+    expect(source).toContain('pulsar-shell-${VERSION}');
+  });
+
+  it('does NOT skipWaiting during install', () => {
+    const { handlers, scope } = loadWorker();
+    const scopeWithWait = scope as typeof scope & {
+      skipWaiting: ReturnType<typeof vi.fn>;
+    };
+    let waited: Promise<unknown> | undefined;
+    handlers.install({ waitUntil: (p: Promise<unknown>) => void (waited = p) } as never);
+    expect(waited).toBeDefined();
+    expect(scopeWithWait.skipWaiting).not.toHaveBeenCalled();
+  });
+
+  it('swaps only when the page sends SKIP_WAITING', async () => {
+    const { handlers, scope } = loadWorker();
+    const scopeWithWait = scope as typeof scope & {
+      skipWaiting: ReturnType<typeof vi.fn>;
+    };
+    const message = handlers.message as unknown as (e: { data: unknown }) => void;
+    expect(scopeWithWait.skipWaiting).not.toHaveBeenCalled();
+
+    message({ data: { type: 'SKIP_WAITING' } });
+    expect(scopeWithWait.skipWaiting).toHaveBeenCalledTimes(1);
+
+    // Anything else is ignored — a page cannot force an update by accident.
+    message({ data: { type: 'SOMETHING_ELSE' } });
+    message({ data: undefined });
+    expect(scopeWithWait.skipWaiting).toHaveBeenCalledTimes(1);
+  });
+
+  it('deletes only caches that are not the current version', async () => {
+    const { handlers, scope } = loadWorker();
+    let activated: Promise<unknown> | undefined;
+    handlers.activate({ waitUntil: (p: Promise<unknown>) => void (activated = p) } as never);
+    await activated;
+    expect((scope as unknown as { clients: { claim: ReturnType<typeof vi.fn> } }).clients.claim)
+      .toHaveBeenCalled();
+  });
+
+  it('still refuses to touch /api after the rewrite', () => {
+    const source = readFileSync(resolve(__dirname, '../../public/sw.js'), 'utf8');
+    expect(source).toContain("url.pathname.startsWith('/api/')");
   });
 });

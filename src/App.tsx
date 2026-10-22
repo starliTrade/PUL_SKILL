@@ -1,5 +1,7 @@
 import { MotionConfig } from 'motion/react';
 import { IdentityLockBanner } from './components/IdentityLockBanner';
+import { SaveStatusBanner } from './components/SaveStatusBanner';
+import { UpdateBanner } from './components/UpdateBanner';
 import React, { Suspense, lazy, useState, useEffect } from 'react';
 import type { LegalTab } from './pages/LegalPage';
 import { EligibilityGate } from './components/EligibilityGate';
@@ -110,6 +112,10 @@ export default function App() {
       {/* Audit H15b: the identity lock refuses a wallet/network switch mid-match;
           this is where the player finds out why. */}
       <IdentityLockBanner />
+      {/* Audit M-24: a failed profile save used to be a console.warn. */}
+      <SaveStatusBanner />
+      {/* Audit M-18: a new build waits for the player instead of swapping in mid-duel. */}
+      <UpdateBanner />
       {/* Route Views (lazy-loaded chunks per route) */}
       <Suspense fallback={<RouteFallback />}>
         {currentPath === '/' && <HomePage onNavigate={navigate} />}
