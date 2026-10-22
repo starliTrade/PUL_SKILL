@@ -123,7 +123,124 @@ def ledger_health() -> dict[str, Any]:
         "configured": ledger_configured(),
         "failures": dict(_LEDGER_FAILURES),
         "lastError": dict(_LEDGER_LAST_ERROR),
+        # Audit H-14: a growing queue is the alert; `oldestAgeSeconds` says how
+        # long a player's statistics have been wrong.
+        "outbox": dict(OUTBOX_STATE),
     }
+
+
+# --- the ledger outbox (audit H-14, 2026-10-22) -------------------------------
+#
+# A settlement was already final on-chain when the ledger write failed: the
+# winner has the money, but wins/XP/leaderboard never advanced. The only signal
+# was a counter on /api/health — accurate, and useless at 3 a.m., because
+# nothing ever tried again. A player's history therefore diverged from the chain
+# permanently.
+#
+# Every failed settlement is now queued in `pulsar_ledger_outbox`. The existing
+# sweep in main.py drains the queue, `record_settlement` is idempotent through
+# its `settlements/{id}` gate, so a retry can only ever apply the settlement
+# once. Health reports how far behind the queue is — a number that grows is the
+# alert condition.
+OUTBOX = "pulsar_ledger_outbox"
+OUTBOX_STATE: dict[str, Any] = {
+    "pending": 0,
+    "oldestAgeSeconds": 0,
+    "lastDrainAt": 0,
+    "drained": 0,
+    "failed": 0,
+}
+
+
+def _enqueue_outbox(match_id: str, error: str) -> bool:
+    """Queue a settlement the ledger did not manage to write. Never raises."""
+    db = _fs_db()
+    if db is None or not match_id:
+        return False
+    try:
+        db.collection(OUTBOX).document(match_id).set(
+            {
+                "matchId": match_id,
+                "status": "pending",
+                "lastError": error[:300],
+                "at": int(timebase.now()),
+            }
+        )
+        OUTBOX_STATE["pending"] = int(OUTBOX_STATE.get("pending", 0)) + 1
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[economy] outbox enqueue failed: {exc!r}", file=sys.stderr)
+        return False
+
+
+def drain_outbox(store: Any, limit: int = 20) -> dict[str, Any]:
+    """Retry queued settlements. Idempotent by construction.
+
+    `store` is the match store, which is the only place that can rebuild the
+    `Match` object the ledger needs to read.
+    """
+    db = _fs_db()
+    if db is None:
+        return dict(OUTBOX_STATE)
+
+    processed = failed = 0
+    try:
+        pending = list(
+            db.collection(OUTBOX)
+            .where("status", "==", "pending")
+            .order_by("at")
+            .limit(limit)
+            .stream()
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[economy] outbox read failed: {exc!r}", file=sys.stderr)
+        return dict(OUTBOX_STATE)
+
+    oldest = 0
+    for snap in pending:
+        row = snap.to_dict() or {}
+        match_id = str(row.get("matchId", ""))
+        oldest = max(oldest, int(timebase.now()) - int(row.get("at", 0) or 0))
+        try:
+            match = store.get(match_id)
+        except Exception:  # noqa: BLE001 - the match may not exist here
+            failed += 1
+            _bump_outbox(snap.reference, row, "match not found on this replica")
+            continue
+        outcome = record_settlement(match)
+        if outcome == "failed":
+            failed += 1
+            _bump_outbox(snap.reference, row, "ledger retry failed")
+            continue
+        processed += 1
+        try:
+            snap.reference.delete()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[economy] outbox cleanup failed: {exc!r}", file=sys.stderr)
+
+    OUTBOX_STATE.update(
+        {
+            "pending": max(0, len(pending) - processed),
+            "oldestAgeSeconds": oldest,
+            "lastDrainAt": int(timebase.now()),
+            "drained": int(OUTBOX_STATE.get("drained", 0)) + processed,
+            "failed": int(OUTBOX_STATE.get("failed", 0)) + failed,
+        }
+    )
+    return dict(OUTBOX_STATE)
+
+
+def _bump_outbox(ref: Any, row: dict[str, Any], error: str) -> None:
+    try:
+        ref.set(
+            {
+                "attempts": int(row.get("attempts", 0) or 0) + 1,
+                "lastError": error[:300],
+            },
+            merge=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[economy] outbox attempt update failed: {exc!r}", file=sys.stderr)
 
 
 def player_stats(address: str) -> dict[str, Any] | None:
@@ -251,7 +368,7 @@ def record_claim(match_id: str, claimer: str, tx_hash: str) -> bool:
         return False
 
 
-def record_settlement(match: Any) -> None:
+def record_settlement(match: Any) -> str:
     """Ledger write after a successful server settlement. Best-effort, atomic,
     idempotent (F-07).
 
@@ -259,6 +376,10 @@ def record_settlement(match: Any) -> None:
       matches/{matchId}  — result, times, and the oracle signature
       users/{winner|loser} — wins/losses/totalMatches advanced by the FACT
       leaderboard/{addr} — real stats rows for the podium
+
+    A failure is queued in `pulsar_ledger_outbox` and retried by the sweep
+    (audit H-14) — the settlement is already final on-chain, so "give up and
+    log" means a permanent divergence between the chain and the player's stats.
 
     The settled facts are read from the ORACLE-SIGNED envelope
     (`match.signed_settlement`), which mirrors engine.settle()'s result:
@@ -269,10 +390,14 @@ def record_settlement(match: Any) -> None:
     already ledgered (retry / replica race) and everything is skipped — so a
     re-run can never double-increment a player's counters.
     Void matches are recorded (totalMatches only) so histories stay truthful.
+
+    Returns "written" | "skipped" | "unavailable" | "failed" (audit H-14). The
+    caller uses it to decide whether the settlement needs a retry, and a failure
+    is queued in the outbox so a later sweep can apply it.
     """
     db = _fs_db()
     if db is None:
-        return
+        return "unavailable"
     try:
         winner = (getattr(match, "winner", "") or "").lower()
         players = [a.lower() for a in (getattr(match, "players", {}) or {})]
@@ -423,11 +548,16 @@ def record_settlement(match: Any) -> None:
                 )
             return True
 
-        transactional(_apply)(db.transaction())
+        wrote = bool(transactional(_apply)(db.transaction()))
+        if not wrote:
+            return "skipped"
+        return "written"
     except Exception as exc:
         # Ledger is a shadow of the money path — never raise into settlement,
-        # but make the failure VISIBLE (F-07).
+        # but make the failure VISIBLE and RETRYABLE (F-07, H-14).
         _log_ledger_error("record_settlement", exc)
+        _enqueue_outbox(str(getattr(match, "match_id", "")), repr(exc)[:300])
+        return "failed"
 
 
 def _progression_fields(

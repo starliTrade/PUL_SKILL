@@ -2,9 +2,13 @@
 PULSAR P1.14 — Referee Oracle signing service.
 
 Design (P1.14):
-- The oracle private key NEVER touches application memory of web workers:
-  this module reads it from ORACLE_PRIVATE_KEY (in production, swap the
-  loader for AWS KMS / GCP KMS — the signing surface stays identical).
+- The signing key is pluggable (audit H-07, 2026-10-22): `api/signer.py`
+  provides `ORACLE_SIGNER=local` (a key in env, for dev), `aws-kms` and
+  `gcp-kms`, where the private key never enters this process. The oracle asks
+  the signer for a digest signature and for the address; nothing else changes.
+- The default is `local` only because changing it would break existing
+  deployments silently. Production deployments are expected to set a KMS mode —
+  docs/DEPLOYMENT.md §2 and the readiness checklist say so.
 - It signs ONLY settlements produced by the authoritative engine (P1.13),
   never raw client claims.
 - Replay protection: every settlement is bound to matchId, winner, validated
@@ -19,6 +23,7 @@ import os
 import secrets
 from typing import Any
 
+import signer as _signer
 import timebase
 from eth_account import Account
 
@@ -87,8 +92,24 @@ def _load_signer() -> Account:
 
 
 def oracle_address() -> str:
+    """The address the escrow must trust. Works for every signer backend."""
+    if _signer.mode() != "local":
+        return _signer.get_signer().address
     # eth_account's stub omits `.address`; the runtime object always has it.
     return str(load_signer().address)  # type: ignore[attr-defined]
+
+
+def sign_digest(digest: bytes) -> bytes:
+    """Sign a 32-byte digest, whichever backend is configured (audit H-07).
+
+    `local` keeps the in-process path (and its cached Account); KMS backends go
+    through `api/signer.py`, so the private key never exists here.
+    """
+    if _signer.mode() != "local":
+        return _signer.get_signer().sign_digest(digest)
+    signed = _sign_hash_bytes(load_signer(), digest)
+    raw = bytes(signed.signature) if not isinstance(signed.signature, bytes) else signed.signature
+    return _signature_to_low_s_bytes(raw)
 
 
 # secp256k1 group order — needed for low-s (EIP-2) normalization, which the
@@ -327,9 +348,7 @@ def sign_settlement(
         server_nonce,
         chain_id=_DEFAULT_CHAIN_ID if chain_id is None else int(chain_id),
     )
-    signed = _sign_hash_bytes(load_signer(), digest)
-    raw_sig = bytes(signed.signature) if not isinstance(signed.signature, bytes) else signed.signature
-    low_s = _signature_to_low_s_bytes(raw_sig)
+    low_s = sign_digest(digest)
     signature = "0x" + low_s.hex()
 
     return {
@@ -339,7 +358,7 @@ def sign_settlement(
         "loserTimeMs": record["loserTimeMs"],
         "serverNonce": server_nonce,
         "deadline": deadline,
-        "oracleAddress": str(_load_signer().address),  # type: ignore[attr-defined]
+        "oracleAddress": oracle_address(),
         "signature": signature,
         "validatedTimes": record.get("validatedTimes", {}),
         # Audit 2026-10-13: the engine declares forfeits in its result

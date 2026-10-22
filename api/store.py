@@ -183,6 +183,51 @@ def _queue_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+class _EntryView:
+    """A queue slot that can answer `choose_opponent` WITHOUT reading its match.
+
+    Audit H-11 (2026-10-22): the pairing transaction read one match document per
+    waiting slot on every poll. With a busy stake that is N reads inside a
+    transaction that already serialises on one document — latency grows with the
+    queue, which is exactly when it must not. The slot now carries the few fields
+    the decision needs (creator, target, rating, rtt, joinedAt), and the match is
+    read only for the winner, to confirm it is still waiting.
+
+    Duck-typed on purpose: `choose_opponent` takes Match objects, and this view
+    provides the attributes it uses, so there is still ONE pairing rule.
+    """
+
+    __slots__ = ("match_id", "creator", "players", "target", "min_rtt_ms", "status")
+
+    def __init__(self, entry: dict[str, Any]) -> None:
+        self.match_id = str(entry["matchId"])
+        self.creator = str(entry.get("creator", "")).lower()
+        self.target = str(entry.get("target", "") or "").lower()
+        joined = float(entry.get("joinedAt", 0.0) or 0.0)
+        self.players = {self.creator: {"address": self.creator, "joinedAt": joined}}
+        self.min_rtt_ms = (
+            {self.creator: float(entry["rttMs"])} if entry.get("rttMs") is not None else {}
+        )
+        self.status = "waiting"
+
+
+def _entry_from_match(match: Match, target: str, rating: float) -> dict[str, Any]:
+    """The denormalised slot written for a new waiting match (audit H-11)."""
+    creator = _creator_of(match)
+    return {
+        "matchId": match.match_id,
+        "target": target,
+        "creator": creator,
+        # The rating is captured at queue time, exactly as choose_opponent reads
+        # it today (it calls rating_for(creator) at decision time). A stale value
+        # can only WIDEN or NARROW the band by one duel, and the band widens with
+        # waiting time anyway — the alternative is a read per slot.
+        "rating": float(rating),
+        "rttMs": _creator_rtt(match),
+        "joinedAt": float(match.players.get(creator, {}).get("joinedAt", 0.0) or 0.0),
+    }
+
+
 def _round_to_doc(r: Round) -> dict[str, Any]:
     return {
         "index": r.index,
@@ -595,6 +640,10 @@ class FirestoreStore:
         self.local = InMemoryStore()  # write-through cache for hot reads
         # Audit H9: the last sweep failure, surfaced through /api/health.
         self.last_sweep_error: str = ""
+        # Audit H-12 (2026-10-22): cursor + backlog signal for the re-sign sweep.
+        self._sweep_cursor: Any = None
+        self.last_sweep_scanned = 0
+        self.sweep_backlog_suspected = False
         # address -> live (waiting|active) match id for idempotent re-polls.
         self.player_match: dict[str, str] = {}
         # Audit CRITICAL-2: the rating lookup used by the pairing band. Injected
@@ -644,30 +693,45 @@ class FirestoreStore:
         def _txn_body(transaction: Any) -> Match | None:
             snap = queue_ref.get(transaction=transaction)
             data = (snap.to_dict() or {}) if snap.exists else {}
-            # Load every live waiting slot (dangling/paired slots are dropped).
-            loaded: list[tuple[dict[str, Any], Match]] = []
-            for entry in _queue_entries(data):
+            entries = _queue_entries(data)
+
+            # Audit H-11: slots written by this version carry what the decision
+            # needs. A legacy slot (no `creator`) is read once so an in-flight
+            # deployment keeps matchmaking during the upgrade.
+            views: list[Any] = []
+            legacy_slots: list[tuple[dict[str, Any], Match]] = []
+            for entry in entries:
+                if entry.get("creator"):
+                    views.append(_EntryView(entry))
+                    continue
                 msnap = self._match_ref(str(entry["matchId"])).get(transaction=transaction)
                 if not msnap.exists:
                     continue
                 m = _match_from_doc(msnap.to_dict())
                 if m.status != "waiting":
                     continue
-                loaded.append((entry, m))
+                legacy_slots.append((entry, m))
+                views.append(m)
 
             # Idempotent re-poll: the caller already owns a waiting slot. Without
             # this branch the slot was stolen from under them and every poll
             # minted an orphan match.
-            for _entry, m in loaded:
-                if addr in m.players:
-                    transaction.set(queue_ref, {"waiting": [e for e, _ in loaded]})
-                    return m
+            for view in views:
+                if addr in view.players:
+                    transaction.set(
+                        queue_ref, {"waiting": [e for e in entries if e.get("matchId") != view.match_id]}
+                    )
+                    return (
+                        view
+                        if isinstance(view, Match)
+                        else self._load_waiting(view.match_id, transaction)
+                    )
 
             # Audit CRITICAL-2: the SAME pairing decision the memory backend
             # uses — ping cap, rating band and closest-connection preference all
             # apply here, because production runs THIS path.
             chosen = choose_opponent(
-                [m for _e, m in loaded],
+                views,
                 addr=addr,
                 target=reserved_for,
                 rtt_ms=rtt_ms,
@@ -675,40 +739,35 @@ class FirestoreStore:
                 now=timebase.now(),
             )
             if chosen is not None:
-                chosen.players[addr] = {"address": addr, "joinedAt": timebase.now()}
-                chosen.status = "active"
-                chosen.joiner = addr
+                # Audit H-11: ONE match read, for the winner only — and it is a
+                # real read of the authoritative state, not a trust in the slot
+                # metadata: a match that stopped waiting since it was queued must
+                # not be paired.
+                chosen_match = self._load_waiting(chosen.match_id, transaction)
+                if chosen_match is None:
+                    remaining = [e for e in entries if e.get("matchId") != chosen.match_id]
+                    transaction.set(queue_ref, {"waiting": remaining})
+                    return self._create_waiting(
+                        transaction, queue_ref, entries, addr, stake, reserved_for, rtt_ms
+                    )
+                chosen_match.players[addr] = {"address": addr, "joinedAt": timebase.now()}
+                chosen_match.status = "active"
+                chosen_match.joiner = addr
                 # Audit #8 F-05: activation instant — the play/grace clock
                 # starts at pairing, not queue entry.
-                chosen.activated_at = timebase.now()
+                chosen_match.activated_at = timebase.now()
                 if rtt_ms is not None:
-                    chosen.min_rtt_ms[addr] = float(rtt_ms)
-                transaction.set(self._match_ref(chosen.match_id), _match_to_doc(chosen))
+                    chosen_match.min_rtt_ms[addr] = float(rtt_ms)
+                transaction.set(self._match_ref(chosen_match.match_id), _match_to_doc(chosen_match))
                 transaction.set(
                     queue_ref,
-                    {"waiting": [e for e, mm in loaded if mm is not chosen]},
+                    {"waiting": [e for e in entries if e.get("matchId") != chosen_match.match_id]},
                 )
-                return chosen
+                return chosen_match
 
-            # No compatible opponent: create a fresh waiting match and append a
-            # slot for it.
-            match_id = secrets.token_hex(16)
-            m = Match(
-                match_id=match_id,
-                stake=stake,
-                created_at=timebase.now(),
-                players={addr: {"address": addr, "joinedAt": timebase.now()}},
-                creator=addr,
-                target=reserved_for,
+            return self._create_waiting(
+                transaction, queue_ref, entries, addr, stake, reserved_for, rtt_ms
             )
-            if rtt_ms is not None:
-                m.min_rtt_ms[addr] = float(rtt_ms)
-            transaction.set(self._match_ref(match_id), _match_to_doc(m))
-            transaction.set(
-                queue_ref,
-                {"waiting": [e for e, _ in loaded] + [{"matchId": match_id, "target": reserved_for}]},
-            )
-            return m
 
         # P0-fix: the decorator MUST come from the imported module (aliased
         # `_firestore`). The old `@firestore.transactional` referenced an
@@ -727,6 +786,53 @@ class FirestoreStore:
         self.local.put(match)
         self.player_match[addr] = match.match_id
         return match
+
+    def _load_waiting(self, match_id: str, transaction: Any) -> Match | None:
+        """The authoritative match, if it is still WAITING. One read (H-11)."""
+        msnap = self._match_ref(match_id).get(transaction=transaction)
+        if not msnap.exists:
+            return None
+        m = _match_from_doc(msnap.to_dict())
+        return m if m.status == "waiting" else None
+
+    def _create_waiting(
+        self,
+        transaction: Any,
+        queue_ref: Any,
+        entries: list[dict[str, Any]],
+        addr: str,
+        stake: float,
+        reserved_for: str,
+        rtt_ms: float | None,
+    ) -> Match:
+        """Mint a waiting match and append its denormalised slot (audit H-11)."""
+        match_id = secrets.token_hex(16)
+        m = Match(
+            match_id=match_id,
+            stake=stake,
+            created_at=timebase.now(),
+            players={addr: {"address": addr, "joinedAt": timebase.now()}},
+            creator=addr,
+            target=reserved_for,
+        )
+        if rtt_ms is not None:
+            m.min_rtt_ms[addr] = float(rtt_ms)
+        slot = _entry_from_match(m, reserved_for, self._rating_for(addr))
+        # Drop slots that MUST be dead, so the document cannot grow without
+        # bound. Deliberately not a liveness check (that is one read per slot —
+        # exactly the cost H-11 removes): a waiting match cannot outlive
+        # QUEUE_EXPIRY, so an older slot is dangling by construction. A slot
+        # whose match is missing for any other reason is dropped when someone
+        # tries to pair with it (`_load_waiting` returns None).
+        cutoff = timebase.now() - _default_engine.QUEUE_EXPIRY_SECONDS - 60
+        kept = [
+            e
+            for e in entries
+            if e.get("creator") and float(e.get("joinedAt", 0.0) or 0.0) >= cutoff
+        ]
+        transaction.set(self._match_ref(match_id), _match_to_doc(m))
+        transaction.set(queue_ref, {"waiting": kept + [slot]})
+        return m
 
     def get(self, match_id: str) -> Match:
         # Audit 2026-10-13: `metrics.note_firestore_read` had NO caller, so the
@@ -872,7 +978,7 @@ class FirestoreStore:
         self.local.put(match)
 
     def sweep_stale_settlements(self) -> list[Match]:
-        """Audit #11 C2: re-sign sweep over the DURABLE backend.
+        """Audit #11 C2 / H-12: re-sign sweep over the DURABLE backend.
 
         ``_resign_stale_settlements`` used to iterate ``store.memory.matches``
         — the per-REPLICA cache. On Firestore, a settled match written by
@@ -888,14 +994,34 @@ class FirestoreStore:
         index or a transient error returns what was scanned so far."""
         now = timebase.now()
         found: list[Match] = []
-        try:
-            docs = (
+
+        def _page(cursor: Any) -> list[Any]:
+            query = (
                 self.db.collection(COLLECTION)
                 .where("status", "==", "settled")
                 .order_by("settled_at")
-                .limit(100)
-                .stream()
+                .limit(SWEEP_PAGE_SIZE)
             )
+            if cursor is not None:
+                query = query.start_after(cursor)
+            return list(query.stream())
+
+        try:
+            docs = _page(self._sweep_cursor)
+            if not docs and self._sweep_cursor is not None:
+                # End of the collection: wrap. Without this, a deployment with
+                # more than one page of settled matches would eventually stop
+                # sweeping the OLDEST ones forever — the exact matches most
+                # likely to hold an unspendable prize.
+                self._sweep_cursor = None
+                docs = _page(None)
+            self.last_sweep_scanned = len(docs)
+            # A full page means there MAY be more work than one pass covers.
+            # Not an error, but the signal that H-12's "100 and no cursor"
+            # window is actually being hit.
+            self.sweep_backlog_suspected = len(docs) >= SWEEP_PAGE_SIZE
+            if docs:
+                self._sweep_cursor = docs[-1]
             for doc in docs:
                 try:
                     m = _match_from_doc(doc.to_dict() or {})
@@ -929,6 +1055,11 @@ def _requires_durable_store() -> bool:
     if str(os.environ.get("PULSAR_ENV", "")).strip().lower() in ("dev", "test", "local", "ci"):
         return False
     return True
+
+
+# Audit H-12: one page of the re-sign sweep. Small enough to stay inside a
+# request's time budget, large enough that a healthy deployment needs one page.
+SWEEP_PAGE_SIZE = 100
 
 
 class DurableMatchStore:
@@ -1190,10 +1321,22 @@ class DurableMatchStore:
                 unique.append(m)
         return unique
 
+    @property
+    def sweep_backlog(self) -> bool:
+        """Whether the last durable sweep filled its page (audit H-12)."""
+        if self._fs_store is None:
+            return False
+        return bool(getattr(self._fs_store, "sweep_backlog_suspected", False))
+
     def sweep_stale_settlements(self) -> list[Match]:
         """Audit #11 C2: settled matches with an expired envelope, read from
         the DURABLE backend (empty list on the memory backend — the caller's
-        own cache IS the full dataset there, the original path still works)."""
+        own cache IS the full dataset there, the original path still works).
+
+        Audit H-12: the durable scan pages with a cursor, so a deployment with
+        more settled matches than one page keeps sweeping the oldest ones
+        instead of re-reading the same first page forever.
+        """
         if self._fs_store is not None:
             return self._fs_store.sweep_stale_settlements()
         return []
