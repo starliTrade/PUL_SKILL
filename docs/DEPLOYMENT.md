@@ -138,6 +138,7 @@ Every query the server issues, and whether it needs a composite index:
 | `pulsar_matches.where(status == 'active')` | the sweep's expiry pass | single-field, automatic |
 | `pulsar_matches.where(players.<addr>.address == addr).limit(5)` | `player_live_match` (idempotent queueing) | single-field on a map subfield, automatic |
 | `pulsar_queue` documents (streamed) | matchmaking + pending challenges | collection scan, bounded by the number of stakes |
+| `pulsar_integrity/{address}` / `pulsar_review.where(status == 'open')` | the integrity scorer and the operator queue (audit C-02a) | keyed / single-field equality, automatic |
 | `pulsar_disputes.where(matchId == id)` | `/api/admin/match/{id}` and `disputes_for()` (audit H-10) | single-field, automatic |
 | `pulsar_profiles/{address}` (document get/set) | `GET`/`PUT /api/profile` (audit H-05) | keyed by address, no query |
 | `firebase_auth_sessions` / `used_nonces` (document get/set) | session revocation and SIWE replay protection (audit H-09) | keyed, no query |

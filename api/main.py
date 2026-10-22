@@ -54,6 +54,7 @@ except Exception:  # pragma: no cover - local dev without the SDK
 import abuse
 import analytics
 import eligibility
+import integrity
 import limits
 import metrics
 import profiles
@@ -790,6 +791,31 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Admin credential required")
 
 
+@app.get("/api/admin/review")
+def admin_review_queue(request: Request) -> dict[str, Any]:
+    """Accounts the integrity scorer flagged (audit C-02a).
+
+    Advisory only: nothing here has changed a payout. A human decides, using the
+    evidence attached to the entry.
+    """
+    _require_admin(request)
+    entries = integrity.open_reviews()
+    return {"open": len(entries), "entries": entries}
+
+
+class ReviewDecision(BaseModel):
+    status: str = Field(pattern="^(resolved|dismissed)$")
+    note: str = Field(default="", max_length=500)
+
+
+@app.post("/api/admin/review/{review_id}")
+def admin_review_decide(review_id: str, body: ReviewDecision, request: Request) -> dict[str, Any]:
+    _require_admin(request)
+    if not integrity.resolve(review_id, body.status, body.note):
+        raise HTTPException(status_code=404, detail="Review entry not found")
+    return {"ok": True, "id": review_id, "status": body.status}
+
+
 @app.get("/api/admin/match/{match_id}")
 def admin_inspect_match(match_id: str, request: Request) -> dict[str, Any]:
     """Full match state for an operator (phase 6.3)."""
@@ -1077,6 +1103,9 @@ def health() -> dict[str, Any]:
         # Audit H9: a dead sweep (e.g. a missing composite index) must be
         # visible in monitoring, not discovered when a prize goes unclaimed.
         "sweep": sweep_health(),
+        # Audit C-02a: is the integrity scorer alive, and how many accounts are
+        # waiting for a human? (Advisory: it never changes a payout.)
+        "integrity": integrity.health(),
         # Audit 6.2: the three questions an operator asks during an incident and
         # could not previously answer from the server. No secret and no URL:
         # this endpoint is unauthenticated, so anything here is public.
@@ -1711,9 +1740,32 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
         res = store.update(body.matchId, _mutate)
         if res.pop("_ledger_pending", False):
             _ledger_settlement(body.matchId)
+        # Audit C-02a: score the SHAPE of this player's reaction times, after
+        # the transaction (the same lesson as H-4: advisory writes must not run
+        # inside the match transaction, where a failure would roll back money).
+        _integrity_observe(body.matchId, address, body.roundIndex)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return res
+
+
+def _integrity_observe(match_id: str, address: str, round_index: int) -> None:
+    """Feed one server-observed reaction into the integrity scorer (C-02a).
+
+    The value comes from the COMMITTED match and is the server's own
+    measurement (`observed_ms`), not the client's claim — scoring the claim
+    would let a script report a plausible 240 ms while answering in 110 ms.
+    Never raises: a scoring problem must not fail a round the player won.
+    """
+    try:
+        match = store.get(match_id)
+        round_obj = (getattr(match, "rounds", {}) or {}).get(address.lower(), {}).get(round_index)
+        observed = getattr(round_obj, "observed_ms", None) if round_obj is not None else None
+        if not observed or observed <= 0:
+            return
+        integrity.observe(address, [float(observed)], match_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[integrity] observation skipped: {exc!r}", file=sys.stderr)
 
 
 def _ledger_settlement(match_id: str) -> None:
