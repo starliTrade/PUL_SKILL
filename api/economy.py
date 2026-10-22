@@ -467,12 +467,27 @@ def _progression_fields(
         if best == 0 or t < best:
             best = t
 
+    # Audit H-15 (2026-10-22): the denominator was `totalMatches`, which also
+    # counts voids and forfeits — matches that contribute no reaction sample.
+    # Every void therefore diluted a player's average toward zero, so a stat
+    # that looked like a measurement drifted whenever they were abandoned or
+    # the match voided. The denominator must be the number of SAMPLE-BEARING
+    # matches, tracked separately.
     avg_before = float(before.get("avgReactionMs", 0) or 0)
-    avg: float = avg_before
+    samples_before = int(before.get("reactionSamples", 0) or 0)
+    if samples_before <= 0 and avg_before > 0:
+        # Legacy documents: best available estimate of how many samples the old
+        # average was built from. Never zero when an average exists.
+        samples_before = max(1, matches_before)
+    avg: float
+    sample_count: int
     if real_times:
-        avg = round((avg_before * matches_before + sample) / (matches_before + 1))
+        total_before = avg_before * samples_before
+        avg = round((total_before + sample) / (samples_before + 1))
+        sample_count = samples_before + 1
     else:
         avg = avg_before
+        sample_count = samples_before
 
     xp_before = float(before.get("xp", 0) or 0)
     outcome = "win" if is_winner else ("loss" if winner else "void")
@@ -484,6 +499,7 @@ def _progression_fields(
         "winStreak": streak,
         "bestReactionMs": best,
         "avgReactionMs": avg,
+        "reactionSamples": sample_count,
         "lastXpAwarded": summary["totalAwardedXP"],
     }
 
