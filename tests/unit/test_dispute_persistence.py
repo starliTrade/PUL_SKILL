@@ -38,6 +38,24 @@ class _Query:
         return [_Snap(r) for r in self.rows]
 
 
+class _Ref:
+    """A document reference: `add()` returns (timestamp, ref), like firestore."""
+
+    def __init__(self, rows, doc_id):
+        self.rows = rows
+        self.id = doc_id
+
+    def get(self):
+        row = next((r for r in self.rows if r.get("id") == self.id), None)
+        return type("Snap", (), {"exists": row is not None, "to_dict": lambda _s: dict(row or {})})()
+
+    def update(self, changes):
+        for row in self.rows:
+            if row.get("id") == self.id:
+                row.update(changes)
+                return
+
+
 class _Collection:
     def __init__(self, rows, fail=False):
         self.rows = rows
@@ -46,7 +64,12 @@ class _Collection:
     def add(self, data):
         if self.fail:
             raise OSError("firestore unavailable")
-        self.rows.append(dict(data))
+        doc_id = f"doc{len(self.rows) + 1}"
+        self.rows.append({**data, "id": doc_id})
+        return (None, _Ref(self.rows, doc_id))
+
+    def document(self, doc_id):
+        return _Ref(self.rows, doc_id)
 
     def where(self, field, op, value):
         return _Query(self.rows).where(field, op, value)
@@ -87,15 +110,65 @@ def test_reports_can_be_read_back_from_another_replica():
     assert [r["reason"] for r in reports] == ["wrong winner"]
 
 
-def test_a_failed_write_is_counted_not_swallowed(monkeypatch):
+def test_a_failed_write_is_counted_and_reported(monkeypatch):
+    """Audit L-09 changed the CONTRACT here, deliberately.
+
+    H-10 made a failed write visible to the operator (counter + health).
+    L-09 added the player: `POST /api/dispute` used to answer `ok: true` even
+    when nothing was stored, so the report the payout dispute depends on could
+    not exist while the reporter believed it did. `record_dispute` now raises
+    `DisputeStoreUnavailable` for the HTTP layer to turn into a 503 — and the
+    failure is STILL counted, so health keeps showing the outage.
+    """
+    import pytest
+
     s = _store_with(_Db(fail=True))
-    s.record_dispute(MATCH, {"reason": "x"})
+    with pytest.raises(store_module.DisputeStoreUnavailable):
+        s.record_dispute(MATCH, {"reason": "x"})
     assert s._dispute_write_failures == 1
-    # The in-process cache still has it, so the operator is not left with nothing.
+    # The in-process cache still has it, so the operator on this replica is not
+    # left with nothing while the writer is down.
     assert s.disputes_for(MATCH)[0]["reason"] == "x"
 
 
 def test_memory_mode_still_records_the_report():
     s = store_module.DurableMatchStore(backend="memory")
-    s.record_dispute(MATCH, {"reason": "y"})
-    assert s.disputes_for(MATCH) == [{"reason": "y"}]
+    dispute_id = s.record_dispute(MATCH, {"reason": "y"})
+    assert dispute_id, "the player needs an id they can come back with"
+    [report] = s.disputes_for(MATCH)
+    assert report["reason"] == "y"
+    assert report["id"] == dispute_id
+    assert report["status"] == "open", "a filed report starts open, not solved"
+
+
+def test_a_report_can_be_resolved_and_read_back():
+    s = store_module.DurableMatchStore(backend="memory")
+    dispute_id = s.record_dispute(MATCH, {"reason": "z"})
+    assert s.resolve_dispute(MATCH, dispute_id, status="resolved", note="paid", by="admin")
+    [report] = s.disputes_for(MATCH)
+    assert (report["status"], report["resolution"], report["resolvedBy"]) == (
+        "resolved",
+        "paid",
+        "admin",
+    )
+    assert report["resolvedAt"]
+
+
+def test_resolving_an_unknown_id_reports_false():
+    s = store_module.DurableMatchStore(backend="memory")
+    s.record_dispute(MATCH, {"reason": "z"})
+    assert not s.resolve_dispute(MATCH, "not-a-dispute", status="dismissed", note="", by="admin")
+
+
+def test_a_durable_resolution_is_visible_to_another_replica():
+    db = _Db()
+    writer = _store_with(db)
+    dispute_id = writer.record_dispute(MATCH, {"reason": "wrong winner"})
+    assert writer.resolve_dispute(
+        MATCH, dispute_id, status="resolved", note="refund approved", by="admin"
+    )
+
+    other = _store_with(db)
+    [report] = other.disputes_for(MATCH)
+    assert report["status"] == "resolved"
+    assert report["resolution"] == "refund approved"

@@ -24,6 +24,7 @@ import os
 import secrets
 import sys
 import threading
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -289,6 +290,14 @@ def _round_from_doc(d: dict[str, Any]) -> Round:
 #   2. legacy documents are migrated forward (derived fields stamped);
 #   3. a document NEWER than this code refuses to be read, loudly.
 SCHEMA_VERSION = 1
+
+
+class DisputeStoreUnavailable(RuntimeError):
+    """The dispute record could not be written or updated (audit L-09).
+
+    Distinguished from "not found": an unavailable store must never be reported
+    to a player as "your report was accepted" or to an operator as "resolved".
+    """
 
 
 class SchemaVersionError(RuntimeError):
@@ -1167,7 +1176,7 @@ class DurableMatchStore:
             return match
         return self.memory.enqueue(address, stake, rtt_ms, target)
 
-    def record_dispute(self, match_id: str, report: dict) -> None:
+    def record_dispute(self, match_id: str, report: dict) -> str:
         """Persist a player's dispute report (phase 6.4, audit H-10).
 
         Audit H-10 (2026-10-22): this lived ONLY in a process-local dict. A
@@ -1180,16 +1189,75 @@ class DurableMatchStore:
         failure is COUNTED and surfaced on `/api/health` — losing a dispute
         silently is worse than refusing it.
         """
-        self.disputes.setdefault(match_id, []).append(report)
+        # Audit L-09: the report now has an IDENTITY and a LIFECYCLE. It used to
+        # be an anonymous append: the player could file one and never learn what
+        # happened, and an operator could not say which report they had answered.
+        # The id is what `GET /api/dispute/{match}` and the admin resolve call
+        # both address, so "under review" is a fact rather than a hope.
+        #
+        # NOTE: the stored record is created FIRST with `status: "open"`; the
+        # player-visible object is the same one the operator resolves.
+        dispute_id = uuid.uuid4().hex
+        record = {"id": dispute_id, **report, "status": report.get("status", "open")}
+        self.disputes.setdefault(match_id, []).append(record)
         if self._fs_store is None:
-            return
+            return dispute_id
         try:
-            self._fs_store.db.collection("pulsar_disputes").add(
-                {"matchId": match_id, **report, "at": timebase.now()}
-            )
+            ref = self._fs_store.db.collection("pulsar_disputes").add(
+                {"matchId": match_id, **record, "at": timebase.now()}
+            )[1]
+            # The durable id wins: another replica must be able to address it.
+            dispute_id = ref.id
+            record["id"] = dispute_id
         except Exception as exc:  # noqa: BLE001
             self._dispute_write_failures += 1
             print(f"[dispute] durable write failed: {exc!r}", file=sys.stderr)
+            raise DisputeStoreUnavailable(str(exc)) from exc
+        return dispute_id
+
+    def resolve_dispute(
+        self,
+        match_id: str,
+        dispute_id: str,
+        *,
+        status: str,
+        note: str,
+        by: str,
+    ) -> bool:
+        """Close a dispute report with a decision the player can read (L-09).
+
+        Returns False when the id does not belong to this match, so the HTTP
+        layer can answer 404 instead of silently "resolving" nothing. A durable
+        write failure RAISES: telling an operator "resolved" when the record was
+        never updated is the same class of lie as losing the report entirely.
+        """
+        resolved_at = timebase.now()
+        found = False
+        for report in self.disputes.get(match_id, []):
+            if str(report.get("id")) == str(dispute_id):
+                report.update(
+                    status=status, resolution=note, resolvedAt=resolved_at, resolvedBy=by
+                )
+                found = True
+                break
+        if self._fs_store is not None:
+            try:
+                doc = self._fs_store.db.collection("pulsar_disputes").document(dispute_id)
+                if doc.get().exists:
+                    doc.update(
+                        {
+                            "status": status,
+                            "resolution": note,
+                            "resolvedAt": resolved_at,
+                            "resolvedBy": by,
+                        }
+                    )
+                    found = True
+            except Exception as exc:  # noqa: BLE001
+                self._dispute_write_failures += 1
+                print(f"[dispute] durable resolve failed: {exc!r}", file=sys.stderr)
+                raise DisputeStoreUnavailable(str(exc)) from exc
+        return found
 
     def disputes_for(self, match_id: str) -> list[dict[str, Any]]:
         """Every dispute report for a match: durable first, cache as a fallback."""

@@ -14,6 +14,11 @@ import { CHAIN, TOKENS } from './chain';
 import { eip6963Manager, EIP6963ProviderDetail } from './eip6963';
 import { isMobileDevice, isWalletInAppBrowser, getWalletConnectDeepLink, getNativeSchemeUri, openWalletConnectInNativeApp } from './web3DeepLinks';
 import { clearSaveFailure, reportSaveFailure } from './saveStatus';
+// Audit L-01: a money-relevant failure that only reaches the console is invisible
+// in production — the player sees a wrong-looking balance and nobody is told.
+// `reportError` is a no-op until Sentry is loaded, so this costs nothing when
+// monitoring is not configured (and never throws).
+import { reportError } from './monitoring';
 
 export const getWalletConnectProjectId = (): string => {
   if (typeof window !== 'undefined') {
@@ -1357,6 +1362,10 @@ class RealWeb3Manager {
           ok: true,
         };
       } catch (err) {
+        // L-01: a failed balance read is the one client error that can make a
+        // player believe their money moved (or vanished). Telemetry, not just
+        // a console line only this browser can see.
+        reportError(err, { area: 'balance', rpc });
         console.warn(`[Pulsar Web3] Balance check failed on ${rpc}:`, err);
       }
     }
@@ -1524,6 +1533,7 @@ class RealWeb3Manager {
         // the local copy and do NOT report zeros as if they were facts.
       }
     } catch (e) {
+      reportError(e, { area: 'progression', address: cleanAddr });
       console.warn('Server progression unavailable, using local cache:', e);
     }
 
@@ -1697,6 +1707,7 @@ class RealWeb3Manager {
       } catch (e) {
         // A failed poll must not clear the feed: the last good snapshot is
         // still true of the past, and an empty array would claim "no duels".
+        reportError(e, { area: 'feed-poll' });
         console.warn("Live feed poll failed:", e);
       }
       if (!cancelled) timer = setTimeout(poll, FEED_POLL_MS);

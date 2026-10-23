@@ -64,6 +64,7 @@ import privacy
 import profiles
 
 import oracle
+import store as store_mod  # the MODULE, for exception types (audit L-09)
 from auth import EXPECTED_CHAIN_ID as _CHAIN_ID
 from auth import NONCE_WINDOW_SECONDS as _NONCE_WINDOW
 from auth import issue_nonce, issue_session, verify_session, verify_siwe
@@ -102,6 +103,7 @@ RL_CLAIM_MAX = 10        # claim calls per minute per address (audit #10 #7:
 RL_ROUND_MAX = 60        # target reveals + result submissions per minute per
 RL_USERNAME_LOOKUP_MAX = 60  # GET /api/username/{name} per minute per IP
 RL_PLAYER_STATS_MAX = 60     # GET /api/player/{addr}/stats per minute per address
+RL_DISPUTE_STATUS_MAX = 30   # GET /api/dispute/{match} per minute per address (L-09)
 # Audit 2026-10-13: how long a rate-limit document may live. The window is 60s;
 # an hour of slack means a TTL policy can never delete a row that is still being
 # counted, while keeping the collection bounded.
@@ -951,6 +953,49 @@ def admin_review_decide(review_id: str, body: ReviewDecision, request: Request) 
     return {"ok": True, "id": review_id, "status": body.status}
 
 
+class DisputeResolution(BaseModel):
+    status: str = Field(pattern="^(resolved|dismissed)$")
+    note: str = Field(default="", max_length=500)
+
+
+@app.post("/api/admin/dispute/{match_id}/{dispute_id}")
+def admin_resolve_dispute(
+    match_id: str, dispute_id: str, body: DisputeResolution, request: Request
+) -> dict[str, Any]:
+    """Answer a player's dispute report (audit L-09).
+
+    A report with no way to be answered is a suggestion box, and the player who
+    filed it cannot tell a decision from silence. The decision is written to the
+    report (so `GET /api/dispute/{match}` shows it) AND to the admin audit trail
+    (audit M-10: who decided, when, why).
+
+    It still never touches match state or the money path — an operator can answer
+    a report without moving a token, which is what the original design promised.
+    """
+    _require_admin(request)
+    if not re.fullmatch(r"[0-9a-f]{32}", match_id):
+        raise HTTPException(status_code=422, detail="Invalid match id")
+    try:
+        found = store.resolve_dispute(
+            match_id, dispute_id, status=body.status, note=body.note, by="admin"
+        )
+    except store_mod.DisputeStoreUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The decision could not be stored; the report is still open.",
+            headers={"Retry-After": "10"},
+        ) from exc
+    if not found:
+        raise HTTPException(status_code=404, detail="Dispute not found for this match")
+    auditlog.record(
+        "dispute.resolve",
+        target=f"{match_id}/{dispute_id}",
+        detail=f"{body.status}: {body.note}",
+        source_ip=_admin_ip(request),
+    )
+    return {"ok": True, "matchId": match_id, "disputeId": dispute_id, "status": body.status}
+
+
 @app.get("/api/admin/match/{match_id}")
 def admin_inspect_match(match_id: str, request: Request) -> dict[str, Any]:
     """Full match state for an operator (phase 6.3)."""
@@ -1132,16 +1177,76 @@ def report_dispute(body: DisputeRequest, request: Request) -> dict[str, Any]:
         "reporter": address.lower(),
         "reason": body.reason,
         "at": int(timebase.now()),
-        "status": m.status,
+        # Audit L-09: this used to be `"status": m.status`, i.e. the MATCH's
+        # status under the key a dispute lifecycle needs. The report then read
+        # "settled" as its own state and there was nowhere to put "open" /
+        # "resolved". The match's state is context, so it is named as such.
+        "matchStatus": m.status,
+        "status": "open",
     }
     # Stored under the match so an operator inspecting it finds the report
     # alongside the state it is about.
-    store.record_dispute(body.matchId, report)
-    print(
-        f"[dispute] {body.matchId} from {address.lower()}: {body.reason[:120]!r}",
-        file=sys.stderr,
+    try:
+        dispute_id = store.record_dispute(body.matchId, report)
+    except store_mod.DisputeStoreUnavailable as exc:
+        # Audit L-09: "received" must mean received. A store failure used to be
+        # swallowed into a printed line while the player was told the report was
+        # filed, so the one artefact a payout dispute depends on could not exist.
+        raise HTTPException(
+            status_code=503,
+            detail="Your report could not be stored. Try again; if this persists, contact support.",
+            headers={"Retry-After": "10"},
+        ) from exc
+    eventlog.emit(
+        "dispute.filed",
+        matchId=body.matchId,
+        disputeId=dispute_id,
+        reporter=address.lower(),
+        reason=body.reason[:120],
     )
-    return {"ok": True, "matchId": body.matchId, "received": report["at"]}
+    return {
+        "ok": True,
+        "matchId": body.matchId,
+        "disputeId": dispute_id,
+        "status": "open",
+        "received": report["at"],
+    }
+
+
+@app.get("/api/dispute/{match_id}")
+def dispute_status(match_id: str, request: Request) -> dict[str, Any]:
+    """What a player can see about their own report (audit L-09).
+
+    Before this, `POST /api/dispute` returned `ok: true` and the story ended
+    there: a player could not find out whether anyone had read the report, and a
+    decision reached by an operator was invisible to the person who asked for it.
+
+    Only a participant sees the reports (404 otherwise, so a stranger cannot
+    learn that a match exists). The response is deliberately small — status,
+    when it was filed, and the operator's note — because the reporter already
+    knows what they wrote.
+    """
+    address = _auth(request)
+    _rl_check("dispute_status", address, RL_DISPUTE_STATUS_MAX)
+    if not re.fullmatch(r"[0-9a-f]{32}", match_id):
+        raise HTTPException(status_code=422, detail="Invalid match id")
+    m = _admin_get_match(match_id)
+    if m is None or address.lower() not in m.players:
+        raise HTTPException(status_code=404, detail="Match not found")
+    reports = store.disputes_for(match_id)
+    mine = [
+        {
+            "id": str(r.get("id", "")),
+            "reason": str(r.get("reason", ""))[:1000],
+            "filedAt": int(r.get("at") or 0),
+            "status": str(r.get("status") or "open"),
+            "resolution": r.get("resolution"),
+            "resolvedAt": r.get("resolvedAt"),
+        }
+        for r in reports
+        if str(r.get("reporter", "")).lower() == address.lower()
+    ]
+    return {"matchId": match_id, "count": len(mine), "disputes": mine}
 
 
 @app.get("/api/metrics")

@@ -442,12 +442,44 @@ export const checkUsername = (
  * A report is a request for review: it never touches match state or the money
  * path, and only a participant may file one.
  */
+export interface DisputeReport {
+  id: string;
+  reason: string;
+  filedAt: number;
+  /** `open` until an operator answers it (audit L-09). */
+  status: "open" | "resolved" | "dismissed" | string;
+  resolution?: string | null;
+  resolvedAt?: number | null;
+}
+
 export const reportDispute = (
   session: ServerSession,
   matchId: string,
   reason: string
-): Promise<{ ok: boolean; matchId: string }> =>
-  request<{ ok: boolean; matchId: string }>("/api/dispute", { matchId, reason }, session);
+): Promise<{ ok: boolean; matchId: string; disputeId: string; status: string }> =>
+  request<{ ok: boolean; matchId: string; disputeId: string; status: string }>(
+    "/api/dispute",
+    { matchId, reason },
+    session
+  );
+
+/**
+ * What happened to my report (audit L-09).
+ *
+ * The report used to be fire-and-forget: `ok: true` and silence. A player who
+ * asked "did anyone look at this?" had no way to find out, and an operator's
+ * decision was invisible to the person who filed it.
+ */
+export const fetchDisputeStatus = (
+  session: ServerSession,
+  matchId: string
+): Promise<{ matchId: string; count: number; disputes: DisputeReport[] }> =>
+  request<{ matchId: string; count: number; disputes: DisputeReport[] }>(
+    `/api/dispute/${encodeURIComponent(matchId)}`,
+    undefined,
+    session,
+    "GET"
+  );
 
 export const commitRound = (
   session: ServerSession,

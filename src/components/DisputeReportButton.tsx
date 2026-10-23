@@ -11,7 +11,7 @@
  */
 import React, { useState } from 'react';
 import { Flag } from 'lucide-react';
-import { ensureSession, reportDispute } from '../lib/gameServerClient';
+import { ensureSession, fetchDisputeStatus, reportDispute, type DisputeReport } from '../lib/gameServerClient';
 import { realWeb3Manager } from '../lib/realWeb3';
 import { useLanguage } from '../i18n/LanguageContext';
 
@@ -25,6 +25,12 @@ export const DisputeReportButton: React.FC<DisputeReportButtonProps> = ({ matchI
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [status, setStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  // Audit L-09: the report used to end in a thank-you note. It now has a
+  // lifecycle the player can read — and a decision an operator made is visible
+  // here instead of only in a server log.
+  const [reports, setReports] = useState<DisputeReport[] | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checkFailed, setCheckFailed] = useState(false);
 
   const submit = async () => {
     if (reason.trim().length < 3) return;
@@ -35,20 +41,86 @@ export const DisputeReportButton: React.FC<DisputeReportButtonProps> = ({ matchI
         if (!provider) throw new Error('No active wallet to sign in with.');
         return await provider.request({ method: 'personal_sign', params: [message, address] });
       });
-      await reportDispute(session, matchId, reason.trim());
+      const res = await reportDispute(session, matchId, reason.trim());
       setStatus('sent');
       setOpen(false);
       setReason('');
+      setReports([
+        { id: res.disputeId, reason: reason.trim(), filedAt: Math.floor(Date.now() / 1000), status: res.status },
+      ]);
     } catch {
       setStatus('error');
     }
   };
 
+  const checkStatus = async () => {
+    setChecking(true);
+    setCheckFailed(false);
+    try {
+      const session = await ensureSession(address, async (message: string) => {
+        const provider = realWeb3Manager.getActiveEip1193Provider();
+        if (!provider) throw new Error('No active wallet to sign in with.');
+        return await provider.request({ method: 'personal_sign', params: [message, address] });
+      });
+      const res = await fetchDisputeStatus(session, matchId);
+      setReports(res.disputes);
+      if (res.count === 0) setStatus('sent');
+    } catch {
+      setCheckFailed(true);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const statusLabel = (value: string) =>
+    value === 'resolved'
+      ? t('disputeStatusResolved')
+      : value === 'dismissed'
+        ? t('disputeStatusDismissed')
+        : t('disputeStatusOpen');
+
+  const statusTone = (value: string) =>
+    value === 'resolved'
+      ? 'text-emerald-300 border-emerald-500/30'
+      : value === 'dismissed'
+        ? 'text-zinc-400 border-white/10'
+        : 'text-amber-300 border-amber-500/30';
+
   if (status === 'sent') {
     return (
-      <p className="text-[10px] font-mono text-zinc-400" data-testid="dispute-sent">
-        {t('disputeSent')}
-      </p>
+      <div className="space-y-1.5" data-testid="dispute-sent">
+        <p className="text-[10px] font-mono text-zinc-400">{t('disputeFiledCheck')}</p>
+        {reports && reports.length > 0 ? (
+          <ul className="space-y-1">
+            {reports.map((report) => (
+              <li
+                key={report.id}
+                data-testid="dispute-status-row"
+                className={`rounded-lg border px-2 py-1 text-[10px] font-mono ${statusTone(report.status)}`}
+              >
+                <span className="font-bold">{statusLabel(report.status)}</span>
+                {report.resolution ? <span className="text-zinc-400"> — {report.resolution}</span> : null}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-[10px] font-mono text-zinc-500">{t('disputeNone')}</p>
+        )}
+        <button
+          type="button"
+          data-testid="dispute-check"
+          onClick={checkStatus}
+          disabled={checking}
+          className="text-[10px] font-mono text-sky-300 hover:text-sky-200 underline underline-offset-2 disabled:opacity-50"
+        >
+          {checking ? t('disputeSending') : t('disputeCheckStatus')}
+        </button>
+        {checkFailed && (
+          <p className="text-[10px] font-mono text-rose-400" data-testid="dispute-check-error">
+            {t('disputeFailed')}
+          </p>
+        )}
+      </div>
     );
   }
 
