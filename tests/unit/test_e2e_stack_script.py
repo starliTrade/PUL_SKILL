@@ -29,12 +29,20 @@ SCRIPT = ROOT / "scripts" / "start_e2e_stack.sh"
 
 
 def _run(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    # Default to the memory store: these tests are about the MANIFEST guard, and
+    # since H-17 the launcher refuses `firestore` before it reaches that guard
+    # when no emulator is running. Each test that cares about the store mode
+    # overrides it explicitly. `FIRESTORE_EMULATOR_HOST` is cleared for the same
+    # reason — a value inherited from the developer's shell must not decide what
+    # a hermetic test asserts.
+    base = {**os.environ, "PULSAR_E2E_STORE": "memory"}
+    base.pop("FIRESTORE_EMULATOR_HOST", None)
     return subprocess.run(  # noqa: S603 — a fixed script path, no shell
         ["bash", str(SCRIPT)],
         cwd=ROOT,
         capture_output=True,
         text=True,
-        env={**os.environ, **env},
+        env={**base, **env},
         check=False,
         timeout=60,
     )
@@ -108,3 +116,46 @@ def test_the_local_signer_is_accepted_explicitly_not_by_disabling_production_gat
     # PULSAR_ENV=dev turns off the fail-closed checks this suite exists to test —
     # it may be MENTIONED in a comment, never assigned.
     assert not any(ln.startswith("PULSAR_ENV=") for ln in lines)
+
+
+def test_firestore_mode_without_an_emulator_refuses_instead_of_hanging(tmp_path: Path) -> None:
+    """H-17/H-18: the launcher used to declare success with no database behind
+    it, and the first store call then blocked for ~60 s. A refusal with the fix
+    in the message costs a second; the hang cost an afternoon.
+    """
+    manifest = _tmp_manifest(tmp_path)
+    proc = _run(
+        {
+            "PULSAR_E2E_MANIFEST": str(manifest),
+            "PULSAR_E2E_STORE": "firestore",
+            "FIRESTORE_EMULATOR_HOST": "127.0.0.1:1",
+            "PULSAR_E2E_API_PORT": "8793",
+            "PULSAR_API_PORT": "8793",
+        }
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 1, out
+    assert "REFUSING TO START" in out
+    assert "PULSAR_E2E_STORE=memory" in out
+    assert "E2E API up" not in out
+
+
+def test_the_store_mode_is_a_closed_set(tmp_path: Path) -> None:
+    manifest = _tmp_manifest(tmp_path)
+    proc = _run(
+        {
+            "PULSAR_E2E_MANIFEST": str(manifest),
+            "PULSAR_E2E_STORE": "sqlite",
+            "PULSAR_E2E_API_PORT": "8794",
+        }
+    )
+    assert proc.returncode == 1
+    assert "must be 'firestore' or 'memory'" in proc.stdout + proc.stderr
+
+
+def test_memory_mode_announces_what_it_does_not_test() -> None:
+    """The warning is the point: a green run on memory must not be read as a
+    green run on durability."""
+    text = SCRIPT.read_text()
+    assert "Durability, the durable read paths and the Firestore index" in text
+    assert 'PULSAR_MATCH_STORE="$STORE_MODE"' in text

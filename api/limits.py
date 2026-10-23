@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import backendmode
 import timebase
 
 COLLECTION = "pulsar_limits"
@@ -41,6 +42,13 @@ _CLIENT_RESOLVED = False
 
 def _firestore_client() -> Any:
     """One client for the process lifetime — see api/eligibility.py."""
+    # Audit H-18: `PULSAR_MATCH_STORE=memory` means this process must not depend
+    # on Firestore. Obeying it here as well is what stops the launcher from
+    # leaving a client pointed at an emulator that was never started (60 s of
+    # blocked requests per call, reported as a dead test rather than a missing
+    # dependency).
+    if not backendmode.firestore_may_be_used():
+        return None
     global _CLIENT, _CLIENT_RESOLVED
     if _CLIENT_RESOLVED:
         return _CLIENT

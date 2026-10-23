@@ -1159,6 +1159,19 @@ class DurableMatchStore:
             raise RuntimeError(
                 "PULSAR_MATCH_STORE=firestore but google-cloud-firestore is not installed"
             )
+        elif backend == "memory" and _requires_durable_store():
+            # Audit H-18 (found by running the stack, 2026-10-23): H-06 refuses
+            # an IMPLICIT fallback in production, but an explicit
+            # `PULSAR_MATCH_STORE=memory` was accepted silently — matches then
+            # live in one replica's memory and vanish on restart, which is the
+            # same money-path failure with a config line that looks deliberate.
+            # One word in an env file should not be able to do that quietly.
+            raise RuntimeError(
+                "Refusing to start: PULSAR_MATCH_STORE=memory in a production-like "
+                "environment means matches are lost on restart and invisible to "
+                "other replicas. Set PULSAR_ENV=dev for a local run, or "
+                "PULSAR_REQUIRE_DURABLE_STORE=0 if this really is a throwaway demo."
+            )
 
     # -- interface ---------------------------------------------------------
 
