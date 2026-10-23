@@ -132,8 +132,11 @@ export const ECONOMY = {
 } as const;
 
 /**
- * Escrow ABI — mirrors contracts/PulsarEscrow.sol exactly (settleDuel(Proof)).
- * Do not edit here without editing the Solidity source; they are one contract.
+ * Escrow ABI — the part of contracts/PulsarEscrow.sol this client uses.
+ *
+ * ABI entries must match the Solidity signatures exactly (they are one
+ * contract); the source of truth is the .sol file, and a signature change there
+ * has to land here in the same commit.
  */
 export const PULSAR_ESCROW_ABI = [
   'function createDuel(bytes32 matchId, uint256 stakeAmount) external',
@@ -164,6 +167,15 @@ export const PULSAR_ESCROW_ABI = [
   'function treasuryWallet() view returns (address)',
   'function oracleSigner() view returns (address)',
   'function totalDuelsSettled() view returns (uint256)',
+  // Audit M-11: the escrow publishes the code version it runs, and tracks how
+  // much of its balance is owed to players (`totalLocked`) versus recoverable
+  // surplus (`residualBalance`). Read-only here: the client never freezes or
+  // sweeps, but a support screen can show which escrow a payout will come from.
+  'function VERSION() view returns (string)',
+  'function VERSION_CODE() view returns (uint256)',
+  'function totalLocked() view returns (uint256)',
+  'function residualBalance() view returns (uint256)',
+  'function frozen() view returns (bool)',
   'function totalVolumeDistributed() view returns (uint256)',
   'event MatchCreated(bytes32 indexed matchId, address indexed player1, uint256 stakeAmount, uint256 totalPool)',
   'event MatchJoined(bytes32 indexed matchId, address indexed player2)',

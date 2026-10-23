@@ -161,6 +161,121 @@ def token_decimals() -> int | None:
     return value
 
 
+# Audit M-11: the escrow the server talks to must be the escrow it was written
+# for. Before this the server accepted ANY address at ESCROW_ADDRESS: after a
+# redeploy, a stale value in one environment looked like "configured and
+# healthy" while every settlement hit old code, and a typo pointed at a random
+# contract that happened to answer `matches(bytes32)` with zeros.
+#
+# Bumped together with `PulsarEscrow.VERSION_CODE`. `tests/unit/test_contract_version.py`
+# fails if the two ever disagree, and if the version is not documented in
+# `docs/UPGRADE-PATH.md`.
+EXPECTED_ESCROW_VERSION = 2
+EXPECTED_ESCROW_VERSION_NAME = "2.0.0"
+
+_escrow_version_cache: dict[str, Any] | None = None
+# The last answer that was actually COMPUTED, kept through the retry cooldown so
+# /api/health does not flip between "incompatible" and "unreadable" every minute.
+_escrow_version_last: dict[str, Any] | None = None
+_escrow_version_retry_after = 0.0
+_ESCROW_VERSION_RETRY_SECONDS = 60.0
+
+
+def escrow_version() -> dict[str, Any] | None:
+    """`VERSION()` / `VERSION_CODE()` of the configured escrow.
+
+    Returns None when there is no escrow configured or the read failed, and a
+    dict {"code": int|None, "name": str|None, "expected": int, "compatible":
+    bool} otherwise. `compatible` is False for an escrow that answers with no
+    version at all (a pre-2.0 deployment), which is the case that matters: it
+    is running code this server was not written against.
+    """
+    global _escrow_version_cache, _escrow_version_last, _escrow_version_retry_after
+    if not escrow_configured():
+        return None
+    if _escrow_version_cache is not None:
+        return dict(_escrow_version_cache)
+    if timebase.now() < _escrow_version_retry_after and _escrow_version_last is not None:
+        return dict(_escrow_version_last)
+    escrow = os.environ["ESCROW_ADDRESS"]
+    # Each read is independent: one failing call must not discard the other's
+    # answer, and a transient error on the first must not make the server report
+    # "this contract publishes no version" for a contract that does.
+    code: int | None = None
+    name: str | None = None
+    try:
+        code_word = _eth_call(escrow, _selector("VERSION_CODE()"))
+        code = int(code_word[-64:], 16) if code_word else None
+    except Exception:
+        code = None
+    try:
+        name = _decode_string(_eth_call(escrow, _selector("VERSION()")))
+    except Exception:
+        name = None
+    if code is None and name is None:
+        # Unreadable, or (worse) an escrow old enough not to publish a version.
+        # Do not cache a transient RPC failure for the life of the process; a
+        # genuinely old contract keeps answering the same way, so a 60 s window
+        # is enough for the operator to see it in /api/health.
+        _escrow_version_retry_after = timebase.now() + _ESCROW_VERSION_RETRY_SECONDS
+        _escrow_version_last = {
+            "code": None,
+            "name": None,
+            "expected": EXPECTED_ESCROW_VERSION,
+            "compatible": False,
+        }
+        return dict(_escrow_version_last)
+    version = {
+        "code": code,
+        "name": name,
+        "expected": EXPECTED_ESCROW_VERSION,
+        "compatible": code == EXPECTED_ESCROW_VERSION,
+    }
+    _escrow_version_cache = dict(version)  # immutable for an address — cache forever
+    _escrow_version_last = dict(version)
+    return version
+
+
+def _decode_string(ret: str | None) -> str | None:
+    """Decode a dynamic ABI `string` return value, or None."""
+    if not ret:
+        return None
+    data = ret.removeprefix("0x")
+    try:
+        offset = int(data[0:64], 16) * 2
+        length = int(data[offset : offset + 64], 16) * 2
+        raw = data[offset + 64 : offset + 64 + length]
+        value = bytes.fromhex(raw).decode("utf-8")
+    except Exception:
+        return None
+    # Only printable, sane-length strings: a hostile contract must not be able
+    # to push megabytes of junk into the health payload.
+    if not value or len(value) > 32 or not value.isprintable():
+        return None
+    return value
+
+
+def escrow_version_problem() -> str | None:
+    """A one-line reason the configured escrow is not the expected one.
+
+    None means "fine" or "not configured" — callers decide whether an
+    unconfigured chain is fatal for them.
+    """
+    if not escrow_configured():
+        return None
+    version = escrow_version()
+    if version is None:
+        return "escrow version unreadable"
+    if version["compatible"]:
+        return None
+    if version["code"] is None:
+        return f"escrow does not publish VERSION(); server expects {EXPECTED_ESCROW_VERSION_NAME}"
+    return (
+        f"escrow VERSION_CODE={version['code']} but the server expects "
+        f"{EXPECTED_ESCROW_VERSION} ({EXPECTED_ESCROW_VERSION_NAME})"
+    )
+
+
 def _escrow_token_address() -> str | None:
     """paymentToken() of the escrow (static call), or None."""
     try:
@@ -272,6 +387,14 @@ _rpc_probed_at = 0.0
 # A few seconds of staleness is free: the deadline is a 10-minute window.
 _CHAIN_NOW_TTL_SECONDS = 5.0
 _chain_now_cache: tuple[float, int] | None = None
+
+
+def reset_escrow_version_cache() -> None:
+    """Forget the cached escrow version (tests, and after an operator redeploy)."""
+    global _escrow_version_cache, _escrow_version_last, _escrow_version_retry_after
+    _escrow_version_cache = None
+    _escrow_version_last = None
+    _escrow_version_retry_after = 0.0
 
 
 def reset_chain_now_cache() -> None:

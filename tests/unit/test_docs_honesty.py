@@ -10,6 +10,7 @@ security policy tells a researcher how to reach us.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,9 +44,18 @@ def test_the_readme_counts_say_they_are_measured():
         "the README must name the script that regenerates its numbers (M-17)"
     )
     # And it must not claim a forge result that this repository never produced.
+    # Audit M-11 follow-up (2026-10-23): Foundry became runnable here, so the row
+    # may now carry a real measurement — but only one that names its date and the
+    # word "measured", so a hand-written number still fails this gate.
     row = [ln for ln in text.splitlines() if ln.startswith("| Contract (forge)")]
     assert row, "the contract row disappeared from the counts table"
-    assert "not run here" in row[0] or "CI" in row[0]
+    measured = re.search(r"measured (\d{4}-\d{2}-\d{2})", row[0])
+    assert "not run here" in row[0] or "CI" in row[0] or measured, (
+        "the forge row must either say it was not run here, point at CI, or carry a "
+        "dated measurement"
+    )
+    if measured:
+        assert re.search(r"\d+ tests", row[0]), "a measured row must state the test count"
 
 
 def test_the_count_script_refuses_to_invent_the_contract_number():

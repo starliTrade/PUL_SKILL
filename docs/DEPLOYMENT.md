@@ -29,7 +29,8 @@ First scaffold forge-std (one time) and run the test suite on your machine:
 
 ```bash
 cd contracts && forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-commit
-forge test        # the full suite (~81 tests): replay, forged sig, high-s, deadlines, refunds, tokens, invariants
+forge test        # 104 tests / 9 suites: replay, forged sig, high-s, deadlines,
+                  # refunds, tokens, invariants, versioning + migration window
 ```
 
 Then deploy with the provided script (Amoy shown; mainnet = add `--chain 137`):
@@ -49,6 +50,19 @@ Fund the two test wallets on Amoy:
 ```bash
 cast send $MOCK_USDT "faucet(address,uint256)" $PLAYER1 5000000000 --rpc-url ... --private-key $DEPLOYER_PRIVATE_KEY
 ```
+
+Confirm the deployed code is the version this server expects (audit M-11):
+
+```bash
+cast call $ESCROW_ADDRESS "VERSION()(string)" --rpc-url ...
+cast call $ESCROW_ADDRESS "VERSION_CODE()(uint256)" --rpc-url ...     # must equal onchain.EXPECTED_ESCROW_VERSION
+curl -s $SERVER/api/health | jq '.escrowVersion, .escrowVersionProblem'
+```
+
+Replacing a live escrow is **not** a redeploy-and-repoint: follow
+[`docs/UPGRADE-PATH.md`](UPGRADE-PATH.md) (freeze the old contract, drain it
+through normal settlement/refund/withdraw, keep it reachable forever). Fees and
+the treasury model are in [`docs/ECONOMICS.md`](ECONOMICS.md).
 
 Verify on the explorer:
 

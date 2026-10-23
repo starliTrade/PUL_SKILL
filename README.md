@@ -56,14 +56,18 @@ previous table said 202/278/81 and was already stale (audit M-17). Run
 
 | Suite | Count (last measured in this repository) |
 |---|---|
-| Frontend (vitest) | 236 tests, 54 files |
-| Server (pytest) | 410 passed, 42 skipped |
-| Contract (forge) | **not run here** — Foundry cannot be installed in the audit environment; `contracts/test/*` is unverified by this document (see `docs/audit/RUTHLESS-AUDIT-2026-10-22.md`) |
+| Frontend (vitest) | 274 tests, 60 files |
+| Server (pytest) | 488 passed, 31 skipped (anvil running; 11 of them are `-m chain`) |
+| Contract (forge) | 104 tests, 9 suites, measured 2026-10-23 (forge 1.7.1, forge-std + OpenZeppelin v5.0.2). The sandbox cannot reach `binaries.soliditylang.org`, so forge was driven with the `solc-js` 0.8.20 build already in `node_modules` via a small shim — the compiler and the tests are real, the toolchain path is not the default one |
+| Chain integration (anvil) | 11 tests passing against `scripts/start_anvil.sh --bg` — real `createDuel`/`joinDuel` and a settlement signed by the real `api/oracle.py` |
 | Coverage, hermetic (`.coveragerc-hermetic`) | **74%** over 3937 statements, measured with no emulator and no anvil — this is the gate that must always be green (audit M-15) |
 | Coverage, complete (`.coveragerc`) | 79% floor, only measurable with the Firestore emulator + anvil running; reported as its own gate, skipped loudly when they are absent |
 
 `forge test` is a CI gate; treat its result as the source of truth for the
-contract suite, never this table.
+contract suite, never this table. The contract is versioned (`VERSION` /
+`VERSION_CODE`, surfaced in `/api/health`) and a replacement follows
+`docs/UPGRADE-PATH.md`; the fee model is fixed by design and documented in
+`docs/ECONOMICS.md`.
 
 ## What is actually enforced
 

@@ -48,6 +48,10 @@ def selector(signature: str) -> str:
 SEL_PAYMENT_TOKEN = selector("paymentToken()")
 SEL_DECIMALS = selector("decimals()")
 SEL_MATCHES = selector("matches(bytes32)")
+# Audit M-11: the escrow publishes the code version it runs, and the server
+# refuses to call an address that does not answer it.
+SEL_VERSION_CODE = selector("VERSION_CODE()")
+SEL_VERSION = selector("VERSION()")
 
 STATUS_NONE, STATUS_CREATED, STATUS_ACTIVE, STATUS_SETTLED = 0, 1, 2, 3
 STATUS_CANCELLED, STATUS_REFUNDED = 4, 5
@@ -60,6 +64,13 @@ def word(value: int) -> str:
 def addr_word(address: str) -> str:
     """An address as a full 32-byte ABI word (what a real RPC returns)."""
     return "0" * 24 + address.lower().removeprefix("0x")
+
+
+def encode_string(value: str) -> str:
+    """ABI-encode a dynamic `string` return value (offset, length, data)."""
+    raw = value.encode("utf-8")
+    padded = raw + b"\x00" * ((32 - len(raw) % 32) % 32)
+    return "0x" + word(32) + word(len(raw)) + padded.hex()
 
 
 def match_settled_topic() -> str:
@@ -103,6 +114,13 @@ class FakeRpc:
     token_decimals: int = 6
     duel: Duel = field(default_factory=Duel)
     receipt: dict[str, Any] | None = None
+
+    # Audit M-11: what the escrow answers to VERSION()/VERSION_CODE().
+    # `publishes_version=False` models a pre-2.0 deployment, which is exactly the
+    # case the server must notice.
+    publishes_version: bool = True
+    escrow_version_code: int = 2
+    escrow_version_name: str = "2.0.0"
 
     # failure injection
     fail_next_calls: int = 0
@@ -157,6 +175,10 @@ class FakeRpc:
                 return "0x" + word(self.token_decimals)
             if data.startswith(SEL_MATCHES):
                 return self.duel.payload()
+            if data.startswith(SEL_VERSION_CODE) and self.publishes_version:
+                return "0x" + word(self.escrow_version_code)
+            if data.startswith(SEL_VERSION) and self.publishes_version:
+                return encode_string(self.escrow_version_name)
             return "0x"
 
         if method == "eth_getTransactionReceipt":
@@ -233,5 +255,7 @@ def configure_escrow(monkeypatch, rpc: FakeRpc, escrow_address: str = "0x" + "ab
     onchain._chain_id_checked = False
     onchain._chain_id_mismatch = False
     onchain._chain_mismatch_until = 0.0
+    onchain._escrow_version_cache = None
+    onchain._escrow_version_retry_after = 0.0
     assert os.environ["ESCROW_ADDRESS"] == escrow_address
     return rpc.install(monkeypatch)

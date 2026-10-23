@@ -193,7 +193,40 @@ contract PulsarEscrowInvariantsTest is Test {
     /// The escrow must always hold enough to cover every obligation it has:
     /// the stakes of live duels plus every deferred payout it owes.
     function invariant_balance_covers_every_obligation() public view {
-        uint256 obligations = 0;
+        assertGe(
+            token.balanceOf(address(escrow)),
+            _obligations(),
+            "the escrow holds less than it owes - money was created or leaked"
+        );
+    }
+
+    /// Audit M-11: `totalLocked` is what `sweepResidual` trusts, so it must be
+    /// EXACTLY the obligations this test computes from the handler's own model,
+    /// not merely a bound. A ledger that drifts on the high side would let a
+    /// sweep miss recoverable funds; on the low side it would let a sweep take
+    /// a player's money, which is the failure this whole feature has to avoid.
+    function invariant_total_locked_equals_obligations() public view {
+        assertEq(
+            escrow.totalLocked(),
+            _obligations(),
+            "totalLocked drifted from the obligations it is supposed to track"
+        );
+    }
+
+    /// Nothing in the handler sends tokens to the escrow directly, so every
+    /// token in it is owed to somebody and the surplus must be zero at all
+    /// times. A non-zero residual here means an increment or a decrement in the
+    /// ledger was missed.
+    function invariant_residual_is_zero_without_stray_transfers() public view {
+        assertEq(
+            escrow.residualBalance(),
+            0,
+            "the escrow believes it has unowned funds - the locked ledger is wrong"
+        );
+    }
+
+    /// Stakes of open duels plus every deferred payout the escrow owes.
+    function _obligations() internal view returns (uint256 obligations) {
         uint256 n = handler.matchCount();
         for (uint256 i = 0; i < n; i++) {
             bytes32 id = handler.matchIds(i);
@@ -205,12 +238,6 @@ contract PulsarEscrowInvariantsTest is Test {
             }
         }
         obligations += _pendingTotal();
-
-        assertGe(
-            token.balanceOf(address(escrow)),
-            obligations,
-            "the escrow holds less than it owes - money was created or leaked"
-        );
     }
 
     /// A settled or refunded duel is terminal: its status never changes again.

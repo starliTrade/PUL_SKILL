@@ -204,6 +204,33 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
      */
     uint256 public constant ADMIN_TIMELOCK = 2 days;
 
+    /**
+     * @dev Audit M-11 — the escrow is NOT upgradeable, and this is the
+     * deliberately chosen alternative to a proxy.
+     *
+     * A proxy would let a key change the code that custodies live money: one
+     * bad upgrade and every stake in the contract is gone, and the storage
+     * layout becomes a permanent, invisible constraint on every future change.
+     * For a two-week-old contract holding player money, an immutable escrow
+     * plus an explicit migration procedure is the smaller risk.
+     *
+     * What a migration needs, and what is implemented below:
+     *   - `VERSION`/`VERSION_CODE`: an address can be checked against the code
+     *     it is supposed to be running (`api/onchain.py` does exactly that);
+     *   - `freeze()`: stop NEW deposits while the replacement is deployed;
+     *     settlements, refunds and withdrawals stay open, so a freeze can
+     *     never trap funds — this is the migration window;
+     *   - `totalLocked` + `residualBalance()`: the contract can prove on-chain
+     *     how much of its balance belongs to players, so the operator knows
+     *     when the old escrow is empty and whether a stray transfer is
+     *     sweepable without touching player money.
+     *
+     * Bump BOTH on any behavior-changing deploy; `tests/unit/test_contract_version.py`
+     * pins them together with the server's expectation.
+     */
+    string public constant VERSION = "2.0.0";
+    uint256 public constant VERSION_CODE = 2;
+
     IERC20 public immutable paymentToken;
     address public treasuryWallet;
     address public oracleSigner;
@@ -285,6 +312,29 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
     uint256 public totalVolumeDistributed;
     uint256 public totalFeesCollected;
 
+    /**
+     * @dev Audit M-11 — how much of `paymentToken.balanceOf(this)` is owed to
+     * someone: open stakes plus deferred payouts. Anything above it is a stray
+     * transfer (someone sent USDT to the escrow by mistake), and it is the ONLY
+     * amount `sweepResidual` may move.
+     *
+     * Before this, the contract had no idea what it owed: an accidental
+     * transfer was indistinguishable from player money, so there was no safe
+     * way to recover it, and nothing on-chain to check a migration against.
+     */
+    uint256 public totalLocked;
+
+    /**
+     * @dev Audit M-11 — the migration window.
+     *
+     * `frozen` blocks `createDuel` and `joinDuel` only. Settlement, refund and
+     * withdrawal never consult it: freezing must never be able to hold a
+     * player's money hostage, otherwise "the operator paused the escrow" and
+     * "the operator stole the escrow" look the same from the outside.
+     */
+    bool public frozen;
+    uint256 public frozenAt;
+
     event MatchCreated(bytes32 indexed matchId, address indexed player1, uint256 stakeAmount, uint256 totalPool);
     event MatchJoined(bytes32 indexed matchId, address indexed player2);
     event MatchSettled(bytes32 indexed matchId, address indexed winner, uint256 prizePaid, uint256 platformFee);
@@ -297,6 +347,9 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
     event PendingAdminChangesCancelled();
     event Withdrawn(address indexed to, uint256 amount);
     event OracleSignerUpdated(address indexed oldOracle, address indexed newOracle);
+    event EscrowFrozen(address indexed by, uint256 at);
+    event EscrowUnfrozen(address indexed by, uint256 at);
+    event ResidualSwept(address indexed to, uint256 amount);
 
     constructor(
         address _paymentToken,
@@ -318,6 +371,7 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
     }
 
     function createDuel(bytes32 matchId, uint256 stakeAmount) external nonReentrant {
+        require(!frozen, "Escrow frozen");
         require(stakeAmount >= MIN_STAKE_UNITS, "Stake below minimum");
         require(matches[matchId].status == MatchStatus.None, "Match already exists");
 
@@ -325,6 +379,9 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         SafeTransfer.safeTransferFrom(paymentToken, msg.sender, address(this), stakeAmount);
         uint256 received = paymentToken.balanceOf(address(this)) - beforeBalance;
         require(received >= MIN_STAKE_UNITS, "Received below minimum");
+
+        // Audit M-11: the escrow now tracks what it owes, not just what it holds.
+        totalLocked += received;
 
         matches[matchId] = DuelMatch({
             matchId: matchId,
@@ -347,6 +404,7 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
     }
 
     function joinDuel(bytes32 matchId) external nonReentrant {
+        require(!frozen, "Escrow frozen");
         DuelMatch storage duel = matches[matchId];
         require(duel.status == MatchStatus.Created, "Match not available");
         require(duel.player1 != msg.sender, "Cannot play against self");
@@ -358,6 +416,8 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         SafeTransfer.safeTransferFrom(paymentToken, msg.sender, address(this), duel.stakeAmount);
         uint256 received = paymentToken.balanceOf(address(this)) - beforeBalance;
         require(received == duel.stakeAmount, "Fee-on-transfer deposit rejected");
+
+        totalLocked += received;
 
         duel.player2 = msg.sender;
         duel.status = MatchStatus.Active;
@@ -491,6 +551,10 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
             return;
         }
         if (SafeTransfer.tryTransfer(paymentToken, to, amount)) {
+            // Audit M-11: the money left the escrow, so the obligation ends
+            // here. A DEFERRED credit is deliberately NOT subtracted — it is
+            // still owed, just to `pendingWithdrawals` instead of the duel.
+            totalLocked -= amount;
             return;
         }
         pendingWithdrawals[to] += amount;
@@ -530,7 +594,82 @@ contract PulsarEscrow is Ownable, ReentrancyGuard {
         require(amount > 0, "Nothing to withdraw");
         pendingWithdrawals[msg.sender] = 0;
         SafeTransfer.safeTransfer(paymentToken, msg.sender, amount);
+        // Audit M-11: the deferred credit was part of `totalLocked`; now it is
+        // in the player's hands instead of the escrow's.
+        totalLocked -= amount;
         emit Withdrawn(msg.sender, amount);
+    }
+
+    // --- Audit M-11: versioning + migration window --------------------------
+
+    /**
+     * @notice Stop new stakes from entering this escrow.
+     *
+     * The first step of a migration: deploy the replacement, freeze this one so
+     * no new duel can be funded into the old code, let the open duels settle or
+     * time out, then point the server at the new address. The old escrow stays
+     * deployed forever for anyone who still holds a deferred credit — nothing
+     * below is time-limited.
+     *
+     * Deliberately NOT timelocked. Freezing is the *safe* direction: it can
+     * only stop deposits, never a payout. A two-day delay on "stop taking money
+     * into a contract you are abandoning" would defeat the purpose, and every
+     * freeze/unfreeze lands in the event log.
+     */
+    function freeze() external onlyOwner {
+        require(!frozen, "Already frozen");
+        frozen = true;
+        frozenAt = block.timestamp;
+        emit EscrowFrozen(msg.sender, block.timestamp);
+    }
+
+    /**
+     * @notice Re-open this escrow for new stakes (aborted migration).
+     *
+     * Also instant: re-opening only restores the pre-freeze behavior, and the
+     * deposits it allows are the ordinary, audited path. An admin cannot use
+     * unfreeze to move money — there is no such function.
+     */
+    function unfreeze() external onlyOwner {
+        require(frozen, "Not frozen");
+        frozen = false;
+        uint256 at = frozenAt;
+        frozenAt = 0;
+        emit EscrowUnfrozen(msg.sender, at);
+    }
+
+    /// @notice Balance that is NOT owed to any player or to the treasury.
+    ///
+    /// Zero in normal operation. Non-zero means someone sent tokens to the
+    /// escrow by mistake (or a fee-on-transfer token left dust), and the amount
+    /// is exactly what `sweepResidual` may move.
+    function residualBalance() public view returns (uint256) {
+        uint256 balance = paymentToken.balanceOf(address(this));
+        return balance > totalLocked ? balance - totalLocked : 0;
+    }
+
+    /**
+     * @notice Recover tokens that were sent to the escrow by mistake.
+     *
+     * Two independent guards, because this is the one function that moves
+     * tokens without a duel:
+     *   1. it can only move `residualBalance()` — player stakes and deferred
+     *      payouts are reported by `totalLocked` and are untouchable here;
+     *   2. it only works while `frozen` — i.e. during a migration window, when
+     *      no new money is entering. A transfer to the escrow at any other time
+     *      is indistinguishable from a stake deposit arriving late, and acting
+     *      on it then is how an operator ends up "recovering" a player's stake.
+     *
+     * The cost is honest: dust is recoverable only during a migration. That is
+     * an acceptable trade for never touching player money.
+     */
+    function sweepResidual(address to) external onlyOwner nonReentrant {
+        require(frozen, "Not frozen");
+        require(to != address(0), "Zero address");
+        uint256 amount = residualBalance();
+        require(amount > 0, "No residual");
+        SafeTransfer.safeTransfer(paymentToken, to, amount);
+        emit ResidualSwept(to, amount);
     }
 
     /// @dev Audit M24: schedule a treasury change; it applies after ADMIN_TIMELOCK.

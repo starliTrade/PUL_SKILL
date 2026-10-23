@@ -61,15 +61,17 @@
 - [ ] **M-17** اعداد README از خروجی واقعی
 - [ ] **M-19/M-21/M-22** حریم خصوصی کاربران، حذف داده، LICENSE/SECURITY
 - [ ] **M-24** خطای ذخیره‌سازی قابل‌مشاهده
-- [ ] **M-11/M-12** ارتقاپذیری قرارداد و پارامتر کارمزد — نیازمند تصمیم + redeploy (خارج از کد این دور)
+- [x] **M-11** قرارداد نسخه‌دار + پنجره‌ی مهاجرت (proxy رد شد، با دلیل مستند) — `PulsarEscrow.VERSION/VERSION_CODE`، `freeze/unfreeze`، دفتر `totalLocked`/`residualBalance`/`sweepResidual`؛ `api/onchain.escrow_version()` + `escrowVersionProblem` در `/api/health`؛ `docs/UPGRADE-PATH.md`؛ تست: `contracts/test/PulsarEscrowMigration.t.sol` (۱۸)، دو invariant جدید در `PulsarEscrowInvariants.t.sol`، `tests/unit/test_contract_version.py` (۱۲)
+- [x] **M-12** پارامتر کارمزد ثابت و treasury — تصمیم محصولی در `docs/ECONOMICS.md` ثبت شد (مدل، مثال‌های عددی، ردِ `setFeeBps`، الزام multisig برای treasury، و تحلیل واحد-اقتصاد که می‌گوید L1 با این نردبان استیک توجیه ندارد)؛ تست: `tests/unit/test_economics_doc.py` (۹)
 - [ ] **M-18** نسخه‌بندی service worker — نیازمند تست مرورگر
 
 ### فاز ۴ — نیازمند محیط/انسان (در این سند فقط برنامه)
 
-- [ ] اجرای `forge test` + `forge coverage` + invariant (Foundry)
+- [x] اجرای `forge test` + invariant (Foundry) — ۱۰۴ تست در ۹ suite، همه سبز (اجرای واقعی ۲۰۲۶-۱۰-۲۳)
+- [ ] اجرای `forge coverage` — forge 1.7.1 این زیرفرمان را حذف کرده؛ نیاز به `--ir-minimum`/ابزار جایگزین
 - [ ] اجرای Playwright روی مرورگر واقعی
 - [ ] emulator Firestore + تست integration
-- [ ] anvil + تست chain
+- [x] anvil + تست chain — `scripts/start_anvil.sh --bg` + `pytest -m chain`: ۱۱ تست سبز (مسیر پول با امضای واقعی oracle روی EVM واقعی)
 - [ ] ممیزی قرارداد توسط firm
 - [ ] KYC/AML + ژئوبلاک + مجوز
 - [ ] تست Amoy با دو گوشی واقعی

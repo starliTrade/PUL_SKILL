@@ -1257,6 +1257,10 @@ def health() -> dict[str, Any]:
         # ORACLE_CHAIN_ID / VITE_CHAIN_ID bricks every settlement sig.
         "chainId": _CHAIN_ID,
         "escrowConfigured": onchain.escrow_configured(),
+        # Audit M-11: which escrow code is actually deployed. After a redeploy a
+        # stale ESCROW_ADDRESS used to look healthy; now it is visible here.
+        "escrowVersion": onchain.escrow_version(),
+        "escrowVersionProblem": onchain.escrow_version_problem(),
         "prodLike": _prod_like,
         # Audit C1: the distributed limiter silently degraded to a per-process
         # window for the life of the project. Expose which backend is actually
