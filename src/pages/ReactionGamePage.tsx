@@ -7,7 +7,8 @@ import { AntiCheat, getRandomOpponent, TargetSpawnConfig } from '../lib/antiChea
 import { usePulsarStore } from '../store/usePulsarStore';
 import { XPSummary } from '../lib/xpSystem';
 import { gameServerConfigured, ensureSession, confirmEligibility, measureServerRttMs, queueForMatch, commitRound, revealRoundTarget, submitRoundResult, settleMatch, claimMatch, getMatch, matchIdToBytes32, type ServerSession, type MatchView } from '../lib/gameServerClient';
-import { settleDuel as settleDuelOnChain, refundTimeoutMatch, approveUsdt, createDuel, joinDuel, getDuelState, getTokenDecimals, findSettlementTx } from '../lib/escrowFlow';
+import { settleDuel as settleDuelOnChain, refundTimeoutMatch, approveUsdt, createDuel, joinDuel, getDuelState, getTokenDecimals, findSettlementTx, isDuplicateDepositError } from '../lib/escrowFlow';
+import { acquireDepositLease, releaseDepositLease, type DepositLease } from '../lib/depositLock';
 import { isEscrowConfigured, CHAIN, REFUND_OPENS_AFTER_MINUTES, prizeForStake } from '../lib/chain';
 import { BO3_TARGET_WINS, bo3Decided } from '../lib/bo3';
 import { ethers } from 'ethers';
@@ -223,6 +224,29 @@ function isWalletCancel(msg: string): boolean {
     }
   };
 
+  /**
+   * Wait until the duel exists on-chain (status >= Created).
+   *
+   * Audit M-07: used when ANOTHER tab is doing the deposit. Polling the chain is
+   * the only source of truth here — a local flag would say "not deposited" while
+   * the other tab's transaction is already mined.
+   */
+  const waitForDuelCreated = async (bytes32: string, timeoutMs = 120_000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const st = await getDuelState(bytes32);
+        if (st.status >= 1) return;
+      } catch {
+        // RPC hiccup: keep waiting.
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    throw new Error(
+      'The stake deposit did not appear on-chain. Nothing was taken from your wallet by this tab — check your wallet activity before retrying.',
+    );
+  };
+
   // Human verify target clicked
   const handleVerifyNodeClick = () => {
     sounds.playTick();
@@ -368,6 +392,16 @@ function isWalletCancel(msg: string): boolean {
         throw new Error('Escrow is not configured — staked duels are disabled. Practice mode is available.');
       }
       const bytes32 = await matchIdToBytes32(view.matchId);
+
+      // Audit M-07: ONE deposit prompt per duel, across tabs and reloads.
+      //
+      // A ref cannot do this job: it is per-tab and dies on reload. The lease
+      // lives in localStorage, expires on its own (a closed tab must not lock the
+      // player out of their duel), and the loser of the race WAITS for the other
+      // tab's deposit to appear on-chain instead of opening a second wallet
+      // prompt for the same money.
+      const depositLease: DepositLease | null = acquireDepositLease(view.matchId);
+      try {
       if (view.youAreCreator) {
         // Audit 2026-10-13 (found by the phase-10 ranked E2E, from the full
         // ethers error): `createDuel` is NOT idempotent. The contract reverts
@@ -389,14 +423,31 @@ function isWalletCancel(msg: string): boolean {
           // decide, rather than blocking a first-time deposit.
         }
         if (!alreadyDeposited) {
-          await approveUsdt(currentStake);
-          await createDuel(bytes32, currentStake);
+          if (!depositLease) {
+            // Another tab is depositing for this duel. Do not prompt a second
+            // wallet; wait for its transaction to show up instead.
+            await waitForDuelCreated(bytes32);
+          } else {
+            await approveUsdt(currentStake);
+            try {
+              await createDuel(bytes32, currentStake);
+            } catch (e) {
+              // M-07: the other tab (or a double tap) won the race. The deposit
+              // exists — continue instead of failing over money that landed.
+              if (!isDuplicateDepositError(e)) throw e;
+              await waitForDuelCreated(bytes32);
+            }
+          }
         }
       } else {
         // P0-fix — the joiner MUST approve before joinDuel(): the escrow pulls
         // the joiner's stake via transferFrom, which reverts without allowance
         // (its usual result: the creator's deposit locked for the full window).
-        await approveUsdt(currentStake);
+        // M-07: approveUsdt is now a no-op when the allowance already covers the
+        // stake, so a retried flow does not prompt the wallet again.
+        if (depositLease) {
+          await approveUsdt(currentStake);
+        }
         // The joiner then WAITS for the creator's createDuel to confirm
         // on-chain — calling joinDuel earlier reverts ("Match not available")
         // while the approval was already spent on gas. Poll the duel state
@@ -434,7 +485,18 @@ function isWalletCancel(msg: string): boolean {
         if (!created) {
           throw new Error('Opponent stake deposit is not visible on-chain. Nothing was taken from your wallet.');
         }
-        await joinDuel(bytes32);
+        try {
+          await joinDuel(bytes32);
+        } catch (e) {
+          if (!isDuplicateDepositError(e)) throw e;
+          // Already joined (second tab / retry) — the match is Active, which is
+          // exactly the state this step exists to reach.
+          const st = await getDuelState(bytes32);
+          if (st.status < 2) throw e;
+        }
+      }
+      } finally {
+        if (depositLease) releaseDepositLease(depositLease);
       }
 
       sounds.playMatchFound();
