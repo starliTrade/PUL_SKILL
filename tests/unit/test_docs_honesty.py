@@ -47,8 +47,10 @@ def test_the_readme_counts_say_they_are_measured():
     # Audit M-11 follow-up (2026-10-23): Foundry became runnable here, so the row
     # may now carry a real measurement — but only one that names its date and the
     # word "measured", so a hand-written number still fails this gate.
-    row = [ln for ln in text.splitlines() if ln.startswith("| Contract (forge)")]
-    assert row, "the contract row disappeared from the counts table"
+    # Two contract rows now: the `default` profile and the `nightly` one, each
+    # naming its own budget and measurement (2026-10-23).
+    row = [ln for ln in text.splitlines() if ln.startswith("| Contract (forge")]
+    assert len(row) == 2, f"expected a default and a nightly contract row, found {len(row)}"
     measured = re.search(r"measured (\d{4}-\d{2}-\d{2})", row[0])
     assert "not run here" in row[0] or "CI" in row[0] or measured, (
         "the forge row must either say it was not run here, point at CI, or carry a "

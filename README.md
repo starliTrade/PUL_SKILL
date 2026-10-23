@@ -76,8 +76,9 @@ previous table said 202/278/81 and was already stale (audit M-17). Run
 |---|---|
 | Frontend (vitest) | 351 tests, 70 files (measured 2026-10-23) |
 | Server (pytest) | 661 passed / 25 skipped with anvil running; 650 / 36 with anvil stopped (the chain suites skip), measured 2026-10-23 |
-| Contract (forge) | 104 tests, 9 suites, measured 2026-10-23 (forge 1.7.1, forge-std + OpenZeppelin v5.0.2). The sandbox cannot reach `binaries.soliditylang.org`, so forge was driven with the `solc-js` 0.8.20 build already in `node_modules` via a small shim — the compiler and the tests are real, the toolchain path is not the default one |
+| Contract (forge, `default`) | 104 tests, 9 suites, measured 2026-10-23 (forge 1.7.1, forge-std + OpenZeppelin v5.0.2). The sandbox cannot reach `binaries.soliditylang.org`, so forge was driven with the `solc-js` 0.8.20 build already in `node_modules` via a small shim — the compiler and the tests are real, the toolchain path is not the default one |
 | Chain integration (anvil) | 11 tests passing against `scripts/start_anvil.sh --bg` — real `createDuel`/`joinDuel` and a settlement signed by the real `api/oracle.py` |
+| Contract (forge, `nightly`) | **104 tests, 0 failed in 21 min** — 5 fuzz tests × 10,000 runs (50,000 cases) and 6 invariants × 1,024 runs × 500 depth (**3,072,000 calls**), run 2026-10-23. The profile had never been executed before; the report records where the pass is weaker than its numbers suggest: [docs/CONTRACT-FUZZ-REPORT.md](docs/CONTRACT-FUZZ-REPORT.md) |
 | Coverage, hermetic (`.coveragerc-hermetic`) | **78%** over 4314 statements (969 missed), floor 77, measured three times on 2026-10-23 with no emulator and no anvil — this is the gate that must always be green (audit M-15) |
 | Coverage, complete (`.coveragerc`) | 79% floor, only measurable with the Firestore emulator + anvil running; reported as its own gate, skipped loudly when they are absent |
 | Contract coverage (`forge coverage --report summary`) | `PulsarEscrow.sol`: **98.57%** lines (207/210), 98.48% statements, **86.73%** branches, **100%** functions (31/31), measured 2026-10-23 on the same commit |

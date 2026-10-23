@@ -18,6 +18,7 @@
 | سرور FastAPI | **۶۶۱ تست سبز / ۲۵ skip** با anvil روشن؛ **۶۵۰ / ۳۶** با anvil خاموش (سوئیت‌های زنجیره skip می‌شوند) | `pytest -q` |
 | کلاینت React | ۳۳۲ تست / ۶۷ فایل، tsc + eslint پاک | `npm run lint`, `vitest` |
 | مسیر پول (ranked) | **۱۱ تست `-m chain` روی anvil واقعی، سبز** — امضای واقعی `api/oracle.py` توسط قرارداد پذیرفته شد | `pytest -m chain` |
+| فاز عمیق قرارداد | **۱۰۴ تست / ۰ شکست در ۲۱ دقیقه** — ۵ تست fuzz × ۱۰٬۰۰۰ اجرا و ۶ invariant × ۱٬۰۲۴×۵۰۰ (**۳٬۰۷۲٬۰۰۰ فراخوانی**) | `cd contracts && FOUNDRY_PROFILE=nightly forge test` (اجرای شبانه، نه هر PR) |
 | سلامت ذخیره‌سازی (H-17) | `store.writable` + `?deep=1` با مهلت واقعی؛ روی endpoint مرده در ۱٫۵ ثانیه «ok: false» داد | `test_health_store_signal.py` |
 | هارنس‌ها (H-19…H-22) | cast از PATH/`~/.foundry/bin`؛ chaos ۲۰ pass؛ locust فقط 200=موفق؛ ۴۲۹ رعایت می‌شود | `test_no_sandbox_paths.py`, `test_rate_limit_is_not_a_failure.py` |
 | مرورگر واقعی (E2E) | **انجام نشده در این محیط** | `npx playwright install` در sandbox مسدود است |
