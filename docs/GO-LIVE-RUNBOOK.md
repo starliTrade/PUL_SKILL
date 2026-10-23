@@ -15,7 +15,7 @@
 | لایه | وضعیت | شاهد |
 |---|---|---|
 | قرارداد `PulsarEscrow` | نسخه‌دار، **۱۰۴ تست اجرا شد** (۹ سوئیت، ۹۸٫۵۷٪ خطوط) — Foundry در همین جلسه نصب و اجرا شد | `forge test` |
-| سرور FastAPI | **۶۶۱ تست سبز / ۲۵ skip** با anvil روشن؛ **۶۵۰ / ۳۶** با anvil خاموش (سوئیت‌های زنجیره skip می‌شوند) | `pytest -q` |
+| سرور FastAPI | **۶۶۵ تست سبز / ۲۵ skip** با anvil روشن؛ **۶۵۴ / ۳۶** با anvil خاموش (سوئیت‌های زنجیره skip می‌شوند) | `pytest -q` |
 | کلاینت React | ۳۳۲ تست / ۶۷ فایل، tsc + eslint پاک | `npm run lint`, `vitest` |
 | مسیر پول (ranked) | **۱۱ تست `-m chain` روی anvil واقعی، سبز** — امضای واقعی `api/oracle.py` توسط قرارداد پذیرفته شد | `pytest -m chain` |
 | فاز عمیق قرارداد | **۱۰۴ تست / ۰ شکست در ۲۱ دقیقه** — ۵ تست fuzz × ۱۰٬۰۰۰ اجرا و ۶ invariant × ۱٬۰۲۴×۵۰۰ (**۳٬۰۷۲٬۰۰۰ فراخوانی**) | `cd contracts && FOUNDRY_PROFILE=nightly forge test` (اجرای شبانه، نه هر PR) |
@@ -75,7 +75,7 @@ bash scripts/verify.sh --strict
 ```bash
 npm run lint                                   # tsc + eslint .
 npx vitest run                                 # انتظار: 351 تست / 70 فایل
-.venv/bin/python -m pytest -q                  # انتظار: 650 (anvil خاموش) تا 661 (anvil بالا)
+.venv/bin/python -m pytest -q                  # انتظار: 654 (anvil خاموش) تا 665 (anvil بالا)
 .venv/bin/python -m py.test -q -m chain        # فقط با anvil بالا
 ```
 
