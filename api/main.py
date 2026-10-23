@@ -1349,8 +1349,17 @@ def ping() -> dict[str, Any]:
 
 
 @app.get("/api/health")
-def health() -> dict[str, Any]:
-    return {
+def health(deep: bool = False) -> dict[str, Any]:
+    # Audit H-17: `matchStore` is CONFIGURATION — it names the client we managed
+    # to construct. google-cloud-firestore does no I/O in its constructor, so a
+    # wrong project, revoked IAM or a blocked network still answered
+    # `matchStore: firestore` while the first real write would fail. `store`
+    # adds evidence (counters + tri-state `writable`), and `?deep=1` adds one
+    # bounded round-trip for the moments when an operator needs proof.
+    #
+    # `deep` is opt-in on purpose: a liveness probe that waits on a dead
+    # database turns a slow dependency into an unresponsive process.
+    payload: dict[str, Any] = {
         "ok": True,
         "service": "pulsar-game-server",
         "rounds": ROUNDS,
@@ -1406,7 +1415,15 @@ def health() -> dict[str, Any]:
             "fallbacks": _rl_fallback_count,
             "lastFallback": dict(_rl_fallback_last),
         },
+        "store": store.write_stats(),
     }
+    if deep:
+        try:
+            timeout_ms = int(os.environ.get("PULSAR_HEALTH_PROBE_TIMEOUT_MS", "1500"))
+        except ValueError:
+            timeout_ms = 1500
+        payload["store"]["probe"] = store.probe(timeout_ms)
+    return payload
 
 
 def _request_domain(request: Request) -> str:

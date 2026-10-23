@@ -14,7 +14,10 @@ asks during an incident. It carries no secret and no RPC URL.
 | Field | Meaning | Bad value |
 |---|---|---|
 | `ok` | the process is up | — |
-| `matchStore` | `memory` or `firestore` | `memory` in production = **no durability** |
+| `matchStore` | which client was **constructed** — configuration, not proof (H-17) | `memory` in production = **no durability** |
+| `store.writable` | `true`/`false` = last durable write succeeded/failed; `null` = none attempted yet | `false`, or `null` after a day of traffic, means nothing is being persisted |
+| `store.lastError` | the last durable-write failure, truncated | non-empty while `writable` is `false` |
+| `store.probe` (`?deep=1` only) | one bounded round-trip to the store | `ok: false` = the store is unreachable, whatever `matchStore` says |
 | `ledger.available` | the economy ledger is reachable | `false` = progression/leaderboard are not being written |
 | `ledger.failures` | per-function failure counts | any non-zero means writes are being dropped |
 | `chainId` | the chain the server signs for | must equal the client's `VITE_CHAIN_ID` and the contract's chain |
@@ -80,8 +83,10 @@ the server.
 ## 2. Firestore is down, or the ledger is dead
 
 **Symptoms.** `ledger.available: false`, or `ledger.failures` climbing;
-`matchStore: memory` when you expect `firestore`; the leaderboard stops moving;
-progression stops updating.
+`matchStore: memory` when you expect `firestore`; `store.writable: false` (or
+`store.probe.ok: false` from `?deep=1`) while `matchStore` still reads
+`firestore` — that combination is a reachable-looking server with a dead
+database; the leaderboard stops moving; progression stops updating.
 
 **What is at risk.** The ledger is a **shadow of the money path** — it is
 deliberately best-effort. Money still moves on chain; the recorded

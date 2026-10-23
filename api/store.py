@@ -24,6 +24,7 @@ import os
 import secrets
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -1098,6 +1099,14 @@ class DurableMatchStore:
         # install_persistence() so transactional mutations never double-save.
         self._orig_engine: Any = None
         self.memory = InMemoryStore()
+        # Audit H-17: write ACCOUNTING, not write configuration. `matchStore`
+        # says which client we built; these say whether it ever worked.
+        self._writes = 0
+        self._write_failures = 0
+        self._last_ok_at: float | None = None
+        self._last_failure_at: float | None = None
+        self._last_error = ""
+        self._last_write_failed = False
 
         if backend in ("firestore", "auto") and _FIRESTORE_AVAILABLE:
             project = os.environ.get("FIRESTORE_PROJECT_ID") or None
@@ -1157,6 +1166,102 @@ class DurableMatchStore:
     def durable(self) -> bool:
         return self.backend_name == "firestore"
 
+    # -- write accountability (audit H-17) ---------------------------------
+    #
+    # `matchStore: "firestore"` only ever proved that a CLIENT OBJECT could be
+    # constructed: google-cloud-firestore does no I/O in its constructor, so a
+    # wrong project id, revoked IAM or a blocked network still reported
+    # `matchStore: firestore` on /api/health and looked durable. Verified
+    # 2026-10-23 against a dead emulator endpoint: the client built fine, health
+    # said `firestore`, and the first read hung for 60 s.
+    #
+    # The counters below move only when a durable write actually happened, so
+    # they are EVIDENCE, not configuration.
+
+    def _note_write_ok(self) -> None:
+        self._writes += 1
+        self._last_ok_at = timebase.now()
+        self._last_write_failed = False
+
+    def _note_write_failure(self, exc: BaseException) -> None:
+        self._write_failures += 1
+        self._last_failure_at = timebase.now()
+        self._last_write_failed = True
+        # Truncated: /api/health is unauthenticated, and a driver error can echo
+        # a project name, an endpoint or a certificate subject.
+        self._last_error = f"{type(exc).__name__}: {exc}"[:200]
+
+    def write_stats(self) -> dict[str, Any]:
+        """Configuration AND evidence, so an operator can tell them apart.
+
+        `writable` is deliberately tri-state:
+          * None — no durable write has been attempted yet (or the backend is
+            memory), so nothing is proven either way;
+          * True — the last durable write succeeded;
+          * False — the last durable write failed (see `lastError`).
+        A boolean would have to guess, and a guess is exactly what H-17 is about.
+        """
+        attempted = self._writes + self._write_failures
+        if not self.durable or attempted == 0:
+            writable: bool | None = None
+        else:
+            writable = not self._last_write_failed
+        return {
+            "backend": self.backend_name,
+            "durable": self.durable,
+            "writes": self._writes,
+            "failures": self._write_failures,
+            "writable": writable,
+            "lastOkAt": self._last_ok_at,
+            "lastFailureAt": self._last_failure_at,
+            "lastError": self._last_error,
+        }
+
+    def probe(self, timeout_ms: int = 1500) -> dict[str, Any]:
+        """One bounded read against the durable backend (`/api/health?deep=1`).
+
+        Deliberately NOT part of the default health response: a liveness probe
+        that waits on a dead database turns a slow dependency into an
+        unresponsive process, and the load balancer then kills a server that was
+        otherwise fine. The deadline is wall-clock in a daemon thread rather
+        than a gRPC argument — measured 2026-10-23: `get(timeout=3)` against a
+        dead endpoint hung for 60 s, because the client's retry policy outlives
+        the per-call timeout.
+        """
+        if not self.durable or self._firestore is None:
+            return {"checked": False, "ok": True, "reason": "no durable backend configured"}
+
+        started = time.monotonic()
+        outcome: dict[str, Any] = {}
+
+        def _read() -> None:
+            try:
+                self._firestore.collection("pulsar_health").document("probe").get(
+                    timeout=timeout_ms / 1000
+                )
+                outcome["ok"] = True
+            except Exception as exc:  # noqa: BLE001 — the probe reports, never raises
+                outcome["ok"] = False
+                outcome["error"] = f"{type(exc).__name__}: {exc}"[:200]
+
+        worker = threading.Thread(target=_read, name="store-probe", daemon=True)
+        worker.start()
+        worker.join(timeout_ms / 1000)
+        latency_ms = int((time.monotonic() - started) * 1000)
+        if worker.is_alive() or "ok" not in outcome:
+            return {
+                "checked": True,
+                "ok": False,
+                "latencyMs": latency_ms,
+                "error": f"no answer within {timeout_ms} ms",
+            }
+        return {
+            "checked": True,
+            "ok": bool(outcome.get("ok")),
+            "latencyMs": latency_ms,
+            "error": outcome.get("error", ""),
+        }
+
     def enqueue(
         self,
         address: str,
@@ -1171,7 +1276,12 @@ class DurableMatchStore:
         # Audit M27: `target` is forwarded for the same reason — a friend
         # challenge that only works on the memory backend is not a feature.
         if self._fs_store is not None:
-            match = self._fs_store.enqueue(address, stake, rtt_ms, target)
+            try:
+                match = self._fs_store.enqueue(address, stake, rtt_ms, target)
+            except Exception as exc:  # noqa: BLE001 — counted, then re-raised
+                self._note_write_failure(exc)
+                raise
+            self._note_write_ok()
             self._mirror(match)
             return match
         return self.memory.enqueue(address, stake, rtt_ms, target)
@@ -1412,7 +1522,12 @@ class DurableMatchStore:
     def put(self, match: Match) -> None:
         """Persist after a mutation (commit/reveal/submit/settle)."""
         if self._fs_store is not None:
-            self._fs_store.put(match)
+            try:
+                self._fs_store.put(match)
+            except Exception as exc:  # noqa: BLE001 — counted, then re-raised
+                self._note_write_failure(exc)
+                raise
+            self._note_write_ok()
         self.memory.put(match)
 
     def update(self, match_id: str, mutate: Any) -> Any:
@@ -1427,7 +1542,12 @@ class DurableMatchStore:
             return mutate(m, eng)
 
         if self._fs_store is not None:
-            out = self._fs_store.update(match_id, _one_arg)
+            try:
+                out = self._fs_store.update(match_id, _one_arg)
+            except Exception as exc:  # noqa: BLE001 — counted, then re-raised
+                self._note_write_failure(exc)
+                raise
+            self._note_write_ok()
             self._mirror_idempotent(match_id)
             return out
         return self.memory.update(match_id, _one_arg)

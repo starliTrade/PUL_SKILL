@@ -99,3 +99,63 @@ def test_the_counts_it_quotes_are_the_ones_this_repo_produces() -> None:
     doc = _text()
     assert vitest_readme.group(1) in doc, "runbook quotes a vitest count README disagrees with"
     assert pytest_readme.group(1) in doc, "runbook quotes a pytest count README disagrees with"
+
+
+def _health_payload(deep: bool = False) -> dict:
+    """A real /api/health response — the doc quotes fields, so they must exist."""
+    import main as server
+    from fastapi.testclient import TestClient
+
+    client = TestClient(server.app)
+    url = "/api/health?deep=1" if deep else "/api/health"
+    r = client.get(url)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _resolve(payload: dict, dotted: str) -> bool:
+    node: object = payload
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+    return True
+
+
+def test_every_health_field_it_quotes_is_really_served() -> None:
+    """The checklist is written as 'look for this field'. A renamed field makes
+    an operator conclude the deployment is broken when it is not — or, worse,
+    miss the field that *is* broken (H-17)."""
+    text = _text()
+    payload = _health_payload()
+    deep_payload = _health_payload(deep=True)
+
+    expected = [
+        "matchStore",
+        "prodLike",
+        "chainId",
+        "escrowConfigured",
+        "rpc.reachable",
+        "escrowVersionProblem",
+        "oracleConfigured",
+        "rateLimit.backend",
+        "store.writable",
+        "store.lastError",
+        "store.probe.ok",
+    ]
+    missing_from_doc = [f for f in expected if f.split(".")[-1] not in text]
+    assert not missing_from_doc, f"the runbook no longer mentions: {missing_from_doc}"
+
+    for field in expected:
+        source = deep_payload if field.startswith("store.probe") else payload
+        assert _resolve(source, field), f"health does not serve {field!r}, which the runbook tells you to check"
+
+
+def test_it_warns_that_matchStore_is_not_proof_of_durability() -> None:
+    """H-17 in one sentence: the field the whole industry quotes means "we built
+    a client". If the runbook stops saying so, the checklist lies again."""
+    text = _text()
+    assert "writable" in text
+    assert "deep=1" in text
+    # The measured evidence, so a reader can recognise the signature.
+    assert "1500" in text or "۱٫۵" in text

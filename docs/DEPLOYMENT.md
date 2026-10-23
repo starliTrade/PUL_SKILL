@@ -161,7 +161,20 @@ Server environment (all **secrets** — set on the host, never in git):
 | `SENTRY_DSN` (optional) | Server error monitoring |
 
 Smoke-test the deployment: `GET https://<server>/api/health` must return
-`{"ok": true, "matchStore": "firestore"}` in production.
+`{"ok": true, "matchStore": "firestore"}` — **plus `"store": {"durable": true}`**.
+
+> **Audit H-17 (2026-10-23):** `matchStore` is *configuration*, not proof. It
+> names the client that was constructed, and the Firestore client does no I/O in
+> its constructor — a wrong project id, revoked IAM or a blocked egress still
+> answered `matchStore: "firestore"`. Verified against a dead endpoint: health
+> said `firestore` and the first read hung for 60 s.
+>
+> Evidence lives in `store.writable`: `null` = no durable write attempted yet
+> (**not** "fine"), `true` = the last one succeeded, `false` = it failed (read
+> `store.lastError`). For proof on demand, `GET /api/health?deep=1` performs one
+> bounded round-trip (`timeoutMs` = 1500 by default, `PULSAR_HEALTH_PROBE_TIMEOUT_MS`
+> to change) and adds `store.probe`. It is opt-in because a liveness probe that
+> waits on a dead database turns a slow dependency into an unresponsive process.
 
 ---
 
@@ -372,7 +385,8 @@ template. Before enabling real-money mode:
 - [ ] Contract deployed, verified on Polygonscan, constructor args correct
 - [ ] `ESCROW_RPC_URL` set on the server (activates the on-chain deposit gate — commit/target/result refuse to run unless the escrow holds both stakes)
 - [ ] Oracle key generated, stored as server secret, public address set in contract
-- [ ] Game server live, `/api/health` shows `matchStore: "firestore"`
+- [ ] Game server live, `/api/health` shows `matchStore: "firestore"` **and** `store.durable: true`
+- [ ] `curl '/api/health?deep=1'` shows `store.probe.ok: true` (one real round-trip)
 - [ ] `ESCROW_ADDRESS` on server **matches** `VITE_ESCROW_ADDRESS` on client
 - [ ] All `VITE_*` env vars set in production deploy env
 - [ ] Legal docs reviewed + placeholders replaced; geo-blocking at edge active
