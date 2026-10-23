@@ -106,7 +106,7 @@ export const EligibilityGate: React.FC<EligibilityGateProps> = ({ onProceed }) =
         <div className="space-y-2.5 mb-4">
           <button
             onClick={() => setAgeConfirmed((v) => !v)}
-            className="w-full flex items-start gap-2.5 p-3 rounded-xl bg-zinc-900/70 border border-white/[0.07] text-left cursor-pointer hover:border-white/[0.14] transition-colors"
+            className="w-full flex items-start gap-2.5 p-3 rounded-xl bg-zinc-900/70 border border-white/[0.07] text-start cursor-pointer hover:border-white/[0.14] transition-colors"
           >
             {ageConfirmed ? (
               <CheckCircle2 className="w-4.5 h-4.5 text-emerald-400 shrink-0 mt-0.5" />
@@ -118,7 +118,7 @@ export const EligibilityGate: React.FC<EligibilityGateProps> = ({ onProceed }) =
 
           <button
             onClick={() => setJurisdictionConfirmed((v) => !v)}
-            className="w-full flex items-start gap-2.5 p-3 rounded-xl bg-zinc-900/70 border border-white/[0.07] text-left cursor-pointer hover:border-white/[0.14] transition-colors"
+            className="w-full flex items-start gap-2.5 p-3 rounded-xl bg-zinc-900/70 border border-white/[0.07] text-start cursor-pointer hover:border-white/[0.14] transition-colors"
           >
             {jurisdictionConfirmed ? (
               <CheckCircle2 className="w-4.5 h-4.5 text-emerald-400 shrink-0 mt-0.5" />

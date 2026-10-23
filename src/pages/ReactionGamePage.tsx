@@ -507,7 +507,7 @@ function isWalletCancel(msg: string): boolean {
       // P0-fix: a wallet rejection is NOT cheating — surface it as a cancel
       // with no funds moved, instead of the bot-detected/cheating shell.
       const reason = isWalletCancel(msg)
-        ? `Wallet action cancelled — no funds moved. ${msg}`
+        ? `${t('walletCancelledNoFunds')} ${msg}`
         : msg;
       setMatchResult({ outcome: 'void', yourTime: 0, opponentTime: 0, prize: 0, reason });
       setPhase('bot-detected'); // honest error shell; reason is rendered
@@ -968,10 +968,10 @@ function isWalletCancel(msg: string): boolean {
     else if (roundWinner === 'opponent') sounds.playHit();
     setRoundTransitionMessage(
       newUserScore === 1 && newOpponentScore === 1
-        ? 'TIE 1 - 1! DECIDING ROUND (MATCH POINT)!'
+        ? t('roundTieDecider')
         : roundWinner === 'user'
-          ? `ROUND ${roundIndex + 1} WON!`
-          : `ROUND ${roundIndex + 1} LOST!`
+          ? t('roundWon', { n: roundIndex + 1 })
+          : t('roundLost', { n: roundIndex + 1 })
     );
     setPhase('round-transition');
     roundTransitionTimeoutRef.current = setTimeout(() => setPhase('ready'), 1900);
@@ -1188,8 +1188,8 @@ function isWalletCancel(msg: string): boolean {
           const claim = await claimMatch(serverSession, serverMatch.matchId, txHash);
           setOnchainAction(
             claim.onChainProof
-              ? `Claimed and recorded: ${txHash.slice(0, 10)}…${txHash.slice(-8)}`
-              : 'Payout confirmed; server ledger verification is pending.',
+              ? t('claimedAndRecorded', { hash: `${txHash.slice(0, 10)}…${txHash.slice(-8)}` })
+              : t('payoutConfirmedPending'),
           );
         } catch (claimError) {
           reportError(claimError, { context: 'settlement_claim_retry', matchId: serverMatch.matchId });
@@ -1201,20 +1201,28 @@ function isWalletCancel(msg: string): boolean {
       sounds.playWin();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setOnchainAction(isWalletCancel(msg) ? `Cancelled — no funds moved. ${msg}` : `Retry failed: ${msg}`);
+      setOnchainAction(
+        isWalletCancel(msg)
+          ? `${t('cancelledNoFunds')} ${msg}`
+          : t('retryFailed', { reason: msg })
+      );
     }
   };
 
   const refundDuel = async (): Promise<void> => {
     if (!serverMatch) return;
-    setOnchainAction(`Requesting timeout refund… (succeeds after the ${REFUND_OPENS_AFTER_MINUTES}-minute escrow timeout)`);
+    setOnchainAction(t('refundRequesting', { minutes: REFUND_OPENS_AFTER_MINUTES }));
     try {
       const bytes32 = await matchIdToBytes32(serverMatch.matchId);
       const txHash = await refundTimeoutMatch(bytes32);
-      setOnchainAction(`Refund submitted: ${txHash.slice(0, 10)}…${txHash.slice(-8)}`);
+      setOnchainAction(t('refundSubmitted', { hash: `${txHash.slice(0, 10)}…${txHash.slice(-8)}` }));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setOnchainAction(isWalletCancel(msg) ? `Cancelled — no funds moved. ${msg}` : `Refund failed (likely before the ${REFUND_OPENS_AFTER_MINUTES}-minute timeout): ${msg}`);
+      setOnchainAction(
+        isWalletCancel(msg)
+          ? `${t('cancelledNoFunds')} ${msg}`
+          : t('refundFailed', { minutes: REFUND_OPENS_AFTER_MINUTES, reason: msg })
+      );
     }
   };
 
@@ -1580,7 +1588,7 @@ function isWalletCancel(msg: string): boolean {
             stays LTR via `flex-row`; only the numeric/hex fragments below keep
             an explicit LTR direction, which is where it is actually needed. */}
         <div className="flex items-center gap-3">
-          <div className="text-right">
+          <div className="text-end">
             <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-mono">{t('bestOfThree')}</div>
             <div className="text-xs font-semibold text-zinc-200">
               {isServerMode && opponent.startsWith('0x') ? (
@@ -1691,7 +1699,7 @@ function isWalletCancel(msg: string): boolean {
             <LoaderCircle className="w-10 h-10 text-emerald-400 animate-spin mb-3" />
             <h3 className="text-base font-semibold text-white">{t('serverMatchmaking')}</h3>
             <p className="text-xs text-zinc-400 mt-1 animate-pulse">{t('serverWaitingOpponent')}</p>
-            <div className="mt-4 text-[10px] font-mono text-zinc-500 flex items-start gap-1.5 text-left">
+            <div className="mt-4 text-[10px] font-mono text-zinc-500 flex items-start gap-1.5 text-start">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-px" />
               <span>{t('serverModeNote')}</span>
             </div>
@@ -2203,7 +2211,7 @@ function isWalletCancel(msg: string): boolean {
 
                 {/* Round by Round Breakdown */}
                 <div className="linear-card p-3.5 w-full mt-3 space-y-2">
-                  <div className="text-[11px] font-mono font-semibold text-zinc-300 text-left border-b border-white/[0.06] pb-1.5 flex justify-between">
+                  <div className="text-[11px] font-mono font-semibold text-zinc-300 text-start border-b border-white/[0.06] pb-1.5 flex justify-between">
                     <span>{t('roundByRound')}</span>
                     <span className="text-zinc-500">{t('speedMs')}</span>
                   </div>
@@ -2240,7 +2248,7 @@ function isWalletCancel(msg: string): boolean {
                     initial={{ opacity: 0, y: 6 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.15 }}
-                    className="w-full mt-3 p-3 rounded-xl bg-zinc-950/80 border border-white/[0.08] text-left space-y-2"
+                    className="w-full mt-3 p-3 rounded-xl bg-zinc-950/80 border border-white/[0.08] text-start space-y-2"
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-300">
@@ -2287,7 +2295,7 @@ function isWalletCancel(msg: string): boolean {
                     (trusted events, human reaction floor). Ranked-duel
                     validation is the server's timing gates. */}
                 {matchResult.telemetry && (
-                  <div className="w-full mt-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] text-left space-y-2">
+                  <div className="w-full mt-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] text-start space-y-2">
                     <div className="flex items-center justify-between text-[11px]">
                       <div className="flex items-center gap-1.5 text-zinc-300 font-medium">
                         <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
@@ -2311,7 +2319,7 @@ function isWalletCancel(msg: string): boolean {
 
                 {/* Guest Account Callout */}
                 {!wallet.connected && (
-                  <div className="w-full mt-3 p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-left flex items-center justify-between">
+                  <div className="w-full mt-3 p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-start flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Wallet className="w-4 h-4 text-emerald-400 shrink-0" />
                       <div>

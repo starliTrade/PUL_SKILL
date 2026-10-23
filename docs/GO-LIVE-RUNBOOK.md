@@ -73,7 +73,7 @@ bash scripts/verify.sh --strict
 
 ```bash
 npm run lint                                   # tsc + eslint .
-npx vitest run                                 # انتظار: ~332 تست / 67 فایل
+npx vitest run                                 # انتظار: 351 تست / 70 فایل
 .venv/bin/python -m pytest -q                  # انتظار: 650 (anvil خاموش) تا 661 (anvil بالا)
 .venv/bin/python -m py.test -q -m chain        # فقط با anvil بالا
 ```

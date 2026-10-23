@@ -7,6 +7,7 @@ import type { LegalTab } from './pages/LegalPage';
 import { EligibilityGate } from './components/EligibilityGate';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { BottomNav, TabType } from './components/BottomNav';
+import { useLanguage } from './i18n/LanguageContext';
 
 // Audit-#5 item 10 — route-level code splitting. Every page is lazy-loaded,
 // so Rollup emits one chunk per route and the initial bundle no longer pulls
@@ -19,14 +20,19 @@ const DashboardPage = lazy(() => import('./pages/DashboardPage').then((m) => ({ 
 const ProfilePage = lazy(() => import('./pages/ProfilePage').then((m) => ({ default: m.ProfilePage })));
 const LegalPage = lazy(() => import('./pages/LegalPage').then((m) => ({ default: m.LegalPage })));
 
-const RouteFallback = () => (
+const RouteFallback = () => {
+  // i18n audit 2026-10-23: this said "Loading…" in every language. It is the
+  // first thing a slow connection shows, so it is the wrong place for English.
+  const { t } = useLanguage();
+  return (
   <div className="min-h-[60vh] flex items-center justify-center">
     <div className="flex flex-col items-center gap-3 text-slate-400">
       <div className="h-8 w-8 rounded-full border-2 border-sky-500/30 border-t-sky-400 animate-spin" />
-      <span className="text-xs tracking-widest uppercase">Loading…</span>
+      <span className="text-xs tracking-widest uppercase">{t('loading')}</span>
     </div>
   </div>
-);
+  );
+};
 
 const KNOWN_PATHS = ['/', '/lobby', '/dashboard', '/profile', '/game/reaction', '/legal'];
 

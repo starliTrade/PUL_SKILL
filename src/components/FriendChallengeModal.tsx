@@ -311,14 +311,17 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
               <p id="friend-search-hint" className="sr-only">
                 {t('searchPlaceholder')}
               </p>
-              <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-3" aria-hidden="true" />
+              {/* i18n audit 2026-10-23: `left-3` is a physical side. In RTL the
+                  field's text starts on the right, so the icon belonged on the
+                  wrong end of the input. `start-3` follows the text. */}
+              <Search className="w-4 h-4 text-zinc-500 absolute start-3 top-3" aria-hidden="true" />
               {/* Audit 8.19: `isSearching` was set but never rendered, so the
                   search had no loading state at all. */}
               {isSearching && (
                 <span
                   role="status"
                   aria-live="polite"
-                  className="absolute right-3 top-3 text-[10px] font-mono text-zinc-500"
+                  className="absolute end-3 top-3 text-[10px] font-mono text-zinc-500"
                 >
                   {t('searching')}
                 </span>
@@ -326,7 +329,7 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
               {searchQuery && (
                 <button
                   onClick={() => setSearchQuery('')}
-                  className="absolute right-2.5 top-2.5 text-zinc-500 hover:text-zinc-300"
+                  className="absolute end-2.5 top-2.5 text-zinc-500 hover:text-zinc-300"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>

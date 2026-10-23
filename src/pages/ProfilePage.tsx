@@ -17,6 +17,7 @@ import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
 import { clickableDivProps } from '../lib/a11y';
 import { TranslationKey } from '../i18n/translations';
+import { formatNumber } from '../lib/localeFormat';
 
 interface ProfilePageProps {
   onNavigate: (path: string) => void;
@@ -272,7 +273,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                         {depositMsg}
                       </span>
                     ) : (
-                      <span className="text-[9px] text-zinc-500 block mt-0.5">3-20 characters • Letters, numbers & (_)</span>
+                      <span className="text-[9px] text-zinc-500 block mt-0.5">{t('tagRule')}</span>
                     )}
                   </div>
                 ) : (
@@ -387,7 +388,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
 
               <div className="flex items-center gap-1.5 shrink-0">
                 <span className="text-[10.5px] font-mono text-zinc-300" dir="ltr">
-                  {inLevel.toLocaleString()} / {span.toLocaleString()}{' '}
+                  {formatNumber(inLevel)} / {formatNumber(span)}{' '}
                   <span className="text-zinc-500">XP</span>
                 </span>
 
@@ -540,7 +541,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                     </div>
                   </div>
 
-                  <div className="text-right shrink-0 font-mono">
+                  <div className="text-end shrink-0 font-mono">
                     <span className="text-[10.5px] text-zinc-400 font-medium">
                       {t('levelLabel')}{' '}
                       <span dir="ltr" className="inline-block">
@@ -575,7 +576,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                 .slice(0, 4)
                 .map((m: any, idx: number) => {
                   const isWin = m.result === 'win';
-                  const opp = m.opponentName || m.opponent || 'Duelist';
+                  const opp = m.opponentName || m.opponent || t('duelist');
                   const fee = Number(m.entryFee ?? m.stake ?? 1);
                   const prize = Number(
                     m.prize || prizeForStake(fee),
@@ -619,7 +620,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                         </div>
                       </div>
 
-                      <div className="text-right shrink-0 font-mono">
+                      <div className="text-end shrink-0 font-mono">
                         <div
                           className={cn(
                             'text-xs font-bold',

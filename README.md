@@ -74,13 +74,15 @@ previous table said 202/278/81 and was already stale (audit M-17). Run
 
 | Suite | Count (last measured in this repository) |
 |---|---|
-| Frontend (vitest) | 332 tests, 67 files (measured 2026-10-23) |
+| Frontend (vitest) | 351 tests, 70 files (measured 2026-10-23) |
 | Server (pytest) | 661 passed / 25 skipped with anvil running; 650 / 36 with anvil stopped (the chain suites skip), measured 2026-10-23 |
 | Contract (forge) | 104 tests, 9 suites, measured 2026-10-23 (forge 1.7.1, forge-std + OpenZeppelin v5.0.2). The sandbox cannot reach `binaries.soliditylang.org`, so forge was driven with the `solc-js` 0.8.20 build already in `node_modules` via a small shim — the compiler and the tests are real, the toolchain path is not the default one |
 | Chain integration (anvil) | 11 tests passing against `scripts/start_anvil.sh --bg` — real `createDuel`/`joinDuel` and a settlement signed by the real `api/oracle.py` |
 | Coverage, hermetic (`.coveragerc-hermetic`) | **78%** over 4314 statements (969 missed), floor 77, measured three times on 2026-10-23 with no emulator and no anvil — this is the gate that must always be green (audit M-15) |
 | Coverage, complete (`.coveragerc`) | 79% floor, only measurable with the Firestore emulator + anvil running; reported as its own gate, skipped loudly when they are absent |
 | Contract coverage (`forge coverage --report summary`) | `PulsarEscrow.sol`: **98.57%** lines (207/210), 98.48% statements, **86.73%** branches, **100%** functions (31/31), measured 2026-10-23 on the same commit |
+
+The five-language UI is audited, not asserted: [docs/I18N-AUDIT.md](docs/I18N-AUDIT.md) records what was measured, the 42 strings that never reached a dictionary, and the numeral policy every screen now follows.
 
 Server line coverage is **not** a single number you should quote: [docs/COVERAGE-REPORT.md](docs/COVERAGE-REPORT.md) records the measured figure, the conditions it was measured under, and a classified list of every gap (environmental vs. genuinely untested).
 
