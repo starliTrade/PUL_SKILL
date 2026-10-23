@@ -62,3 +62,16 @@ def test_the_count_script_refuses_to_invent_the_contract_number():
     source = (ROOT / "scripts" / "test_counts.py").read_text(encoding="utf-8")
     assert "forge test" in source
     assert "not measurable here" in source
+
+
+def test_how_it_works_does_not_claim_an_unverifiable_finding_count():
+    """Audit L-05 — "۵۳ یافته رفع‌شده" was a number with no evidence behind it.
+
+    The audit listed it as an unverified claim; it is exactly the kind of
+    sentence that is true when written and a lie six commits later. The document
+    may describe behaviour, and it may point at the itemised table — it may not
+    assert a bare total.
+    """
+    text = (ROOT / "docs" / "HOW-IT-WORKS.md").read_text(encoding="utf-8")
+    assert "۵۳ یافته" not in text
+    assert "REMEDIATION-TODO-2026-10-22.md" in text, "the status must name its evidence"
