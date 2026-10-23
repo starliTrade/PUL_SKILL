@@ -37,14 +37,14 @@
 - [x] **H-04** endpoint `/api/matches/recent` + فید کلاینت از سرور
 - [x] **H-05** پروفایل/دوستان: endpoint سرور + حذف نوشتن مرده‌ی Firestore
 - [x] **H-06** production بدون store پایدار بالا نمی‌آید
-- [ ] **H-07** لایه‌ی امضای قابل‌تعویض (env/KMS) + مستندسازی
+- [x] **H-07** لایه‌ی امضای قابل‌تعویض (env/KMS) + مستندسازی — `api/signer.py` با بک‌اندهای `local|aws-kms|gcp-kms`، امتناع از بوت با کلید داغ مگر با `PULSAR_ALLOW_LOCAL_SIGNER=1`؛ تست `test_signer.py`
 - [x] **H-08** حذف ادعاهای نادرست (همراه C-02b)
 - [x] **H-09** `revoke_session` fail-closed
 - [x] **H-10** dispute پایدار در Firestore
-- [ ] **H-11** کاهش فشار صف: ایندکس ورودی + حذف scan تکراری (بهبود، نه بازطراحی)
-- [ ] **H-12** sweep امضاها با cursor و معیار deadline
+- [x] **H-11** کاهش فشار صف: ایندکس ورودی + حذف scan تکراری — تست `test_queue_read_cost.py`
+- [x] **H-12** sweep امضاها با cursor و معیار deadline — تست `test_sweep_paging.py`
 - [x] **H-13** probe A6 هرمتیک
-- [ ] **H-14** لجر: شمارنده‌ی خطا + هشدار health (outbox کامل در فاز بعد)
+- [x] **H-14** لجر: شمارنده‌ی خطا + هشدار health + **outbox پایدار** (از «فاز بعد» جلوتر رفت: هر settlement شکست‌خورده در `pulsar_ledger_outbox` صف می‌شود و sweep آن را تخلیه می‌کند) — تست `test_ledger_outbox.py`
 - [x] **H-15** میانگین زمان واکنش با شمارنده‌ی نمونه
 - [x] **H-16** CSP + هدرهای امنیتی
 - [x] **H-17** نرمال‌سازی سند کاربر + `.catch` روی `recordMatch`
@@ -53,17 +53,21 @@
 ### فاز ۳ — متوسط/پایین (M/L)
 
 - [x] **M-01** `limits.state()` بدون نوشتن
+- [x] **M-03** بن fail-closed (قطع دیتابیس تحریم را برنمی‌دارد) — `test_ban_velocity.py`
+- [x] **M-04** جدول امتیازات از سرور؛ حذف خواندن `users` از مرورگر — `test_leaderboard_api.py`
+- [x] **M-06** دوئل تصمیم‌نگرفته «pending» است نه «باخت» — `ReactionGamePage.pending.test.tsx`
+- [x] **M-07** یک پرامپت واریز برای هر دوئل + تحمل تکرار — `test_deposit_lock.py`
 - [x] **M-02** نام‌گذاری صریح: سقف هر دوئل (نه سقف تجمعی)
 - [x] **M-05** حذف نام حریف تخیلی در رنکد
-- [ ] **M-08** تشخیص prod با نشانه‌های پلتفرم
+- [x] **M-08** تشخیص prod با نشانه‌های پلتفرم (`K_SERVICE`/`RENDER`/`FLY_MACHINE_ID`/`DYNO`) — تست `test_prod_detection.py`
 - [x] **M-14** آمار رنکدِ تأییدنشده به‌جای عدد محلی «—» نمایش داده می‌شود — منشأ آمار (`progressionSource: server|local|unknown`) در `UserWalletData`، ست‌شدن در `recordMatch`/`loadUserData`، اکشن `refreshProgression()`، بنر + دکمه‌ی بررسی دوباره در `ProfilePage`، ۵ زبان؛ تست: `usePulsarStore.progression.test.tsx` (۵ جدید) + `ProfilePage.progression.test.tsx` (۴)
-- [ ] **M-10** لاگ تصمیم‌های ادمین
-- [ ] **M-15** coverage: اندازه‌گیری پایدار (بدون وابستگی به emulator)
+- [x] **M-10** لاگ تصمیم‌های ادمین (`auditlog`) — تست `test_admin_audit.py`
+- [x] **M-15** coverage: دو گیت جدا — `.coveragerc-hermetic` (بدون emulator/anvil، همانی که باید همیشه سبز باشد) و گیت کامل — تست `test_coverage_gate.py`
 - [x] **M-17** اعداد README از خروجی واقعی — `scripts/test_counts.py` اکنون forge را هم واقعاً اندازه می‌گیرد و اگر Foundry نبود دلیلش را می‌نویسد؛ جدول README با خروجی ۲۰۲۶-۱۰-۲۳ به‌روز شد (vitest ۲۸۳/۶۱، pytest ۴۸۸/۳۱، forge ۱۰۴/۹، coverage قرارداد ۹۸.۵۷٪)
 - [x] **M-20 (باقی‌مانده)** حذف رانتایم بیگانه از `index.html` — بلوک `BLINK_PICKER_RUNTIME_V2` (۶۹۰ خط، از قالب اولیه، در `365396d`) پاک شد: یک overlay ویرایشگر بصری با `addEventListener('message')` **بدون بررسی origin** که `SET_ELEMENT_ATTRS` را می‌پذیرفت و `textContent`/`className`/`style` هر عنصری را با selector دلخواه بازنویسی می‌کرد (یعنی یک فریم والد می‌توانست برچسبِ stake یا دکمه را عوض کند)، به‌علاوه MutationObserver روی کل سند و ‏`postMessage(…,'*')` به والد. اسکریپت purge کلیدهای WalletConnect و کامنت viewport دست‌نخورده ماندند (اسکریپت‌های خودمان). همچنین رجیستری `@blink` از `components.json` حذف شد: هیچ‌چیز استفاده نمی‌کرد، اما `npx shadcn add @blink/...` کدِ داورده‌نشده از یک Cloudflare Worker ناشناس می‌آورد. `dist/index.html` بعد از build: بدون هیچ ارجاعی به آن و ۵٫۷KB. تست `no-foreign-runtime.test.ts` (۸)
 - [x] **M-23** اجرای واقعی suite قرارداد و گزارش خروجی — `forge test` (۹ suite، ۱۰۴ تست) و `FOUNDRY_PROFILE=ci` (invariant با ۵۱٬۲۰۰ فراخوانی) هر دو سبز؛ سقف گارد CI از ۷۵ به ۱۰۰ رسید تا حذف ۴ تست را بگیرد؛ `PyYAML` به `requirements-dev` اضافه شد چون بدون آن ۱۸ تست «قرارداد CI» بی‌صدا skip می‌شدند
-- [ ] **M-19/M-21/M-22** حریم خصوصی کاربران، حذف داده، LICENSE/SECURITY
-- [ ] **M-24** خطای ذخیره‌سازی قابل‌مشاهده
+- [x] **M-19/M-21/M-22** حریم خصوصی (export/erase + بستن کلکسیون‌ها به کلاینت)، LICENSE و SECURITY.md — تست `test_privacy.py` + `test_docs_honesty.py`
+- [x] **M-24** خطای ذخیره‌سازی قابل‌مشاهده — `saveStatus` + بنر با دکمهٔ تلاش دوباره — تست `SaveStatusBanner.test.tsx` + `realWeb3.profileSync.test.ts`
 - [x] **L-09** چرخه‌ی عمر گزارش تخلف — `status` واقعی (`open`/`resolved`/`dismissed`) به‌جای هم‌نام‌شدن با وضعیت مسابقه، شناسه‌ی گزارش برای کاربر، `GET /api/dispute/{match}` (فقط شرکت‌کننده، ۴۰۴ برای غریبه)، `POST /api/admin/dispute/{match}/{id}` با ثبت در audit trail، ۵۰۳ به‌جای «ثبت شد» وقتی ذخیره شکست بخورد؛ کلاینت: وضعیت + دکمه‌ی بررسی دوباره در ۵ زبان؛ تست: `test_dispute_lifecycle.py` (۱۵)، `test_dispute_persistence.py` (۷)، کامپوننت (۴)
 - [x] **L-05** «۵۳ یافته» در `docs/HOW-IT-WORKS.md` — عدد از مقدمه حذف شد (ممیزی خودش آن را «تأییدنشده» ثبت کرده بود و هیچ شاهد بازتولیدی نداشت)؛ جایش ارجاع به همین جدول آیتم‌به‌آیتم و به جدول README که با `scripts/test_counts.py` تولید می‌شود. تست `test_docs_honesty.py` (`test_how_it_works_does_not_claim_an_unverifiable_finding_count`)
 - [x] **L-14** `lang`/`dir` قبل از اولین paint — `<html lang="en">` ثابت بود و `dir` فقط در `LanguageProvider` (بعد از mount) ست می‌شد، پس کاربر فارسی/عربی کل اپ را LTR می‌دید و بعد یک reflow سراسری به RTL. اکنون یک اسکریپت inline با شناسهٔ `pulsar-lang-preboot` از همان کلید `pulsar_lang` (و در نبود آن از `navigator.languages`) قبل از هر ماژول `lang`/`dir`/کلاس `rtl` را می‌گذارد؛ `dir="ltr"` ثابت هم برای no-JS/کراولر اضافه شد. تست `lang-preboot.test.ts` (۱۱) که **همان اسکریپت منتشرشده** را اجرا می‌کند (fa/ar → rtl، زبان نامعتبر → en، localStorage مسدود → fail-safe، هم‌خوانی کلید با provider).
@@ -186,8 +190,31 @@
 | C-02b + H-08 | `6a5add9` | حذف ادعاهای «بیومتریک/ضدربات/کلاک سخت‌افزاری» در ۵ زبان | `translations.honesty.test.ts` (۹) | ✅ رفع‌شده |
 | C-02a | `e77af15` | امتیازدهی آماری به شکل زمان‌ها + صف بازبینی ادمین (بدون جریمه‌ی خودکار) | `test_integrity.py` (۱۱) | ✅ رفع‌شده (تشخیص، نه اثبات) |
 | C-03 | `35ca34e` | keeper برای settle/refund + ABI/امضای EIP-155 + dry-run پیش‌فرض | `test_keeper.py` (۱۱) | ✅ ساخته و تست شد؛ اجرا روی Amoy لازم است |
+| H-07 | `32c05a6` | لایه‌ی امضا: `local`/`aws-kms`/`gcp-kms`؛ بوت در حالت production فقط با انتخاب صریح | `test_signer.py` | ✅ سمت کد؛ اعتبارنامه‌ی واقعی KMS = محیط |
+| H-11 + H-12 + H-14 | `32c05a6` | ایندکس صف + حذف scan تکراری؛ sweep صفحه‌بندی‌شده با deadline؛ outbox پایدار لجر | `test_queue_read_cost.py`, `test_sweep_paging.py`, `test_ledger_outbox.py` | ✅ رفع‌شده |
+| M-08 + M-09 + M-10 + M-13 + M-19 + M-21 | `8d45d5e` | نشانه‌های پلتفرم برای prod؛ XFF فقط با flag؛ audit trail ادمین؛ رویدادهای ساختاریافته؛ export/erase؛ بستن کلکسیون‌ها به کلاینت | `test_prod_detection.py`, `test_admin_audit.py`, `test_privacy.py` | ✅ رفع‌شده |
+| M-17 + M-22 | `6966104` | اعداد README از اجرای واقعی + LICENSE + SECURITY.md | `test_docs_honesty.py` | ✅ رفع‌شده |
+| M-18 + M-24 | `f734fd1` | بنر خطای ذخیره با تلاش دوباره؛ سرویس‌ورکر «منتظر» تا وقتی تب بسته نشود | `SaveStatusBanner.test.tsx`, `realWeb3.profileSync.test.ts` | ✅ رفع‌شده |
+| M-15 | `88c33d9` | دو گیت coverage: هرمتیک (همیشه سبز) و کامل (emulator+anvil) | `test_coverage_gate.py` | ✅ رفع‌شده |
+| C-02c | `eda82a1` | تصمیم مکتوب: KYC/سقف برداشت/تأخیر پرداخت، و اینکه چرا دو کنترل امروز ممکن نیست | `test_compliance_doc.py` | ✅ تصمیم ثبت شد؛ اجرا = کسب‌وکار |
+| M-03 | `bbd1c93` | بن باید fail-closed باشد؛ قطع دیتابیس نباید تحریم را بردارد | `test_ban_velocity.py` | ✅ رفع‌شده |
+| M-04 | `223500d` | جدول امتیازات از سرور؛ حذف خواندن `users` از مرورگر | `test_leaderboard_api.py` | ✅ رفع‌شده |
+| M-06 | `5c83b6f` | دوئل تصمیم‌نگرفته «pending» است، نه «باخت» | `ReactionGamePage.pending.test.tsx` | ✅ رفع‌شده |
+| M-07 | `0c7850d` | یک پرامپت واریز برای هر دوئل، تحمل تکرار | `test_deposit_lock.py` | ✅ رفع‌شده |
+| M-11 + M-12 | `2e42dc2` | escrow نسخه‌دار + پنجرهٔ مهاجرت + سند تصمیم کارمزد | `PulsarEscrowMigration.t.sol`, `test_contract_version.py` | ✅ (نیازمند redeploy روی anvil) |
+| M-14 | `cd13104` | آمار تأییدنشده «—» با منبع مشخص، نه حدس محلی | `usePulsarStore.progression.test.tsx` (۵), `ProfilePage.progression.test.tsx` (۴) | ✅ رفع‌شده |
+| M-20 | `e1050ae` + `d87f96b` | OG/Twitter/PWA + آیکون‌های PNG؛ سپس حذف کامل رانتایم بیگانهٔ قالب از `index.html` و رجیستری `@blink` | `metadata.test.ts` (۱۴), `no-foreign-runtime.test.ts` (۸) | ✅ رفع‌شده |
+| M-23 + M-17 | `cdce885` | اجرای واقعی forge (۱۰۴ تست / ۹ suite) و coverage قرارداد؛ سقف گارد CI ۷۵→۱۰۰ | `test_ci_workflow.py` | ✅ رفع‌شده |
+| L-01 + L-09 | `f93b50f` | چرخهٔ عمر گزارش تخلف + تلمتری خطاهای حساس | `test_dispute_lifecycle.py` (۱۵), `test_dispute_persistence.py` (۷), `DisputeReportButton.test.tsx` (۴), `telemetry-sensitive.test.ts` (۶) | ✅ رفع‌شده |
+| L-02 | `b80cece` | `savedFriends` از سرور خوانده و کش می‌شود؛ هشدار «فقط همین مرورگر» | `realWeb3.savedFriends.test.ts` (۵), `test_profile_durable.py` (۷) | ✅ رفع‌شده |
+| L-04 | `8e62779` | ادعای «Playwright همیشه SKIP» حذف؛ + سه باگ واقعی: اسکریپت E2E مرده، health بی‌نهایت، وابستگی به bun | `test_e2e_stack_script.py` (۵), `test_health_is_bounded.py` (۴) | ✅ رفع‌شده؛ اجرای مرورگر = محیط |
+| L-05 | `6488a1c` | حذف عدد بی‌شاهد از `HOW-IT-WORKS` + ارجاع به شاهد | `test_docs_honesty.py` (۱ جدید) | ✅ رفع‌شده |
+| L-06 | `ad13fc0` | بازنویسی `LOAD-REPORT` با شرایط هر عدد + سنجش واقعی ۲۰۰/۱۰۰۰ کاربر + `load_sessions.py` | `test_load_report_scope.py` (۷), `test_load_sessions_tool.py` (۴) | ✅ رفع‌شده؛ capacity production = محیط |
+| L-07 + L-08 | `63bd35e` | شمارش «نفر» با سقف و برچسب truncation؛ metrics رهاشده‌ها را اعتراف می‌کند | `test_analytics_people.py` (۷), `test_metrics_bounds_honest.py` (۵) | ✅ رفع‌شده |
+| L-12 | `ba634e8` | bot به‌عنوان bot نامیده می‌شود، با شرایط، در ۵ زبان | `LobbyPage.practice.test.tsx` (۳) | ✅ رفع‌شده |
+| L-14 | `f56a139` | `lang`/`dir` قبل از اولین paint + `dir="ltr"` ثابت برای no-JS | `lang-preboot.test.ts` (۱۱) | ✅ رفع‌شده |
 
-**آیتم‌های باز (به‌ترتیب اجرا):** C-02c (تصمیم محصولی)، H-07، H-11، H-12، H-14، M-03/M-04/M-06…M-24، L-series.
+**آیتم‌های باز (به‌ترتیب اجرا):** C-02c (تصمیم محصولی، خارج از کد) و فقط مواردی که به محیط/انسان بیرون نیاز دارند (بخش §۵). همهٔ C، H، M و L در کد بسته شده‌اند؛ جدول زیر فقط تا `C-03` به‌روز بود و اکنون کامیت‌های بعدی هم در آن آمده‌اند.
 
 **دو یافته‌ی جدید در جریان رفع:**
 - **C-04** (مسدودکننده): `POST /api/username/claim` در production همیشه ۴۰۹ برمی‌گرداند — نه به‌خاطر تکراری بودن نام، بلکه چون import دکوراتور تراکنش در نسخه‌ی pin‌شده شکست می‌خورد و استثنا در یک `except` عمومی به ۴۰۹ تبدیل می‌شد.
