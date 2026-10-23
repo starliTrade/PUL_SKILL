@@ -121,10 +121,14 @@ def test_the_treasury_is_not_withdrawable_by_the_owner():
 
 
 # --- 3. product copy --------------------------------------------------------
+# The numeral policy (i18n audit, 2026-10-23): every number the UI renders is a
+# Latin digit, in all five languages, because the amounts sit beside addresses,
+# hashes and `font-mono` columns that cannot follow a locale. This table used to
+# assert Persian digits for `fa` and Arabic-Indic for `ar` — which the product
+# only ever did in STATIC copy, never for a dynamic value, so the same screen
+# showed two systems. See docs/I18N-AUDIT.md §4.
 _LOCALE_DIGITS = {
     "ascii": str.maketrans("0123456789", "0123456789"),
-    "fa": str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"),
-    "ar": str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩"),
 }
 
 
@@ -139,9 +143,12 @@ def test_every_locale_states_the_real_split():
     values = _localized_platform_fee_strings()
     assert len(values) == 5, f"expected 5 locales, found {len(values)}"
 
-    styles = ["ascii", "fa", "ar", "ascii", "ascii"]  # en, fa, ar, tr, zh
+    styles = ["ascii"] * 5  # en, fa, ar, tr, zh — one numeral system
     for style, value in zip(styles, values, strict=True):
         digits = _LOCALE_DIGITS[style]
+        # And the string must not smuggle in a locale digit either: that was the
+        # half of this table that used to pass by design.
+        assert not re.search("[\u06F0-\u06F9\u0660-\u0669]", value), value
         fee_txt = f"{fee:g}".translate(digits)
         share_txt = f"{share:g}".translate(digits)
         # Turkish writes the percent sign first ("%2"), the rest after.
