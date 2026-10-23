@@ -14,10 +14,12 @@
 
 | لایه | وضعیت | شاهد |
 |---|---|---|
-| قرارداد `PulsarEscrow` | نسخه‌دار، ۱۰۴ تست، ۹۸٫۵۷٪ خطوط | `forge test`, `docs/UPGRADE-PATH.md` |
+| قرارداد `PulsarEscrow` | نسخه‌دار، **۱۰۴ تست اجرا شد** (۹ سوئیت، ۹۸٫۵۷٪ خطوط) — Foundry در همین جلسه نصب و اجرا شد | `forge test` |
 | سرور FastAPI | ۶۲۳ تست سبز / ۲۵ skip در وضعیت کامل (anvil + API)؛ ۵۷۸ / ۴۱ با همه‌چیز خاموش | `pytest -q` |
 | کلاینت React | ۳۳۲ تست / ۶۷ فایل، tsc + eslint پاک | `npm run lint`, `vitest` |
-| مسیر پول (ranked) | تست یکپارچه + anvil واقعی | `pytest -m chain` |
+| مسیر پول (ranked) | **۱۱ تست `-m chain` روی anvil واقعی، سبز** — امضای واقعی `api/oracle.py` توسط قرارداد پذیرفته شد | `pytest -m chain` |
+| سلامت ذخیره‌سازی (H-17) | `store.writable` + `?deep=1` با مهلت واقعی؛ روی endpoint مرده در ۱٫۵ ثانیه «ok: false» داد | `test_health_store_signal.py` |
+| هارنس‌ها (H-19…H-22) | cast از PATH/`~/.foundry/bin`؛ chaos ۲۰ pass؛ locust فقط 200=موفق؛ ۴۲۹ رعایت می‌شود | `test_no_sandbox_paths.py`, `test_rate_limit_is_not_a_failure.py` |
 | مرورگر واقعی (E2E) | **انجام نشده در این محیط** | `npx playwright install` در sandbox مسدود است |
 | Amoy با دو گوشی | **انجام نشده** | نیاز به کلید/شبکهٔ تو |
 | Firestore واقعی | **انجام نشده** | فقط emulator در دسترس بود |
@@ -123,6 +125,11 @@ npm run dev -- --port 3000
   دستی، همان‌ها را در `.env.local` بگذار.
 * اگر vite قبلی باز است، آن را ببند: `reuseExistingServer` یک vite با env قدیمی را قبول می‌کند
   و علائمش شبیه باگ اپ است.
+* **اگر Java نداری** (برای Firestore emulator)، استک را با
+  `PULSAR_E2E_STORE=memory bash scripts/start_e2e_stack.sh` بالا بیاور. این حالت
+  صریح است و در پایان چاپ می‌کند که «durability تست نشد». بدون آن، اسکریپت **قبل از
+  بالا آمدن** با `REFUSING TO START` می‌ایستد — چون نسخهٔ قبلی با نبودن دیتابیس هم
+  «موفق» اعلام می‌کرد و اولین درخواست ۶۰ ثانیه هنگ می‌کرد (H-17/H-18).
 
 ---
 
@@ -264,7 +271,7 @@ ESCROW_ADDRESS=0x... MOCK_USDT=0x... STAKE_USDT=1 \
 |---|---|---|---|
 | ۱ | `npx playwright install` و اجرای ۳۰ تست | دانلود مرورگر در sandbox مسدود | ۳۰ تست، ۰ skip |
 | ۲ | اجرای `npx vitest run` روی Node 20 | نسخهٔ Node من ۲۲ است (کار می‌کند ولی نسخهٔ هدف نیست) | ۳۳۲/۶۷ |
-| ۳ | emulator + `pytest -m firestore` | Java و firebase CLI نصب نیست | skip‌ها صفر شوند |
+| ۳ | emulator + `pytest -m firestore` | Java و firebase CLI نصب نیست | `store.writable: true` بعد از یک دوئل، و ۴ سناریوی emulator در `chaos_suite.py` سبز شوند |
 | ۴ | دیپلوی Amoy | کلید و faucet دست توست | `VERSION()==2.0.0` |
 | ۵ | دو گوشی واقعی | — | چک‌لیست ۶.۶ |
 | ۶ | Keeper روی staging | کیف پول گس | جایزهٔ تب‌بسته settle شود |
