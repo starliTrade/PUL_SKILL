@@ -18,8 +18,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "api"))
 
@@ -48,7 +46,15 @@ def test_it_refuses_to_run_without_the_signing_secret(tmp_path: Path) -> None:
     assert "ORACLE_SIGNING_SECRET" in proc.stderr
 
 
-def test_the_tokens_it_writes_actually_verify(tmp_path: Path, monkeypatch) -> None:
+def test_the_tokens_it_writes_actually_verify(tmp_path: Path) -> None:
+    """Verified in a SUBPROCESS, on purpose.
+
+    `auth` reads ORACLE_SIGNING_SECRET once at import, so an in-process check
+    would pass or fail depending on which test imported `auth` first — it passed
+    alone and failed in the full suite. The server that will accept these tokens
+    is a different process with the secret in its environment; that is what this
+    reproduces.
+    """
     out = tmp_path / "tokens.json"
     proc = _run(tmp_path, "--count", "25", "--out", str(out))
     assert proc.returncode == 0, proc.stderr
@@ -56,12 +62,26 @@ def test_the_tokens_it_writes_actually_verify(tmp_path: Path, monkeypatch) -> No
     rows = json.loads(out.read_text())
     assert len(rows) == 25
 
-    monkeypatch.setenv("ORACLE_SIGNING_SECRET", SECRET)
-    import auth  # noqa: PLC0415 — reads the secret at import
-
-    for row in rows:
-        # `verify_session` is what every authenticated endpoint calls.
-        assert auth.verify_session(row["token"]) == row["address"].lower()
+    checker = (
+        "import json,sys\n"
+        "sys.path.insert(0, sys.argv[2])\n"
+        "import auth\n"
+        "rows = json.load(open(sys.argv[1]))\n"
+        "bad = [(r['address'], auth.verify_session(r['token'])) for r in rows]\n"
+        "wrong = [b for b in bad if b[1] != b[0].lower()]\n"
+        "print(json.dumps({'wrong': wrong}))\n"
+    )
+    env = {**os.environ, "ORACLE_SIGNING_SECRET": SECRET}
+    verify = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", checker, str(out), str(ROOT / "api")],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+        timeout=120,
+    )
+    assert verify.returncode == 0, verify.stderr
+    assert json.loads(verify.stdout.strip().splitlines()[-1])["wrong"] == []
 
 
 def test_every_player_gets_a_distinct_address(tmp_path: Path) -> None:
@@ -72,7 +92,7 @@ def test_every_player_gets_a_distinct_address(tmp_path: Path) -> None:
     assert len(set(addresses)) == 50
     # Without this, 1000 virtual users share a handful of tokens and the run
     # measures /api/queue's 40/minute per-address limit instead of the queue.
-    assert len(set(r["token"] for r in rows)) == 50
+    assert len({r["token"] for r in rows}) == 50
 
 
 def test_the_output_is_deterministic_so_two_runs_compare(tmp_path: Path) -> None:

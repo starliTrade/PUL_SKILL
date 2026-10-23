@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en" dir="ltr" class="dark">
   <head>
     <meta charset="UTF-8" />
     <!-- Audit 8.1: `maximum-scale=1, user-scalable=no` blocks pinch-zoom, which
@@ -7,6 +7,40 @@
          magnify. The app does not need it: the game target is a tap area, not a
          double-tap-to-zoom surface. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Audit L-14: `dir` used to be set only by React (LanguageProvider), so a
+         Persian or Arabic player saw the whole app laid out LTR and then flip —
+         a full-document reflow after hydration. This sets lang/dir BEFORE the
+         first paint, from the same storage key the provider reads. It is ~15
+         lines and it has to stay that way: it runs on every load, before React.
+         The static `lang="en" dir` below is the fallback for no-JS and crawlers. -->
+    <script id="pulsar-lang-preboot">
+      (function () {
+        try {
+          var supported = { en: 1, fa: 1, ar: 1, tr: 1, zh: 1 };
+          var lang = null;
+          try { lang = localStorage.getItem('pulsar_lang'); } catch (e) {}
+          if (!lang || !supported[lang]) {
+            var tags = (navigator.languages && navigator.languages.length)
+              ? navigator.languages
+              : [navigator.language || 'en'];
+            for (var i = 0; i < tags.length; i++) {
+              var code = String(tags[i] || '').toLowerCase().trim();
+              if (code.indexOf('fa') === 0) { lang = 'fa'; break; }
+              if (code.indexOf('ar') === 0) { lang = 'ar'; break; }
+              if (code.indexOf('tr') === 0) { lang = 'tr'; break; }
+              if (code.indexOf('zh') === 0) { lang = 'zh'; break; }
+              if (code.indexOf('en') === 0) { lang = 'en'; break; }
+            }
+          }
+          if (!lang) lang = 'en';
+          var rtl = lang === 'fa' || lang === 'ar';
+          var html = document.documentElement;
+          html.lang = lang;
+          html.dir = rtl ? 'rtl' : 'ltr';
+          if (rtl) html.classList.add('rtl'); else html.classList.remove('rtl');
+        } catch (e) {}
+      })();
+    </script>
     <title>PUL_SKILL</title>
     <meta name="description" content="Compete in real-time skill duels. Prove you are human. Winner takes all." />
     <meta name="theme-color" content="#050505" />
