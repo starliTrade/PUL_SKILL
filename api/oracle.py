@@ -306,7 +306,12 @@ def sign_settlement(
         try:
             import match_engine as _me
 
-            horizon = _me.settlement_deadline(matchish)
+            # Audit H-25: `settlement_deadline` now RAISES when the match carries
+            # no timestamps instead of returning a 1970 horizon. Raising here is
+            # caught by the enclosing `except` and means "no clamp", which is the
+            # correct behaviour: a 10-minute proof is still bounded, and refusing
+            # to sign would strand the winner over a missing field.
+            horizon = _me.settlement_deadline_or_none(matchish)
             # The horizon is derived from the match's own activation instant. When
             # the chain can tell us that instant directly, prefer it — the server's
             # record and the contract's cannot then disagree.
@@ -324,7 +329,8 @@ def sign_settlement(
                 activated = _onchain.duel_activated_at(str(match_id))
                 if activated is not None:
                     horizon = int(activated) + _me.MATCH_TIMEOUT_SECONDS
-            deadline = min(deadline, horizon)
+            if horizon is not None:
+                deadline = min(deadline, horizon)
         except Exception:  # noqa: BLE001 — clamping must never block settlement
             pass
 

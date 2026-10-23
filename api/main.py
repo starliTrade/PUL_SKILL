@@ -2300,7 +2300,7 @@ def _resign_stale_settlements() -> None:
             deadline = int(m.signed_settlement.get("deadline", 0) or 0)
             if not deadline or timebase.now() < deadline:
                 continue  # still spendable / never signed
-            if timebase.now() >= engine.settlement_deadline(m):
+            if _past_settlement_horizon(m):
                 continue  # past the on-chain horizon — only refund applies
             try:
                 store.update(mid, _settle_once)
@@ -2313,7 +2313,7 @@ def _resign_stale_settlements() -> None:
                 _note_sweep_failure("resign_memory", exc)
         for m in store.sweep_stale_settlements():
             deadline = int((m.signed_settlement or {}).get("deadline", 0) or 0)
-            if deadline and timebase.now() >= engine.settlement_deadline(m):
+            if deadline and _past_settlement_horizon(m):
                 continue  # past the on-chain horizon — only refund applies
             try:
                 store.update(m.match_id, _settle_once)
@@ -2325,6 +2325,22 @@ def _resign_stale_settlements() -> None:
         # Audit 8.15: the outer guard stays (a sweep must never break
         # matchmaking) but it no longer hides the reason.
         _note_sweep_failure("resign_sweep", exc)
+
+
+def _past_settlement_horizon(m: Any) -> bool:
+    """True only when the match HAS a horizon and the clock is past it.
+
+    Audit H-25: this used to be `timebase.now() >= engine.settlement_deadline(m)`,
+    and a match whose timestamps were missing produced a 1970 horizon — so every
+    such match was classified as "too late to settle" and the winner's prize
+    became unclaimable while the runbook said the sweep was healthy. "Unknown"
+    is not "past": when the horizon cannot be computed, attempt the re-sign and
+    let the chain be the judge.
+    """
+    horizon = engine.settlement_deadline_or_none(m)
+    if horizon is None:
+        return False
+    return timebase.now() >= horizon
 
 
 @app.post("/api/match/{match_id}/settle")
