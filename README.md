@@ -56,11 +56,11 @@ previous table said 202/278/81 and was already stale (audit M-17). Run
 
 | Suite | Count (last measured in this repository) |
 |---|---|
-| Frontend (vitest) | 297 tests, 62 files |
-| Server (pytest) | 488 passed, 31 skipped (anvil running; 11 of them are `-m chain`) |
+| Frontend (vitest) | 310 tests, 64 files (measured 2026-10-23) |
+| Server (pytest) | 543 passed, 30 skipped (anvil running; 11 of them are `-m chain`, measured 2026-10-23) |
 | Contract (forge) | 104 tests, 9 suites, measured 2026-10-23 (forge 1.7.1, forge-std + OpenZeppelin v5.0.2). The sandbox cannot reach `binaries.soliditylang.org`, so forge was driven with the `solc-js` 0.8.20 build already in `node_modules` via a small shim — the compiler and the tests are real, the toolchain path is not the default one |
 | Chain integration (anvil) | 11 tests passing against `scripts/start_anvil.sh --bg` — real `createDuel`/`joinDuel` and a settlement signed by the real `api/oracle.py` |
-| Coverage, hermetic (`.coveragerc-hermetic`) | **74%** over 3937 statements, measured with no emulator and no anvil — this is the gate that must always be green (audit M-15) |
+| Coverage, hermetic (`.coveragerc-hermetic`) | **77%** over 4165 statements, measured 2026-10-23 with no emulator and no anvil — this is the gate that must always be green (audit M-15) |
 | Coverage, complete (`.coveragerc`) | 79% floor, only measurable with the Firestore emulator + anvil running; reported as its own gate, skipped loudly when they are absent |
 | Contract coverage (`forge coverage --report summary`) | `PulsarEscrow.sol`: **98.57%** lines (207/210), 98.48% statements, **86.73%** branches, **100%** functions (31/31), measured 2026-10-23 on the same commit |
 

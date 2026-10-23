@@ -1808,6 +1808,40 @@ class RealWeb3Manager {
     }
   }
 
+  /**
+   * Read the saved-friend list from the SERVER and cache it locally (audit L-02).
+   *
+   * `getSavedFriendsList` is synchronous and reads localStorage, which is fine
+   * for rendering — but it means a friend list that only ever reached the server
+   * (a new device, a cleared cache, or a save made before the SIWE session
+   * existed) rendered as "no saved friends". The list was not lost; the modal
+   * simply never asked.
+   *
+   * Never blanks the list on failure: a failed read leaves the local copy in
+   * place and reports it, because "could not read" is not "you have none".
+   */
+  public async refreshSavedFriends(userAddress: string): Promise<FriendProfile[]> {
+    const clean = (userAddress || '').toLowerCase();
+    if (!clean) return [];
+    try {
+      const session = loadServerSession();
+      if (session && session.address.toLowerCase() === clean && gameServerConfigured()) {
+        const p = await fetchProfile(session);
+        const merged: UserWalletData = {
+          ...this.normalizeUserData(this.loadFromLocal(clean), clean),
+          savedFriends: p.savedFriends || [],
+        };
+        this.saveToLocal(merged);
+        clearSaveFailure('profile', 'read');
+      }
+    } catch (e) {
+      // Keep the local list; say that the read failed.
+      reportSaveFailure('profile', 'read', e);
+      console.warn('Saved friends could not be refreshed from the server:', e);
+    }
+    return this.getSavedFriendsList(clean);
+  }
+
   public getSavedFriendsList(userAddress: string): FriendProfile[] {
     if (!userAddress) return [];
     const local = this.loadFromLocal(userAddress.toLowerCase());

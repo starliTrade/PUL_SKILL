@@ -37,6 +37,10 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
   const [searchResults, setSearchResults] = useState<FriendProfile[]>([]);
   const [savedFriends, setSavedFriends] = useState<FriendProfile[]>([]);
   const [savedAddresses, setSavedAddresses] = useState<string[]>([]);
+  // Audit L-02: a friend saved without a server session lives in THIS browser
+  // only. Saying "saved" and meaning "saved here" is how a player loses a list
+  // without ever being told — so the tab says which one it is.
+  const [localOnly, setLocalOnly] = useState(false);
   const [copiedAddr, setCopiedAddr] = useState<string | null>(null);
 
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'info' | 'success' | 'warn' } | null>(null);
@@ -44,17 +48,31 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
   // Load saved friends on open
   useEffect(() => {
     if (isOpen) {
-      if (wallet.connected && wallet.address) {
-        const friends = realWeb3Manager.getSavedFriendsList(wallet.address);
-        setSavedFriends(friends);
-        setSavedAddresses(friends.map((f) => f.address.toLowerCase()));
-      } else {
-        setSavedFriends([]);
-        setSavedAddresses([]);
-      }
       setSearchResults([]);
       setToastMsg(null);
+      if (!wallet.connected || !wallet.address) {
+        setSavedFriends([]);
+        setSavedAddresses([]);
+        setLocalOnly(false);
+        return undefined;
+      }
+      const friends = realWeb3Manager.getSavedFriendsList(wallet.address);
+      setSavedFriends(friends);
+      setSavedAddresses(friends.map((f) => f.address.toLowerCase()));
+      setLocalOnly(realWeb3Manager.lastProfileSyncError === 'no session');
+      // Audit L-02: render the local list first (never a blank flash), then ask
+      // the server — a list that lives only server-side must still appear.
+      let cancelled = false;
+      void realWeb3Manager.refreshSavedFriends(wallet.address).then((fresh) => {
+        if (cancelled) return;
+        setSavedFriends(fresh);
+        setSavedAddresses(fresh.map((f) => f.address.toLowerCase()));
+      });
+      return () => {
+        cancelled = true;
+      };
     }
+    return undefined;
   }, [isOpen, wallet.connected, wallet.address]);
 
   // Toast timer
@@ -95,6 +113,9 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
 
     sounds.playClick();
     const isNowSaved = await realWeb3Manager.toggleFriend(wallet.address, player);
+    // The save may have been local-only; read the manager's verdict rather than
+    // assuming the server got it.
+    setLocalOnly(realWeb3Manager.lastProfileSyncError === 'no session');
     const cleanAddr = player.address.toLowerCase();
 
     if (isNowSaved) {
@@ -419,6 +440,14 @@ export const FriendChallengeModal: React.FC<FriendChallengeModalProps> = ({
         {/* Saved Friends Tab Content */}
         {activeTab === 'saved' && (
           <div className="space-y-3 flex-1 flex flex-col min-h-0 overflow-hidden">
+            {localOnly && (
+              <p
+                data-testid="friends-local-only"
+                className="text-[10px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-lg px-2.5 py-1.5"
+              >
+                {t('friendsLocalOnly')}
+              </p>
+            )}
             {savedFriends.length === 0 ? (
               <div className="p-8 text-center text-xs text-zinc-500 space-y-2 my-auto">
                 <Users className="w-8 h-8 mx-auto text-zinc-600" />
