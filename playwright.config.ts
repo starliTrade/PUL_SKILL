@@ -13,10 +13,21 @@
  */
 import { defineConfig, devices } from '@playwright/test';
 import { readFileSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 const FRONTEND_PORT = Number(process.env.PULSAR_E2E_FRONTEND_PORT ?? 3000);
 const API_PORT = Number(process.env.PULSAR_E2E_API_PORT ?? 8000);
 const BASE_URL = `http://127.0.0.1:${FRONTEND_PORT}`;
+
+// Audit L-04: this file used to hard-code `bun run dev`. The README also says to
+// install with bun, so that was consistent — but on any machine without bun the
+// whole suite died at start-up with `bun: not found`, which reads as "the E2E
+// suite is broken" rather than "one tool is missing". Pick what is installed;
+// npm/npx is a supported path (package.json scripts are portable).
+const hasBun = spawnSync('bun', ['--version'], { stdio: 'ignore' }).status === 0;
+const FRONTEND_CMD = hasBun
+  ? 'bun run dev'
+  : `npx vite --port ${FRONTEND_PORT} --strictPort --host 127.0.0.1`;
 
 // The anvil manifest gives the escrow + chain the frontend must point at.
 const manifestPath = 'contracts/deployments/local.json';
@@ -75,7 +86,7 @@ export default defineConfig({
       stderr: 'pipe',
     },
     {
-      command: 'bun run dev',
+      command: FRONTEND_CMD,
       url: BASE_URL,
       // FOOTGUN, hit twice while building this suite: `reuseExistingServer`
       // adopts a `vite` left over from an earlier run **with its old env**. The

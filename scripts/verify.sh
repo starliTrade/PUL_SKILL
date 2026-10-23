@@ -50,6 +50,19 @@ PY="python3"
 if [[ -x "$ROOT/.venv/bin/python" ]]; then PY="$ROOT/.venv/bin/python"; fi
 
 PASS=0; FAIL=0; SKIP=0
+
+# Audit L-04: this script used `bun run` for four gates. On a machine without
+# bun, `verify` died at the typecheck with `bun: not found` — the whole gate
+# looked red for a missing launcher, not for a defect. npm is a supported path
+# (the scripts in package.json are portable), so use whichever is installed.
+if command -v bun >/dev/null 2>&1; then
+  RUN="bun run"
+elif command -v npm >/dev/null 2>&1; then
+  RUN="npm run"
+else
+  echo "neither bun nor npm is installed — cannot run the JS gates" >&2
+  exit 2
+fi
 declare -a FAILED_NAMES=()
 
 hr() { printf '─%.0s' {1..72}; echo; }
@@ -82,11 +95,11 @@ skip_gate() { # skip_gate <name> <reason>
 }
 
 # --- 1. TypeScript typecheck --------------------------------------------------
-run_gate "typecheck (tsc --noEmit)" bun run lint
+run_gate "typecheck (tsc --noEmit)" $RUN lint
 
 # --- 2. Frontend unit tests (vitest) — plan item 0.9 --------------------------
 if [[ -f "$ROOT/vitest.config.ts" ]]; then
-  run_gate "frontend unit tests (vitest)" bun run test:unit
+  run_gate "frontend unit tests (vitest)" $RUN test:unit
 else
   skip_gate "frontend unit tests (vitest)" "vitest not wired up yet (plan item 0.9)"
 fi
@@ -240,7 +253,7 @@ fi
 
 # --- 7. Contract compile gate (solc, no Foundry needed) -----------------------
 if [[ -f "$ROOT/contracts/test/compile_check.js" ]]; then
-  run_gate "contract compile gate (solc 0.8.20)" bun run test:contract
+  run_gate "contract compile gate (solc 0.8.20)" $RUN test:contract
 fi
 
 # --- 8. E2E browser tests (playwright) — plan item 0.10 -----------------------
@@ -271,7 +284,7 @@ if [[ -f "$ROOT/playwright.config.ts" ]]; then
 # pytest job already guards against with a minimum-count check. Capture the
 # output and require that tests actually ran.
 run_gate "browser E2E (playwright, min 20 tests)" bash -c \
-  "cd '$ROOT' && bun run test:e2e 2>&1 | tee /tmp/pulsar-e2e.log; \
+  "cd '$ROOT' && $RUN test:e2e 2>&1 | tee /tmp/pulsar-e2e.log; \
    passed=\$(grep -oE '[0-9]+ passed' /tmp/pulsar-e2e.log | tail -1 | grep -oE '[0-9]+' || echo 0); \
    if [ \"\$passed\" -lt 20 ]; then \
      echo \"only \$passed E2E tests ran (expected >= 20) — skips are not coverage\"; \

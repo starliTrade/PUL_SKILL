@@ -32,8 +32,10 @@ bun run dev            # Vite dev server
 bun run build          # production build (dist/)
 bun run lint           # tsc --noEmit && eslint . --max-warnings 0
 
-bun run verify         # the full gate: 15 checks run, 0 tolerated failures
-                       # (one more — Playwright — always SKIPs until phase 10)
+bun run verify         # every gate scripts/verify.sh can run, with a summary of
+                       # passed / failed / SKIPPED. A skip is never a pass — it is
+                       # reported with its reason, and `--strict` turns skips into
+                       # failures. bun is optional: the script falls back to npm.
 bun run test:unit      # frontend (vitest)
 bun run test:server    # the standalone protocol smoke script (not pytest)
 bun run test:contract  # Solidity compile gate (solc 0.8.20, paris + shanghai)
@@ -42,6 +44,21 @@ bun run test:contract  # Solidity compile gate (solc 0.8.20, paris + shanghai)
 `bun run verify` is the single source of truth for "is this green". It runs the
 frontend suite, the Python suite, the hermetic coverage gate, ruff, mypy,
 `forge test`, the contract compile gate, and a set of protocol/security probes.
+
+**Browser E2E** (audit L-04). `npx playwright test` is 30 tests in 6 files across
+two projects (desktop, Pixel 7) and it is wired up, not deferred: the config
+starts `scripts/start_e2e_stack.sh`, which brings the API up against anvil with
+the production-like configuration (escrow address, RPC, chain id, signer policy),
+because a dev bypass would test the wrong thing. Prerequisites are anvil (it must
+have deployed the escrow — `scripts/start_anvil.sh --bg`) and browser binaries
+(`npx playwright install`).
+
+The old line here said the suite "always SKIPs until phase 10". It does not, and
+the difference matters: in the environment this repository was assembled in,
+`npx playwright install` cannot reach its download host, so the suite starts the
+real stack and then fails at `browserType.launch`. That is an environment limit
+and it is reported as one — a green unit suite is not evidence that the app boots
+in a browser.
 
 Coverage is measured TWICE, on purpose (audit M-15). The hermetic gate deselects
 everything that needs a service, so its number cannot move depending on what

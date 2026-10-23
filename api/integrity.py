@@ -32,7 +32,9 @@ real anti-bot (device attestation) — see the audit.
 
 from __future__ import annotations
 
+import os
 import statistics
+import threading
 from collections.abc import Sequence
 from typing import Any
 
@@ -44,6 +46,63 @@ FLAG_AT = 0.8                 # suspicion at/above this files a review entry
 
 COLLECTION = "pulsar_integrity"
 REVIEW = "pulsar_review"
+
+# How long a READ may take before the caller gets an answer anyway (audit L-04).
+#
+# `open_reviews` streams a Firestore query. The SDK's default retry policy turns
+# an unreachable database into a request that never returns: measured on this
+# checkout, `/api/health` hung for >120 s with the emulator down, so a liveness
+# probe would kill a healthy container during a Firestore incident and restart
+# it into the same outage. A health answer that is slightly stale beats no
+# answer at all — and the timeout is REPORTED, not silently swallowed.
+HEALTH_READ_TIMEOUT = float(os.environ.get("PULSAR_HEALTH_READ_TIMEOUT", "1.5"))
+ADMIN_READ_TIMEOUT = float(os.environ.get("PULSAR_ADMIN_READ_TIMEOUT", "10"))
+
+_health_read_error = ""
+
+# The liveness path never waits on the database (audit L-04).
+#
+# Measured on this checkout with `FIRESTORE_EMULATOR_HOST` pointing at a dead
+# port: `Query.stream(timeout=1.5)` — and even `retry=None` — never returned.
+# The SDK blocks while establishing the channel, and a per-call deadline does
+# not reach that. So `/api/health` cannot rely on a timeout to be fast: it must
+# not perform the read itself.
+#
+# One daemon thread performs the read and caches the answer. The thread is a
+# daemon so a stuck read can never block interpreter shutdown, and the
+# `inFlight` flag means at most ONE is ever outstanding per process — a stuck
+# read costs one thread, not one per probe.
+_health_lock = threading.Lock()
+_health_state: dict[str, Any] = {"open": None, "error": "", "inFlight": False, "reads": 0}
+
+
+def _read_reviews_in_background() -> None:
+    try:
+        rows = open_reviews(limit=50, timeout=HEALTH_READ_TIMEOUT)
+        with _health_lock:
+            _health_state["open"] = len(rows)
+            _health_state["error"] = ""
+            _health_state["reads"] = int(_health_state["reads"]) + 1
+    except Exception as exc:  # noqa: BLE001
+        with _health_lock:
+            _health_state["error"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+    finally:
+        with _health_lock:
+            _health_state["inFlight"] = False
+
+
+def _kick_health_read() -> None:
+    with _health_lock:
+        if _health_state["inFlight"]:
+            return
+        _health_state["inFlight"] = True
+    try:
+        threading.Thread(
+            target=_read_reviews_in_background, name="pulsar-health-read", daemon=True
+        ).start()
+    except Exception:  # noqa: BLE001 — threading can fail under exotic limits
+        with _health_lock:
+            _health_state["inFlight"] = False
 
 # In-memory fallback (tests, and dev without Firestore). Keyed by address.
 _memory: dict[str, list[float]] = {}
@@ -223,19 +282,31 @@ def _has_open_review(address: str) -> bool:
     return False
 
 
-def open_reviews(limit: int = 50) -> list[dict[str, Any]]:
-    """The operator queue: durable first (another replica's flags), cache second."""
+def open_reviews(limit: int = 50, *, timeout: float | None = ADMIN_READ_TIMEOUT) -> list[dict[str, Any]]:
+    """The operator queue: durable first (another replica's flags), cache second.
+
+    `timeout` is passed to the stream so a database that cannot answer produces
+    an exception this function already handles, instead of blocking the caller
+    forever. Callers that serve a liveness probe pass a short one (see
+    `health()`); the operator UI can afford the default.
+    """
+    global _health_read_error
     out: list[dict[str, Any]] = []
     db = _client()
     if db is not None:
         try:
             for snap in (
-                db.collection(REVIEW).where("status", "==", "open").limit(limit).stream()
+                db.collection(REVIEW)
+                .where("status", "==", "open")
+                .limit(limit)
+                .stream(timeout=timeout)
             ):
                 row = dict(snap.to_dict() or {})
                 row["id"] = snap.id
                 out.append(row)
+            _health_read_error = ""
         except Exception as exc:  # noqa: BLE001
+            _health_read_error = f"{type(exc).__name__}: {str(exc)[:120]}"
             print(f"[integrity] review read failed: {exc!r}")
     if out:
         return out
@@ -266,11 +337,44 @@ def resolve(review_id: str, status: str = "resolved", note: str = "") -> bool:
 
 
 def health() -> dict[str, Any]:
+    """Never blocks. This is the body of `/api/health`, which a probe waits on.
+
+    Before this, an unreachable Firestore made the endpoint hang (>120 s
+    measured), which turns a database incident into a restart loop: the probe
+    times out, the orchestrator kills a process that was serving fine, and the
+    new one hangs in the same place.
+
+    So the review count is CACHED: this call kicks a background read (at most
+    one outstanding) and returns whatever is known now. `readStatus` says which
+    of the three truths you are looking at — memory, a cached number, or nothing
+    yet — because "0 open" and "could not ask" must not look the same.
+    """
+    if _client() is None:
+        return {
+            "flagThreshold": FLAG_AT,
+            "minSamples": MIN_SAMPLES,
+            "writeFailures": _write_failures,
+            "openReviews": len([r for r in _reviews if r.get("status") == "open"]),
+            "readStatus": "memory",
+            "readError": "",
+            "readTimeoutSeconds": HEALTH_READ_TIMEOUT,
+        }
+    _kick_health_read()
+    with _health_lock:
+        cached = _health_state["open"]
+        error = _health_state["error"]
+        in_flight = _health_state["inFlight"]
     return {
         "flagThreshold": FLAG_AT,
         "minSamples": MIN_SAMPLES,
         "writeFailures": _write_failures,
-        "openReviews": len(open_reviews()) if _client() is not None else len(
-            [r for r in _reviews if r.get("status") == "open"]
-        ),
+        "openReviews": cached,
+        # "pending" on the first call after boot, "stale" once a cached read
+        # exists, "ok" when the last read succeeded.
+        "readStatus": ("ok" if cached is not None and not error else "stale")
+        if cached is not None
+        else "pending",
+        "readInFlight": in_flight,
+        "readError": error,
+        "readTimeoutSeconds": HEALTH_READ_TIMEOUT,
     }

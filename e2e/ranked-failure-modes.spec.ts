@@ -18,8 +18,9 @@ import { expect, test, type Page } from '@playwright/test';
 import { installMockWallet, ANVIL_ACCOUNTS, type MockWalletOptions } from './wallet';
 import { clearEligibilityGate } from './helpers';
 import { mintTestUSDT } from './chain';
+import { API_ORIGIN } from './helpers';
 
-const API = 'http://127.0.0.1:8000';
+const API = API_ORIGIN;
 
 async function signIn(privateKey: string): Promise<{ address: string; token: string }> {
   const { privateKeyToAccount } = await import('viem/accounts');

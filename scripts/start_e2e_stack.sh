@@ -13,7 +13,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MANIFEST="$ROOT/contracts/deployments/local.json"
+# Overridable so a test can point at a throwaway manifest without touching
+# the real deployment record (the guard below is tested in
+# tests/unit/test_e2e_stack_script.py).
+MANIFEST="${PULSAR_E2E_MANIFEST:-$ROOT/contracts/deployments/local.json}"
 PIDFILE="/tmp/pulsar-e2e-api.pid"
 API_PORT="${PULSAR_API_PORT:-8000}"
 LOGFILE="/tmp/pulsar-e2e-api.log"
@@ -73,6 +76,31 @@ if curl -sf -o /dev/null "http://${EMULATOR_HOST}/" 2>/dev/null; then
     && echo "reset the Firestore emulator (${PROJECT})"
 fi
 
+# --- the manifest and the CHAIN must agree -----------------------------------
+#
+# Audit 2026-10-16: `start_anvil.sh` REDEPLOYS on every run, so the escrow address
+# changes each time. An API started before that points at an address with no code
+# on it — and it reports `escrowConfigured: true` and `rpc.reachable: true` while
+# every duel fails with "On-chain duel state cannot be verified right now". That
+# reads like a server bug and is a stale manifest.
+#
+# This check used to sit AFTER the start-up path, glued to an `exit 1` by a
+# missing newline — so it was dead code that had never run once, and a stale
+# manifest still produced the exact confusing failures it was written to prevent.
+# It now runs before the server is launched, where the comment always said it did.
+_manifest_code="$(
+  curl -s -X POST -H 'Content-Type: application/json' \
+    --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"${ESCROW}\",\"latest\"]}" \
+    "${PULSAR_ANVIL_URL:-http://127.0.0.1:8545}" 2>/dev/null \
+    | python3 -c "import json,sys;print(json.load(sys.stdin).get('result','0x'))" 2>/dev/null || echo 0x
+)"
+if [[ -z "$_manifest_code" || "$_manifest_code" == "0x" ]]; then
+  echo "REFUSING TO START: the manifest names escrow ${ESCROW} but there is no" >&2
+  echo "contract at that address on the chain. Run scripts/start_anvil.sh --bg" >&2
+  echo "FIRST (it redeploys, which changes the address), then start this stack." >&2
+  exit 1
+fi
+
 cd "$ROOT/api"
 # NOTE: Starlette strips the port before matching a Host header, so
 # ALLOWED_HOSTS holds HOSTNAMES (no ports).
@@ -86,6 +114,12 @@ cd "$ROOT/api"
 # after it becomes a separate command — the server then starts with
 # `PULSAR_MATCH_STORE` unset and silently serves from memory. This has now
 # happened twice in this file; that is why the warning is here.
+# This stack is local-only: anvil, a throwaway key from the manifest, no real
+# money. H-07 refuses ORACLE_SIGNER=local unless the risk is accepted EXPLICITLY,
+# so it is accepted here — with PULSAR_ALLOW_LOCAL_SIGNER, not with PULSAR_ENV=dev.
+# Disabling the production checks wholesale would defeat the point of a suite
+# whose job is to exercise those checks.
+PULSAR_ALLOW_LOCAL_SIGNER=1 \
 PULSAR_MATCH_STORE=firestore \
 FIRESTORE_EMULATOR_HOST="${FIRESTORE_EMULATOR_HOST:-127.0.0.1:8081}" \
 GCLOUD_PROJECT="${GCLOUD_PROJECT:-demo-pulsar}" \
@@ -113,7 +147,10 @@ if command -v ss >/dev/null 2>&1; then
 fi
 
 for _ in $(seq 1 40); do
-  if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/health"; then
+  # --max-time: an unbounded curl here hangs the whole launcher when the server
+  # is up but a dependency makes /api/health slow. A poll must be allowed to
+  # fail and try again, not to wait forever.
+  if curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:${PORT}/api/health"; then
     echo "E2E API up on 127.0.0.1:${PORT} (escrow ${ESCROW:0:10}…, chain ${CHAIN_ID})"
     exit 0
   fi
@@ -122,31 +159,4 @@ done
 
 echo "the E2E API did not become healthy — see $LOGFILE" >&2
 tail -20 "$LOGFILE" >&2 || true
-exit 1# --- 0. the manifest and the CHAIN must agree ---------------------------------
-#
-# Audit 2026-10-16: `start_anvil.sh` REDEPLOYS on every run, so the escrow address
-# changes each time. An API started before that points at an address with no code
-# on it — and it reports `escrowConfigured: true` and `rpc.reachable: true` while
-# every duel fails with "On-chain duel state cannot be verified right now". That
-# reads like a server bug and is a stale manifest.
-#
-# This cost a confusing chaos-suite failure and nearly a false "fail-open deposit
-# gate" finding. Check it here, loudly, before the API is started.
-_manifest="${ROOT}/contracts/deployments/local.json"
-if [[ -f "$_manifest" ]]; then
-  _escrow="$(python3 -c "import json;print(json.load(open('$_manifest'))['escrow'])" 2>/dev/null || true)"
-  if [[ -n "$_escrow" ]]; then
-    _code="$(curl -s -X POST -H 'Content-Type: application/json' \
-      --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"$_escrow\",\"latest\"]}" \
-      "${PULSAR_ANVIL_URL:-http://127.0.0.1:8545}" 2>/dev/null \
-      | python3 -c "import json,sys;print(json.load(sys.stdin).get('result','0x'))" 2>/dev/null || echo 0x)"
-    if [[ "$_code" == "0x" || -z "$_code" ]]; then
-      echo "REFUSING TO START: the manifest names escrow $_escrow but there is no"
-      echo "contract at that address on the chain. Run scripts/start_anvil.sh --bg"
-      echo "FIRST (it redeploys, which changes the address), then start this stack."
-      exit 1
-    fi
-  fi
-fi
-
-
+exit 1
