@@ -175,6 +175,12 @@ Smoke-test the deployment: `GET https://<server>/api/health` must return
 > bounded round-trip (`timeoutMs` = 1500 by default, `PULSAR_HEALTH_PROBE_TIMEOUT_MS`
 > to change) and adds `store.probe`. It is opt-in because a liveness probe that
 > waits on a dead database turns a slow dependency into an unresponsive process.
+>
+> The deep probe is **cached for 5 s and limited to 12 requests/minute per IP**:
+> it is unauthenticated and each miss costs one billed Firestore read. `probe.ok`
+> is `null` when nothing was checked (memory backend) — never `true`.
+> The plain `/api/health` is unlimited on purpose: an orchestrator that receives
+> 429 on its liveness check restarts a healthy container.
 
 ---
 

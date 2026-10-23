@@ -17,7 +17,7 @@ asks during an incident. It carries no secret and no RPC URL.
 | `matchStore` | which client was **constructed** — configuration, not proof (H-17) | `memory` in production = **no durability** |
 | `store.writable` | `true`/`false` = last durable write succeeded/failed; `null` = none attempted yet | `false`, or `null` after a day of traffic, means nothing is being persisted |
 | `store.lastError` | the last durable-write failure, truncated | non-empty while `writable` is `false` |
-| `store.probe` (`?deep=1` only) | one bounded round-trip to the store | `ok: false` = the store is unreachable, whatever `matchStore` says |
+| `store.probe` (`?deep=1` only, cached 5 s, 12/min/IP) | one bounded round-trip to the store; `ok: null` = nothing was checked | `ok: false` = the store is unreachable, whatever `matchStore` says |
 | `ledger.available` | the economy ledger is reachable | `false` = progression/leaderboard are not being written |
 | `ledger.failures` | per-function failure counts | any non-zero means writes are being dropped |
 | `chainId` | the chain the server signs for | must equal the client's `VITE_CHAIN_ID` and the contract's chain |

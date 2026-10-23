@@ -236,7 +236,10 @@ curl -s 'https://your-api-host/api/health?deep=1' | python3 -c \
 * `store.writable`: `null` = هنوز هیچ نوشتنِ واقعی رخ نداده (نه اینکه سالم است)،
   `true` = آخرین نوشتن موفق، `false` = آخرین نوشتن شکست خورد → `store.lastError`.
 * `store.probe.ok` (فقط با `?deep=1`): یک رفت‌وبرگشتِ **زمان‌دار** (پیش‌فرض ۱٫۵ ثانیه).
-  اگر `false` بود، دیتابیس در دسترس نیست — هرچه `matchStore` بگوید.
+  اگر `false` بود، دیتابیس در دسترس نیست — هرچه `matchStore` بگوید. اگر `null` بود
+  یعنی چیزی بررسی نشد (حالت memory) — نه «سالم».
+  این سنجه **۵ ثانیه کش** می‌شود و **۱۲ بار در دقیقه per IP** محدود است، چون بدون احراز
+  هویت است و هر بار یک read پول‌دار هزینه دارد.
 
 در همین محیط (بدون emulator) نتیجهٔ واقعی این بود: `matchStore: firestore`،
 `writable: null`، و `probe: {"ok": false, "error": "no answer within 1500 ms"}` در

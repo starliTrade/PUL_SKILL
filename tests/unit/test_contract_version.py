@@ -81,7 +81,18 @@ def test_health_reports_the_escrow_version(monkeypatch):
     }
     assert onchain.escrow_version_problem() is None
 
-    body = server.health()
+    # `health` now takes the request (audit H-23: the opt-in ?deep=1 probe is
+    # rate limited per IP), so a direct call must supply one.
+    from starlette.requests import Request  # noqa: PLC0415
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/health",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+    }
+    body = server.health(Request(scope))
     assert body["escrowVersion"]["compatible"] is True
     assert body["escrowVersionProblem"] is None
 

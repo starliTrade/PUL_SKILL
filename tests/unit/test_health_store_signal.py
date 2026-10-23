@@ -154,11 +154,13 @@ def test_the_error_string_is_truncated_because_the_endpoint_is_public(
 
 def test_deep_probe_is_skipped_off_durable(monkeypatch: pytest.MonkeyPatch) -> None:
     s = store_mod.DurableMatchStore(backend="memory")
-    assert s.probe(50) == {
-        "checked": False,
-        "ok": True,
-        "reason": "no durable backend configured",
-    }
+    out = s.probe(50)
+    assert out["checked"] is False
+    assert out["reason"] == "no durable backend configured"
+    # `ok` must be None, not True: nothing was checked, so nothing is known.
+    # A monitoring rule that greps `ok` must not read "no database configured"
+    # as "healthy" — that is the same mistake as H-17, one field over.
+    assert out["ok"] is None
 
 
 def test_deep_probe_ok(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -251,7 +253,7 @@ def test_deep_health_adds_the_probe(client: TestClient) -> None:
     body = client.get("/api/health?deep=1").json()
     probe = body["store"]["probe"]
     assert probe["checked"] is False  # memory backend in tests
-    assert probe["ok"] is True
+    assert probe["ok"] is None
 
 
 def test_match_store_and_store_backend_cannot_disagree(client: TestClient) -> None:
@@ -259,3 +261,62 @@ def test_match_store_and_store_backend_cannot_disagree(client: TestClient) -> No
     body = client.get("/api/health").json()
     assert body["matchStore"] == body["store"]["backend"]
     assert body["store"]["durable"] == (body["matchStore"] == "firestore")
+
+
+# --- H-23: the deep probe must not be free ------------------------------------
+#
+# `?deep=1` is unauthenticated and performs one BILLED Firestore read inside a
+# fresh daemon thread. Before this, nothing limited it: the one route an attacker
+# is certain exists could be looped as a cost amplifier and a thread factory.
+
+
+@pytest.fixture
+def counted_probe(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    calls: list[int] = []
+
+    def _probe(timeout_ms: int = 1500) -> dict[str, Any]:
+        calls.append(timeout_ms)
+        return {"checked": True, "ok": True, "latencyMs": 1, "error": ""}
+
+    monkeypatch.setattr(server.store, "probe", _probe)
+    monkeypatch.setattr(server, "_deep_probe_cache", {"at": -1e9, "payload": None})
+    monkeypatch.setattr(server, "_rl_window", {}, raising=False)
+    return calls
+
+
+def test_the_deep_probe_is_cached_within_the_window(
+    client: TestClient, counted_probe: list[int]
+) -> None:
+    for _ in range(3):
+        r = client.get("/api/health?deep=1")
+        assert r.status_code == 200, r.text
+    assert len(counted_probe) == 1, "a monitor polling every second must not cost a read per poll"
+
+
+def test_the_cached_probe_expires(client: TestClient, counted_probe: list[int], monkeypatch) -> None:
+    client.get("/api/health?deep=1")
+    import timebase  # noqa: PLC0415
+
+    later = timebase.now() + server.HEALTH_PROBE_CACHE_SECONDS + 1
+    monkeypatch.setattr(timebase, "now", lambda: later)
+    client.get("/api/health?deep=1")
+    assert len(counted_probe) == 2
+
+
+def test_the_deep_probe_is_rate_limited_per_ip(
+    client: TestClient, counted_probe: list[int]
+) -> None:
+    codes = [client.get("/api/health?deep=1").status_code for _ in range(server.RL_HEALTH_DEEP_MAX + 1)]
+    assert codes[-1] == 429, f"the deep probe is unlimited: {codes}"
+    assert all(c == 200 for c in codes[:-1])
+    last = client.get("/api/health?deep=1")
+    assert last.status_code == 429
+    assert last.headers.get("Retry-After"), "a 429 without Retry-After is not a contract"
+
+
+def test_the_plain_health_endpoint_stays_free(client: TestClient, counted_probe: list[int]) -> None:
+    """The liveness probe must never be rate limited — an orchestrator that gets
+    429 on its health check restarts a healthy container."""
+    for _ in range(server.RL_HEALTH_DEEP_MAX * 3):
+        assert client.get("/api/health").status_code == 200
+    assert counted_probe == []

@@ -93,6 +93,7 @@ RL_QUEUE_MAX = 40        # queue calls per minute per address (audit #6 C3:
                          # the client's 2.5s poll = 24/min; 20/min kicked
                          # honest waiting players out of matchmaking at t≈50s)
 RL_COMMIT_MAX = 40       # round commits per minute per address
+RL_HEALTH_DEEP_MAX = 12  # deep health probes per minute per IP (see health())
 RL_AUTH_MAX = 10         # SIWE handshakes per minute per address
 RL_VERIFY_MAX = 30       # SIWE verifications per minute per IP (ecrecover is
 RL_SETTLE_MAX = 10       # settle calls per minute per address (audit #10 #7:
@@ -1348,8 +1349,24 @@ def ping() -> dict[str, Any]:
     return {"ok": True, "t": timebase.now_ms()}
 
 
+# The deep probe is CACHED for a few seconds and RATE LIMITED per IP.
+#
+# Audit H-23 (2026-10-23, found while auditing my own H-17 fix): `?deep=1` is
+# unauthenticated and performs one BILLED Firestore read per request inside a
+# fresh daemon thread. Nothing stopped a loop from turning the health endpoint —
+# the one route an attacker is certain exists — into a cost amplifier and a
+# thread factory. Every other store-touching route is rate limited; this one was
+# added without one because it "only reads".
+#
+# The cache is not an optimisation: monitoring systems poll every 10–30 s, and a
+# probe that costs a read per poll is a bill with a graph attached. Five seconds
+# keeps an incident dashboard live while collapsing duplicate pollers.
+HEALTH_PROBE_CACHE_SECONDS = 5.0
+_deep_probe_cache: dict[str, Any] = {"at": -1e9, "payload": None}
+
+
 @app.get("/api/health")
-def health(deep: bool = False) -> dict[str, Any]:
+def health(request: Request, deep: bool = False) -> dict[str, Any]:
     # Audit H-17: `matchStore` is CONFIGURATION — it names the client we managed
     # to construct. google-cloud-firestore does no I/O in its constructor, so a
     # wrong project, revoked IAM or a blocked network still answered
@@ -1418,11 +1435,20 @@ def health(deep: bool = False) -> dict[str, Any]:
         "store": store.write_stats(),
     }
     if deep:
-        try:
-            timeout_ms = int(os.environ.get("PULSAR_HEALTH_PROBE_TIMEOUT_MS", "1500"))
-        except ValueError:
-            timeout_ms = 1500
-        payload["store"]["probe"] = store.probe(timeout_ms)
+        _rl_check_ip("health_deep", request, RL_HEALTH_DEEP_MAX)
+        now = timebase.now()
+        cached = _deep_probe_cache["payload"]
+        if cached is not None and now - float(_deep_probe_cache["at"]) < HEALTH_PROBE_CACHE_SECONDS:
+            payload["store"]["probe"] = cached
+        else:
+            try:
+                timeout_ms = int(os.environ.get("PULSAR_HEALTH_PROBE_TIMEOUT_MS", "1500"))
+            except ValueError:
+                timeout_ms = 1500
+            probed = store.probe(timeout_ms)
+            payload["store"]["probe"] = probed
+            _deep_probe_cache["payload"] = probed
+            _deep_probe_cache["at"] = now
     return payload
 
 

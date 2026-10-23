@@ -1242,7 +1242,10 @@ class DurableMatchStore:
         the per-call timeout.
         """
         if not self.durable or self._firestore is None:
-            return {"checked": False, "ok": True, "reason": "no durable backend configured"}
+            # `ok` is None, not True. Nothing was checked, so nothing is known —
+            # the same rule this file applies to `writable`. A monitoring rule
+            # that greps `ok` must not read "no database configured" as "healthy".
+            return {"checked": False, "ok": None, "reason": "no durable backend configured"}
 
         started = time.monotonic()
         outcome: dict[str, Any] = {}
