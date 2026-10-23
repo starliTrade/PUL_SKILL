@@ -754,6 +754,13 @@ def verify_settlement_tx(tx_hash: str, match_id: str, claimer: str) -> bool:
     ).hex()
     claimer_topic = "0x" + claimer.lower().removeprefix("0x").rjust(64, "0")
     for log in receipt.get("logs") or []:
+        # Audit H-26: `logs` comes from an RPC response, not from us. A malformed
+        # entry (a string, a null, a provider quirk) used to raise AttributeError
+        # here — inside the CLAIM endpoint, which then answered 500 to a player
+        # whose prize was already on chain. "Never raise" is part of the contract
+        # of a verifier that must fail CLOSED.
+        if not isinstance(log, dict):
+            continue
         if str(log.get("address", "")).lower() != os.environ.get("ESCROW_ADDRESS", "").lower():
             continue
         topics = log.get("topics") or []

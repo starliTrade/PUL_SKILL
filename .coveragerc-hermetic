@@ -22,6 +22,11 @@
 # Measured, not guessed: 74% / 3937 statements / 1011 missed, identical across
 # consecutive runs (two runs on 2026-10-22 produced byte-identical totals).
 #
+# 2026-10-23 (H-26): 74 -> 77. 4314 statements / ~969 missed, measured three
+# times (78%). The gain is real tests, not a config change: the claim verifier
+# (`onchain.verify_settlement_tx`) had no direct coverage at all — the claim
+# integration tests replaced it with a stub — and now has 15 cases.
+#
 # Raise `fail_under` only in the commit that adds the tests.
 [run]
 source = api
@@ -30,7 +35,7 @@ omit =
     api/requirements*.txt
 
 [report]
-fail_under = 74
+fail_under = 77
 show_missing = True
 skip_covered = False
 exclude_lines =

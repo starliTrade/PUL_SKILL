@@ -81,6 +81,8 @@ previous table said 202/278/81 and was already stale (audit M-17). Run
 | Coverage, complete (`.coveragerc`) | 79% floor, only measurable with the Firestore emulator + anvil running; reported as its own gate, skipped loudly when they are absent |
 | Contract coverage (`forge coverage --report summary`) | `PulsarEscrow.sol`: **98.57%** lines (207/210), 98.48% statements, **86.73%** branches, **100%** functions (31/31), measured 2026-10-23 on the same commit |
 
+Server line coverage is **not** a single number you should quote: [docs/COVERAGE-REPORT.md](docs/COVERAGE-REPORT.md) records the measured figure, the conditions it was measured under, and a classified list of every gap (environmental vs. genuinely untested).
+
 `forge test` is a CI gate; treat its result as the source of truth for the
 contract suite, never this table. The contract is versioned (`VERSION` /
 `VERSION_CODE`, surfaced in `/api/health`) and a replacement follows

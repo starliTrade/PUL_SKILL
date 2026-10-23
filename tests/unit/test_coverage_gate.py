@@ -45,7 +45,14 @@ def test_the_hermetic_gate_exists_and_has_its_own_data_file():
 
 
 def test_the_hermetic_floor_is_what_that_configuration_actually_reaches():
-    assert _floor(HERMETIC) == 74, (
+    """The floor tracks the MEASURED number, one point below it.
+
+    It moved 74 -> 77 on 2026-10-23 in the same commit that added the tests
+    (H-26: the claim verifier had none). The margin is deliberate: a floor equal
+    to the measurement turns any single skipped test into a red build, which
+    teaches people to lower the floor. Two points of headroom, one point of slack.
+    """
+    assert _floor(HERMETIC) == 77, (
         "raise this floor only in the commit that adds the tests, and only after "
         "a measured run of the hermetic configuration"
     )
