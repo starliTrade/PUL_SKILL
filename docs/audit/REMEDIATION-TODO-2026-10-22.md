@@ -53,6 +53,7 @@
 - [x] **H-20** (یافتهٔ جدید) `chaos_suite.py` به `/api/queue` بدون `rttMs` می‌فرستاد (۴۲۲) و آن را «pairing failed» گزارش می‌کرد؛ سناریوی fail-closed هیچ‌وقت اجرا نمی‌شد — اجرای دوباره: ۲۰ pass / ۴ fail (همه emulator)
 - [x] **H-21** (یافتهٔ جدید) `load/locustfile.py` همان ۴۲۲ را **موفقیت** می‌شمرد؛ ردیف queue در `docs/LOAD-REPORT.md` نامعتبر بود و اکنون با اندازه‌گیری واقعی (p50 ۴ms) جایگزین شد — تست `test_harness_matches_api_contract.py` (۲)
 - [x] **H-22** (یافتهٔ جدید) گیت‌های زندهٔ SIWE با محدودیت ۱۰ nonce در دقیقه برخورد می‌کردند و «assert token is not None» می‌دادند (محدودیت نرخ، با لباس باگ محصول). حالا `Retry-After` را رعایت می‌کنند (تا ۳ تلاش) و ۴۲۹ واقعی بلند شکست می‌خورد — تست `test_rate_limit_is_not_a_failure.py` (۸)
+- [x] **H-24** (یافتهٔ جدید) سوئیت‌های زنده در هر اجرا ۶+ handshake می‌زدند در حالی که سقف ۱۰/دقیقه per IP است؛ دو اجرای پشت‌سرهم به ۴۲۹ می‌خورد و «assert None is not None» می‌داد. حالا هر هویت یک بار per run ساخته و کش می‌شود (۲ به‌جای ۶ در eligibility، کل handshake یک run کامل: ۴) — تست `test_live_sessions_are_minted_once.py` (۵)
 - [x] **H-23** (نقص در رفعِ خودِ H-17، با ممیزی دوباره پیدا شد) `?deep=1` بدون احراز هویت، بدون محدودیت، و هر درخواست یک read **پول‌دار** + یک thread — یک آمپلی‌فایر هزینه. حالا: کش ۵ ثانیه‌ای + ۱۲/دقیقه per IP؛ `/api/health` ساده همچنان آزاد (وگرنه orchestrator کانتینر سالم را ری‌استارت می‌کند). همچنین `probe.ok` در حالت «بررسی نشده» `null` است نه `true` — همان قاعدهٔ H-17، یک فیلد آن‌طرف‌تر — تست `test_health_store_signal.py` (۱۷)
 - [x] **H-17** نرمال‌سازی سند کاربر + `.catch` روی `recordMatch`
 - [x] **H-18** `doc_ref.create` داخل تراکنش ⇒ `tx.create` (نقص #۶ حسابرسی اول)
@@ -233,6 +234,7 @@
 | H-21 | (کامیت H-21) | locust: فقط 200 = موفق؛ 422 = شکست؛ 429 جدا شمرده می‌شود + تصحیح `LOAD-REPORT` | `test_harness_matches_api_contract.py` (۲) | ✅ رفع‌شده |
 | H-22 | (کامیت H-22) | گیت‌های زنده `Retry-After` را رعایت می‌کنند، بدون تضعیف محدودیت نرخ | `test_rate_limit_is_not_a_failure.py` (۸) + دو اجرای متوالی زنده (۰٫۲۴s و ۶۰٫۳۳s، هر دو سبز) | ✅ رفع‌شده |
 | H-23 | (کامیت H-23) | deep health: کش ۵ ثانیه + ۱۲/دقیقه per IP؛ `probe.ok` سه‌حالته | `test_health_store_signal.py` (۱۷) | ✅ رفع‌شده |
+| H-24 | (کامیت H-24) | گیت‌های زنده هر هویت را یک بار per run می‌سازند: ۶ → ۲ handshake | `test_live_sessions_are_minted_once.py` (۵) + سه اجرای متوالی eligibility (۰٫۱۴s هرکدام) | ✅ رفع‌شده |
 
 **مشاهدهٔ باز (صادقانه، حل‌نشده):** در یکی از اجراهای کامل،
 `test_chain_smoke.py::test_settlement_with_a_real_oracle_signature_pays_the_winner`

@@ -85,6 +85,14 @@ def _api(path: str, body: dict | None = None, token: str | None = None, method: 
 
 
 def _sign_in(private_key: str | None = None) -> tuple[str, str]:
+    """A live session, minted once per identity per run (H-24)."""
+    from tests.fixtures.live_api import mint_once  # noqa: PLC0415
+
+    cache_key = f"ranked:{private_key or 'random'}"
+    return mint_once(cache_key, lambda: _mint_session(private_key))
+
+
+def _mint_session(private_key: str | None = None) -> tuple[str, str]:
     """A real SIWE session. Returns (address, token).
 
     Pass the anvil player's key when the session must be the SAME identity that

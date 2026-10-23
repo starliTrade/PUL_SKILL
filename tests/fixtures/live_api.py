@@ -68,3 +68,45 @@ def wait_and_retry(exc: Exception, retry, cap: float = MAX_WAIT_SECONDS):
                 raise
             last = again
     raise last
+
+
+# --- one session per identity per run (audit H-24) ---------------------------
+#
+# H-22 taught the live suites to honour `Retry-After`. That was necessary and not
+# sufficient: the two live suites signed in SIX times per run against a cap of
+# TEN per minute per IP, so two runs inside a minute still collided, and a full
+# `pytest` run (which takes 20-80 s and re-runs every suite) walked into the
+# ceiling on its own. Measured 2026-10-23: 1 failed / 626 passed, the failure
+# being `assert None is not None` in the eligibility suite.
+#
+# Retrying a global budget is the wrong tool: it turns a shared counter into a
+# waiting room. The suites do not need six identities — they need TWO (attested
+# and unattested) and the ranked flow needs two FIXED keys. Minting each once per
+# process drops the handshake count to four, which fits under the cap with room
+# for a second run in the same minute.
+#
+# This does not weaken anything: the token is still a real SIWE session, the
+# server still verifies it on every request, and the limiter still refuses when
+# the budget is genuinely exceeded.
+
+_TOKENS: dict[str, str] = {}
+
+
+def mint_once(key: str, mint) -> str:
+    """Return the session for `key`, minting it at most once per process."""
+    if key not in _TOKENS:
+        _TOKENS[key] = mint()
+    return _TOKENS[key]
+
+
+def reset_sessions() -> None:
+    """Forget every cached session (used by the tests of this helper)."""
+    _TOKENS.clear()
+
+
+class SessionUnavailable(RuntimeError):
+    """A live session could not be minted — named, never returned as None.
+
+    `assert token is not None` was the old failure mode: the actual cause (a 429
+    from a per-IP budget) was invisible, so the failure read as a product bug.
+    """
