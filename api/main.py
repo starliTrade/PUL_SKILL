@@ -1555,6 +1555,7 @@ def auth_nonce(body: NonceRequest, request: Request) -> dict[str, str]:
     _rl_check_ip("auth", request, RL_AUTH_MAX)
     domain = _request_domain(request)
     nonce = issue_nonce(body.address, domain)
+    analytics.note_person("arrived", body.address)
     return {"nonce": nonce, "message": _siwe_message(body.address, nonce, domain)}
 
 
@@ -1577,6 +1578,9 @@ def auth_verify(body: VerifyRequest, request: Request) -> dict[str, str]:
     expected = _siwe_message(recovered, _nonce_of(body.message), domain)
     if body.message != expected:
         raise HTTPException(status_code=401, detail="SIWE message does not match the issued challenge")
+    # Audit L-07: a PERSON, not a request. The address is only known after
+    # ecrecover, which is exactly why the request funnel overstated this step.
+    analytics.note_person("connected", recovered)
     return {"token": issue_session(recovered), "address": recovered}
 
 
@@ -1891,6 +1895,7 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     # Audit C-01: this is the ONE point that can create or join a duel (the
     # live-match path returned above without reaching here), so it is the only
     # place a "start" is recorded.
+    analytics.note_person("queued", address)
     try:
         match = store.enqueue(address, body.stake, body.rttMs, challenge_target or None)
     except MatchError as exc:
@@ -2288,6 +2293,9 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
     # DoS vector. 10 calls/min per address is far above any legitimate polling
     # cadence (the client settles once, then replays).
     _rl_check("settle", address, RL_SETTLE_MAX)
+    # Audit L-07: people who reached the money step (not settle CALLS — the
+    # client legitimately replays this).
+    analytics.note_person("settled", address)
     try:
         match = store.get(match_id)
         if address not in match.players:
