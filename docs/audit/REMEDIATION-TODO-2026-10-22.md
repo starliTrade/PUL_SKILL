@@ -56,6 +56,7 @@
 - [x] **M-02** نام‌گذاری صریح: سقف هر دوئل (نه سقف تجمعی)
 - [x] **M-05** حذف نام حریف تخیلی در رنکد
 - [ ] **M-08** تشخیص prod با نشانه‌های پلتفرم
+- [x] **M-14** آمار رنکدِ تأییدنشده به‌جای عدد محلی «—» نمایش داده می‌شود — منشأ آمار (`progressionSource: server|local|unknown`) در `UserWalletData`، ست‌شدن در `recordMatch`/`loadUserData`، اکشن `refreshProgression()`، بنر + دکمه‌ی بررسی دوباره در `ProfilePage`، ۵ زبان؛ تست: `usePulsarStore.progression.test.tsx` (۵ جدید) + `ProfilePage.progression.test.tsx` (۴)
 - [ ] **M-10** لاگ تصمیم‌های ادمین
 - [ ] **M-15** coverage: اندازه‌گیری پایدار (بدون وابستگی به emulator)
 - [ ] **M-17** اعداد README از خروجی واقعی

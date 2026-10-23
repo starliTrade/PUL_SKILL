@@ -124,6 +124,20 @@ export interface UserWalletData {
   winStreak?: number;
   savedFriends?: string[];
   history: MatchRecord[];
+  /**
+   * Audit M-14: where the numbers above came from.
+   *
+   * `'server'` — the ledger answered (the only authoritative case);
+   * `'local'` — a guest / practice-only profile, where local IS the truth;
+   * `'unknown'` — a RANKED duel happened and the ledger could not confirm the
+   * result. The local counters were still advanced (a match did happen), but
+   * they are an estimate, and the UI must show "—" rather than presenting an
+   * unverified number as a stat. Mixing the two was the finding: a player whose
+   * settlement failed saw a win that the payout ledger does not have.
+   */
+  progressionSource?: 'server' | 'local' | 'unknown';
+  /** When `progressionSource` was last set to 'server' (epoch ms). */
+  progressionCheckedAt?: number;
 }
 
 export interface FriendProfile {
@@ -241,6 +255,16 @@ export const normalizeUserData = (
     winStreak: Number(d.winStreak) || 0,
     history: Array.isArray(d.history) ? d.history : [],
     savedFriends: Array.isArray(d.savedFriends) ? d.savedFriends : [],
+    // Audit M-14: legacy documents have no provenance. A history that contains
+    // a RANKED match cannot be verified offline, so it is marked 'unknown'
+    // until a session asks the ledger (which happens on the next profile load);
+    // everything else is a local/practice profile, where local is the truth.
+    progressionSource:
+      d.progressionSource ??
+      (Array.isArray(d.history) && d.history.some((m) => m && (m as { ranked?: boolean }).ranked)
+        ? 'unknown'
+        : 'local'),
+    progressionCheckedAt: Number(d.progressionCheckedAt) || 0,
   };
 };
 
@@ -1485,6 +1509,9 @@ class RealWeb3Manager {
             winStreak: stats.winStreak,
             bestReactionMs: stats.bestReactionMs || base.bestReactionMs,
             avgReactionMs: stats.avgReactionMs || base.avgReactionMs,
+            // Audit M-14: the ledger answered, so these numbers are facts.
+            progressionSource: 'server',
+            progressionCheckedAt: Date.now(),
           };
           if (profile) {
             if (profile.playerId) merged.playerId = profile.playerId;

@@ -26,6 +26,9 @@ export interface UserStats {
   playerId?: string;
   bestReactionMs?: number;
   avgReactionMs?: number;
+  /** Audit M-14: provenance of the numbers above (see UserWalletData). */
+  progressionSource?: 'server' | 'local' | 'unknown';
+  progressionCheckedAt?: number;
 }
 
 export interface MatchHistoryItem {
