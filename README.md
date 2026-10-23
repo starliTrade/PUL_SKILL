@@ -65,7 +65,8 @@ everything that needs a service, so its number cannot move depending on what
 happens to be running; the complete gate adds the emulator and anvil tests and
 carries the higher floor. A gate that only passes because you had an emulator
 started is not a gate, and the previous single measurement reported 74% and 79%
-for the same commit depending on exactly that.
+for the same commit depending on exactly that. The hermetic floor is now 77
+(the number it measures is 78); it moves only in the commit that adds tests.
 
 Counts are **generated from the last full run**, not maintained by hand — the
 previous table said 202/278/81 and was already stale (audit M-17). Run
@@ -74,10 +75,10 @@ previous table said 202/278/81 and was already stale (audit M-17). Run
 | Suite | Count (last measured in this repository) |
 |---|---|
 | Frontend (vitest) | 332 tests, 67 files (measured 2026-10-23) |
-| Server (pytest) | 623 passed / 25 skipped with anvil running and the API stack up; 578 / 41 with nothing running (the live suites skip), measured 2026-10-23 |
+| Server (pytest) | 661 passed / 25 skipped with anvil running; 650 / 36 with anvil stopped (the chain suites skip), measured 2026-10-23 |
 | Contract (forge) | 104 tests, 9 suites, measured 2026-10-23 (forge 1.7.1, forge-std + OpenZeppelin v5.0.2). The sandbox cannot reach `binaries.soliditylang.org`, so forge was driven with the `solc-js` 0.8.20 build already in `node_modules` via a small shim — the compiler and the tests are real, the toolchain path is not the default one |
 | Chain integration (anvil) | 11 tests passing against `scripts/start_anvil.sh --bg` — real `createDuel`/`joinDuel` and a settlement signed by the real `api/oracle.py` |
-| Coverage, hermetic (`.coveragerc-hermetic`) | **77%** over 4165 statements, measured 2026-10-23 with no emulator and no anvil — this is the gate that must always be green (audit M-15) |
+| Coverage, hermetic (`.coveragerc-hermetic`) | **78%** over 4314 statements (969 missed), floor 77, measured three times on 2026-10-23 with no emulator and no anvil — this is the gate that must always be green (audit M-15) |
 | Coverage, complete (`.coveragerc`) | 79% floor, only measurable with the Firestore emulator + anvil running; reported as its own gate, skipped loudly when they are absent |
 | Contract coverage (`forge coverage --report summary`) | `PulsarEscrow.sol`: **98.57%** lines (207/210), 98.48% statements, **86.73%** branches, **100%** functions (31/31), measured 2026-10-23 on the same commit |
 
