@@ -90,6 +90,23 @@ def test_no_endpoint_and_no_project_means_none(monkeypatch: pytest.MonkeyPatch) 
         assert module._firestore_client() is None
 
 
+def test_an_injected_client_still_wins_in_memory_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression from the H-18 fix itself.
+
+    The guard has to sit AFTER the resolved-client cache, not before it: tests
+    (and `tests/integration/test_abuse_fail_closed.py`) inject a broken client to
+    prove an outage refuses the duel. Checking the environment first made the
+    injected client invisible and every one of those tests failed — the fix would
+    have deleted the coverage that proves the gate fails closed.
+    """
+    monkeypatch.setenv("PULSAR_MATCH_STORE", "memory")
+    monkeypatch.setenv("FIRESTORE_EMULATOR_HOST", "127.0.0.1:8081")
+    sentinel = object()
+    abuse._CLIENT = sentinel  # type: ignore[assignment]
+    abuse._CLIENT_RESOLVED = True
+    assert abuse._firestore_client() is sentinel
+
+
 @pytest.mark.real_eligibility
 def test_memory_mode_keeps_the_gates_working(monkeypatch: pytest.MonkeyPatch) -> None:
     """Refusing the client must not refuse the FEATURE: the gates have an

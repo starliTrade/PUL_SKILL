@@ -15,7 +15,7 @@
 | لایه | وضعیت | شاهد |
 |---|---|---|
 | قرارداد `PulsarEscrow` | نسخه‌دار، ۱۰۴ تست، ۹۸٫۵۷٪ خطوط | `forge test`, `docs/UPGRADE-PATH.md` |
-| سرور FastAPI | ۵۵۷ تست سبز (۴۱ skip: زنجیره/emulator خاموش)، هدرهای امنیتی، fail-closed | `pytest -q` |
+| سرور FastAPI | ۶۲۳ تست سبز / ۲۵ skip در وضعیت کامل (anvil + API)؛ ۵۷۸ / ۴۱ با همه‌چیز خاموش | `pytest -q` |
 | کلاینت React | ۳۳۲ تست / ۶۷ فایل، tsc + eslint پاک | `npm run lint`, `vitest` |
 | مسیر پول (ranked) | تست یکپارچه + anvil واقعی | `pytest -m chain` |
 | مرورگر واقعی (E2E) | **انجام نشده در این محیط** | `npx playwright install` در sandbox مسدود است |
@@ -72,7 +72,7 @@ bash scripts/verify.sh --strict
 ```bash
 npm run lint                                   # tsc + eslint .
 npx vitest run                                 # انتظار: ~332 تست / 67 فایل
-.venv/bin/python -m pytest -q                  # انتظار: ~557 passed
+.venv/bin/python -m pytest -q                  # انتظار: 578 (همه‌چیز خاموش) تا 623 (anvil + API بالا)
 .venv/bin/python -m py.test -q -m chain        # فقط با anvil بالا
 ```
 
@@ -102,10 +102,22 @@ npm run dev -- --port 3000
 
 نکته‌های واقعی که وقت می‌گیرند:
 
-* **`start_anvil.sh` هر بار redeploy می‌کند** و آدرس escrow عوض می‌شود. اگر ترتیب را رعایت
-  نکنی، API به آدرسی اشاره می‌کند که کد ندارد؛ `/api/health` می‌گوید `escrowConfigured: true`
-  ولی هر دوئل با پیام مبهم شکست می‌خورد. اسکریپت استک این را **قبل از بالا آمدن** چک می‌کند
-  (پس از رفع L-04؛ قبلاً آن گارد کد مرده بود).
+* **`start_anvil.sh --bg` idempotent است، ولی خودِ anvil نه.** دو ادعای رایج غلط است و
+  هر دو را در ۲۰۲۶-۱۰-۲۳ اندازه گرفتم:
+  1. «هر بار redeploy می‌کند و آدرس عوض می‌شود» — نه. اجرای دوم همین اسکریپت چاپ می‌کند
+     `anvil already running …, and the manifest's escrow is on-chain — keeping it` و آدرس
+     همان می‌ماند. و اگر واقعاً از صفر دیپلوی کند (زنجیرهٔ تازه)، آدرس‌ها **باز هم همان‌ها**
+     هستند، چون از همان deployer و همان nonce ساخته می‌شوند (اندازه‌گیری شد:
+     `0x5FbD…0aa3` و `0xe7f1…0512` قبل و بعد از ری‌استارت anvil).
+  2. پس خطر واقعی، عوض شدن آدرس نیست؛ **پاک شدن حالت زنجیره** است: موجودی‌ها، شرط‌های
+     قفل‌شده و مچ‌های settleشده می‌روند، در حالی که آدرس در `local.json` و در env کلاینت
+     دست‌نخورده است. اگر API یا دیتابیس مچی را «در جریان» بداند که شرطش دیگر روی زنجیره
+     نیست، گارد واریز fail-closed جواب می‌دهد (`On-chain duel state cannot be verified`) —
+     این درست است، ولی شبیه باگ دیده می‌شود. قاعده: **بعد از هر ری‌استارت anvil، API و
+     کلاینت را هم ری‌استارت کن و استور را خالی کن.**
+  اسکریپت استک پیش از بالا آمدن چک می‌کند که در آدرس manifest واقعاً کد باشد (پس از رفع
+  L-04؛ قبلاً آن گارد کد مرده بود) — اما این چک فقط «کد هست/نیست» را می‌بیند، نه
+  «حالت همان است که بود».
 * کلاینت باید env را بگیرد (`VITE_GAME_SERVER_URL`, `VITE_ESCROW_ADDRESS`, `VITE_CHAIN_ID`...).
   `playwright.config.ts` این‌ها را از `contracts/deployments/local.json` می‌سازد؛ برای اجرای
   دستی، همان‌ها را در `.env.local` بگذار.
@@ -204,6 +216,24 @@ curl -s https://your-api-host/api/health | python3 -m json.tool
 باید ببینی: `"matchStore": "firestore"`، `"prodLike": true`، `"chainId": 80002`،
 `"escrowConfigured": true`، `"rpc": {"reachable": true}`، `"escrowVersionProblem": null`،
 `"oracleConfigured": true`، و `"rateLimit": {"backend": "firestore"}`.
+
+**و یک چیز که خیلی‌ها اشتباه می‌خوانند (H-17):** `matchStore: "firestore"` یعنی «کلاینت
+ساخته شد»، نه «ذخیره‌سازی کار می‌کند». کلاینت Firestore در سازنده هیچ I/O ندارد؛ با
+project-id غلط یا IAM باطل هم همین مقدار را می‌بینی. سنجهٔ واقعی:
+
+```bash
+curl -s 'https://your-api-host/api/health?deep=1' | python3 -c \
+  "import json,sys; d=json.load(sys.stdin)['store']; print(d['writable'], d.get('probe'))"
+```
+
+* `store.writable`: `null` = هنوز هیچ نوشتنِ واقعی رخ نداده (نه اینکه سالم است)،
+  `true` = آخرین نوشتن موفق، `false` = آخرین نوشتن شکست خورد → `store.lastError`.
+* `store.probe.ok` (فقط با `?deep=1`): یک رفت‌وبرگشتِ **زمان‌دار** (پیش‌فرض ۱٫۵ ثانیه).
+  اگر `false` بود، دیتابیس در دسترس نیست — هرچه `matchStore` بگوید.
+
+در همین محیط (بدون emulator) نتیجهٔ واقعی این بود: `matchStore: firestore`،
+`writable: null`، و `probe: {"ok": false, "error": "no answer within 1500 ms"}` در
+۱٫۵ ثانیه — یعنی همان چیزی که این سنجه برای نشان دادنش ساخته شد.
 
 ### ۶.۵. بدون مرورگر، مسیر پول را از خط فرمان بسنج
 

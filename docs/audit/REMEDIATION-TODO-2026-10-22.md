@@ -47,6 +47,12 @@
 - [x] **H-14** لجر: شمارنده‌ی خطا + هشدار health + **outbox پایدار** (از «فاز بعد» جلوتر رفت: هر settlement شکست‌خورده در `pulsar_ledger_outbox` صف می‌شود و sweep آن را تخلیه می‌کند) — تست `test_ledger_outbox.py`
 - [x] **H-15** میانگین زمان واکنش با شمارنده‌ی نمونه
 - [x] **H-16** CSP + هدرهای امنیتی
+- [x] **H-17** (یافتهٔ جدید، ۲۰۲۶-۱۰-۲۳) health: تفکیک «پیکربندی» از «ذخیره‌سازی کار می‌کند» — شمارندهٔ نوشتن + `store.writable` سه‌حالته + `?deep=1` با مهلت واقعی — تست `test_health_store_signal.py` (۱۳)
+- [x] **H-18** (یافتهٔ جدید) حالت memory در همهٔ ماژول‌ها رعایت می‌شود: `PULSAR_MATCH_STORE=memory` دیگر در `abuse`/`eligibility`/`limits` نادیده گرفته نمی‌شود؛ استور هم در محیط production-like آن را بی‌صدا نمی‌پذیرد؛ لانچر بدون emulator «REFUSING» می‌دهد نه هنگ — تست `test_memory_mode_is_honoured.py` (۹) + `test_e2e_stack_script.py` (۸)
+- [x] **H-19** (یافتهٔ جدید) مسیرهای مطلق sandbox (`/root/workspace/.foundry/bin/cast`) از ۴ نقطه حذف شد؛ `scripts/foundry_bin.py` با اولویت PATH → `~/.foundry/bin` → مسیر قدیمی — تست `test_no_sandbox_paths.py` (۶)
+- [x] **H-20** (یافتهٔ جدید) `chaos_suite.py` به `/api/queue` بدون `rttMs` می‌فرستاد (۴۲۲) و آن را «pairing failed» گزارش می‌کرد؛ سناریوی fail-closed هیچ‌وقت اجرا نمی‌شد — اجرای دوباره: ۲۰ pass / ۴ fail (همه emulator)
+- [x] **H-21** (یافتهٔ جدید) `load/locustfile.py` همان ۴۲۲ را **موفقیت** می‌شمرد؛ ردیف queue در `docs/LOAD-REPORT.md` نامعتبر بود و اکنون با اندازه‌گیری واقعی (p50 ۴ms) جایگزین شد — تست `test_harness_matches_api_contract.py` (۲)
+- [x] **H-22** (یافتهٔ جدید) گیت‌های زندهٔ SIWE با محدودیت ۱۰ nonce در دقیقه برخورد می‌کردند و «assert token is not None» می‌دادند (محدودیت نرخ، با لباس باگ محصول). حالا `Retry-After` را رعایت می‌کنند (تا ۳ تلاش) و ۴۲۹ واقعی بلند شکست می‌خورد — تست `test_rate_limit_is_not_a_failure.py` (۸)
 - [x] **H-17** نرمال‌سازی سند کاربر + `.catch` روی `recordMatch`
 - [x] **H-18** `doc_ref.create` داخل تراکنش ⇒ `tx.create` (نقص #۶ حسابرسی اول)
 
@@ -213,9 +219,27 @@
 | L-07 + L-08 | `63bd35e` | شمارش «نفر» با سقف و برچسب truncation؛ metrics رهاشده‌ها را اعتراف می‌کند | `test_analytics_people.py` (۷), `test_metrics_bounds_honest.py` (۵) | ✅ رفع‌شده |
 | L-12 | `ba634e8` | bot به‌عنوان bot نامیده می‌شود، با شرایط، در ۵ زبان | `LobbyPage.practice.test.tsx` (۳) | ✅ رفع‌شده |
 | L-14 | `f56a139` | `lang`/`dir` قبل از اولین paint + `dir="ltr"` ثابت برای no-JS | `lang-preboot.test.ts` (۱۱) | ✅ رفع‌شده |
+| H-17 | (این کامیت) | `matchStore` فقط پیکربندی است؛ شاهدِ واقعی `store.writable`/`store.probe` | `test_health_store_signal.py` (۱۳) + `test_go_live_runbook.py` (۸) | ✅ رفع‌شده |
+| H-18 | (کامیت H-18) | حالت memory در abuse/eligibility/limits و در استور رعایت می‌شود؛ لانچر بدون DB بالا نمی‌آید | `test_memory_mode_is_honoured.py` (۹) | ✅ رفع‌شده |
+| H-19 | (کامیت H-19) | کشف cast/forge/anvil از PATH و `~/.foundry/bin`، نه مسیر sandbox | `test_no_sandbox_paths.py` (۶) | ✅ رفع‌شده |
+| H-20 | (کامیت H-20) | chaos: `rttMs` در ۴ فراخوانی queue؛ سناریوی fail-closed دوباره اجرا می‌شود | اجرای `chaos_suite.py`: ۲۰ pass / ۴ fail (emulator) | ✅ رفع‌شده |
+| H-21 | (کامیت H-21) | locust: فقط 200 = موفق؛ 422 = شکست؛ 429 جدا شمرده می‌شود + تصحیح `LOAD-REPORT` | `test_harness_matches_api_contract.py` (۲) | ✅ رفع‌شده |
+| H-22 | (کامیت H-22) | گیت‌های زنده `Retry-After` را رعایت می‌کنند، بدون تضعیف محدودیت نرخ | `test_rate_limit_is_not_a_failure.py` (۸) + دو اجرای متوالی زنده (۰٫۲۴s و ۶۰٫۳۳s، هر دو سبز) | ✅ رفع‌شده |
+
+**مشاهدهٔ باز (صادقانه، حل‌نشده):** در یکی از اجراهای کامل،
+`test_chain_smoke.py::test_settlement_with_a_real_oracle_signature_pays_the_winner`
+یک بار شکست خورد و **سه اجرای کامل بعدی سبز بودند** (۶۲۳ pass). علت تأیید نشده است؛
+فرضیهٔ محتمل `deadline` امضای اوراکل است که به زمان **زنجیره** لنگر می‌اندازد و در آن اجرا
+۶۰ ثانیه انتظارِ محدودیت نرخ در همان نشست رخ داده بود — اما این فرضیه اثبات نشده و
+بنابراین به‌عنوان «رفع‌شده» ثبت نمی‌شود. برای بستن آن: اجرای این تست ۲۰ بار پشت‌سرهم روی
+زنجیرهٔ تازه (`for i in $(seq 20); do pytest tests/integration/test_chain_smoke.py; done`).
+اگر تکرار شد، لاگ تراکنش (revert reason + `block.timestamp` در مقابل `proof.deadline`) پاسخ را می‌دهد.
 
 **آیتم‌های باز (به‌ترتیب اجرا):** C-02c (تصمیم محصولی، خارج از کد) و فقط مواردی که به محیط/انسان بیرون نیاز دارند (بخش §۵). همهٔ C، H، M و L در کد بسته شده‌اند؛ جدول زیر فقط تا `C-03` به‌روز بود و اکنون کامیت‌های بعدی هم در آن آمده‌اند.
 
 **دو یافته‌ی جدید در جریان رفع:**
 - **C-04** (مسدودکننده): `POST /api/username/claim` در production همیشه ۴۰۹ برمی‌گرداند — نه به‌خاطر تکراری بودن نام، بلکه چون import دکوراتور تراکنش در نسخه‌ی pin‌شده شکست می‌خورد و استثنا در یک `except` عمومی به ۴۰۹ تبدیل می‌شد.
 - **H-16 (دامنه):** CSP سمت API فقط پاسخ‌های API را می‌پوشاند؛ HTML کلاینت را هاست استاتیک سرو می‌کند و در این مخزن کانفیگ هاست وجود ندارد. سیاست دقیق در `docs/DEPLOYMENT.md §4b` آمده و مالک آن «کانفیگ هاست» است، نه کد.
+- **H-17 (پیدا شده با اجرای واقعی استک، نه با خواندن کد):** `matchStore: "firestore"` که همه‌جا — از جمله `DEPLOYMENT §2/§6` و `INCIDENT-RUNBOOK` — به‌عنوان «durable است» خوانده می‌شد، فقط یعنی «کلاینت ساخته شد». کلاینت Firestore در سازنده I/O ندارد؛ با endpoint مرده هم همان مقدار را برمی‌گرداند (اندازه‌گیری ۲۰۲۶-۱۰-۲۳: `matchStore: firestore`، سپس ۶۰ ثانیه hang در اولین خواندن، چون `get(timeout=3)` مهلت واقعی نیست — retry policy از آن طولانی‌تر است). سه چیز اضافه شد: شمارندهٔ نوشتن/شکست، `store.writable` سه‌حالته (`null` = هرگز آزمایش نشده، نه «سالم»)، و `?deep=1` با مهلت wall-clock در thread. مستندسازی هر سه سند اصلاح شد.
+
+- **H-18…H-21 (همان جلسه، با اجرای واقعی):** (۱۸) حالت memory فقط در استور رعایت می‌شد و سه ماژول کلاینت خودشان را می‌ساختند — نتیجه: ۶۰ ثانیه هنگ در گیت زنده و گزارش «تست خراب است». (۱۹) چهار نقطه مسیر مطلق sandbox داشتند، پس سه گیت روی ماشین تو FileNotFoundError می‌دادند. (۲۰) و (۲۱) دو هارنس به `/api/queue` بدون `rttMs` می‌فرستادند: chaos آن را «pairing failed» می‌خواند و locust آن را **موفقیت** — یعنی ردیف queue در گزارش بار، یک خطای اعتبارسنجی را زمان‌بندی می‌کرد.

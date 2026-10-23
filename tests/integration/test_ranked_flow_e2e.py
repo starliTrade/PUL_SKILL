@@ -70,6 +70,17 @@ def _api(path: str, body: dict | None = None, token: str | None = None, method: 
         with urllib.request.urlopen(req, timeout=30) as res:
             return res.status, json.loads(res.read() or b"{}")
     except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            from tests.fixtures.live_api import wait_and_retry  # noqa: PLC0415
+
+            def _again():
+                with urllib.request.urlopen(req, timeout=30) as res:
+                    return res.status, json.loads(res.read() or b"{}")
+
+            try:
+                return wait_and_retry(exc, _again)
+            except urllib.error.HTTPError as exc2:
+                return exc2.code, json.loads(exc2.read() or b"{}")
         return exc.code, json.loads(exc.read() or b"{}")
 
 
