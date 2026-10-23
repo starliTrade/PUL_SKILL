@@ -62,6 +62,7 @@ previous table said 202/278/81 and was already stale (audit M-17). Run
 | Chain integration (anvil) | 11 tests passing against `scripts/start_anvil.sh --bg` — real `createDuel`/`joinDuel` and a settlement signed by the real `api/oracle.py` |
 | Coverage, hermetic (`.coveragerc-hermetic`) | **74%** over 3937 statements, measured with no emulator and no anvil — this is the gate that must always be green (audit M-15) |
 | Coverage, complete (`.coveragerc`) | 79% floor, only measurable with the Firestore emulator + anvil running; reported as its own gate, skipped loudly when they are absent |
+| Contract coverage (`forge coverage --report summary`) | `PulsarEscrow.sol`: **98.57%** lines (207/210), 98.48% statements, **86.73%** branches, **100%** functions (31/31), measured 2026-10-23 on the same commit |
 
 `forge test` is a CI gate; treat its result as the source of truth for the
 contract suite, never this table. The contract is versioned (`VERSION` /

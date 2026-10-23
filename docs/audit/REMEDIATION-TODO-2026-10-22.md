@@ -59,7 +59,8 @@
 - [x] **M-14** آمار رنکدِ تأییدنشده به‌جای عدد محلی «—» نمایش داده می‌شود — منشأ آمار (`progressionSource: server|local|unknown`) در `UserWalletData`، ست‌شدن در `recordMatch`/`loadUserData`، اکشن `refreshProgression()`، بنر + دکمه‌ی بررسی دوباره در `ProfilePage`، ۵ زبان؛ تست: `usePulsarStore.progression.test.tsx` (۵ جدید) + `ProfilePage.progression.test.tsx` (۴)
 - [ ] **M-10** لاگ تصمیم‌های ادمین
 - [ ] **M-15** coverage: اندازه‌گیری پایدار (بدون وابستگی به emulator)
-- [ ] **M-17** اعداد README از خروجی واقعی
+- [x] **M-17** اعداد README از خروجی واقعی — `scripts/test_counts.py` اکنون forge را هم واقعاً اندازه می‌گیرد و اگر Foundry نبود دلیلش را می‌نویسد؛ جدول README با خروجی ۲۰۲۶-۱۰-۲۳ به‌روز شد (vitest ۲۸۳/۶۱، pytest ۴۸۸/۳۱، forge ۱۰۴/۹، coverage قرارداد ۹۸.۵۷٪)
+- [x] **M-23** اجرای واقعی suite قرارداد و گزارش خروجی — `forge test` (۹ suite، ۱۰۴ تست) و `FOUNDRY_PROFILE=ci` (invariant با ۵۱٬۲۰۰ فراخوانی) هر دو سبز؛ سقف گارد CI از ۷۵ به ۱۰۰ رسید تا حذف ۴ تست را بگیرد؛ `PyYAML` به `requirements-dev` اضافه شد چون بدون آن ۱۸ تست «قرارداد CI» بی‌صدا skip می‌شدند
 - [ ] **M-19/M-21/M-22** حریم خصوصی کاربران، حذف داده، LICENSE/SECURITY
 - [ ] **M-24** خطای ذخیره‌سازی قابل‌مشاهده
 - [x] **M-11** قرارداد نسخه‌دار + پنجره‌ی مهاجرت (proxy رد شد، با دلیل مستند) — `PulsarEscrow.VERSION/VERSION_CODE`، `freeze/unfreeze`، دفتر `totalLocked`/`residualBalance`/`sweepResidual`؛ `api/onchain.escrow_version()` + `escrowVersionProblem` در `/api/health`؛ `docs/UPGRADE-PATH.md`؛ تست: `contracts/test/PulsarEscrowMigration.t.sol` (۱۸)، دو invariant جدید در `PulsarEscrowInvariants.t.sol`، `tests/unit/test_contract_version.py` (۱۲)
@@ -69,7 +70,7 @@
 ### فاز ۴ — نیازمند محیط/انسان (در این سند فقط برنامه)
 
 - [x] اجرای `forge test` + invariant (Foundry) — ۱۰۴ تست در ۹ suite، همه سبز (اجرای واقعی ۲۰۲۶-۱۰-۲۳)
-- [ ] اجرای `forge coverage` — forge 1.7.1 این زیرفرمان را حذف کرده؛ نیاز به `--ir-minimum`/ابزار جایگزین
+- [x] اجرای `forge coverage` — forge 1.7.1 این زیرفرمان را دارد: `PulsarEscrow.sol` = ۹۸.۵۷٪ خطوط، ۹۸.۴۸٪ دستورها، ۸۶.۷۳٪ شاخه‌ها، ۱۰۰٪ توابع (۳۱/۳۱)
 - [ ] اجرای Playwright روی مرورگر واقعی
 - [ ] emulator Firestore + تست integration
 - [x] anvil + تست chain — `scripts/start_anvil.sh --bg` + `pytest -m chain`: ۱۱ تست سبز (مسیر پول با امضای واقعی oracle روی EVM واقعی)

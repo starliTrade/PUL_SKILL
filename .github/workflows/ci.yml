@@ -180,9 +180,12 @@ jobs:
           out="$(forge test --json 2>/dev/null || true)"
           ran="$(printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(len(v.get("test_results",{})) for v in d.values()))')"
           echo "contract tests executed: $ran"
-          # Audit 2026-10-13: the floor was 21 while the suite has ~81 tests, so a
-          # 60-test regression still passed. Keep it near the real count.
-          test "$ran" -ge 75
+          # Audit 2026-10-13: the floor was 21 while the suite had ~81 tests, so a
+          # 60-test regression still passed. Audit M-23 (2026-10-23): the suite is
+          # now 104 tests / 9 suites, measured locally with the same profile this
+          # job uses (FOUNDRY_PROFILE=ci), so the floor moves to 100. Keep it
+          # within a handful of the real count, never a percentage of it.
+          test "$ran" -ge 100
       # Plan item 0.8: the settlement digest / decoder / Solidity contract are a
       # three-way agreement that unit tests cannot verify. Run the real money
       # path against a local EVM.

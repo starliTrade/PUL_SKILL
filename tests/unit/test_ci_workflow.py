@@ -215,8 +215,11 @@ def test_the_contract_test_floor_is_near_the_real_count(workflow: dict):
     scripts = _job_scripts(workflow, "contracts")
     match = re.search(r'test "\$ran" -ge (\d+)', scripts)
     assert match, "no contract-test floor"
-    assert int(match.group(1)) >= 75, (
-        f"the contract-test floor is {match.group(1)} while the suite has ~81 tests"
+    # 2026-10-23: the suite is 104 tests (measured, FOUNDRY_PROFILE=ci). The
+    # floor guards against a regression that deletes tests, so it must sit just
+    # under the real number — 75 allowed 29 tests to vanish without a failure.
+    assert int(match.group(1)) >= 100, (
+        f"the contract-test floor is {match.group(1)} while the suite has 104 tests"
     )
 
 
