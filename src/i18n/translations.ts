@@ -238,9 +238,10 @@ export const translations = {
     freeTrainingBadge: 'Free Training',
 
     // Matchmaking & Lobby Modals
-    opponentSecured: 'OPPONENT READY',
+    practicePartnerReady: 'PRACTICE PARTNER READY',
+    practiceDuelVs: 'Starting practice duel vs {opponent}…',
+    practiceBotNotice: 'Your opponent here is a training bot, not another player. No stake, no payout, no ranking.',
     searchingDuelists: 'PREPARING PRACTICE DUEL',
-    lockingEscrowAgainst: 'Starting duel vs {opponent}...',
     connectingWs: 'Preparing 3-round duel...',
     verifyingAntiCheat: 'Checking input integrity...',
     matchingReflexTier: 'Calibrating difficulty...',
@@ -730,9 +731,10 @@ export const translations = {
     freeTrainingBadge: 'تمرین رایگان',
 
     // Matchmaking & Lobby Modals
-    opponentSecured: 'حریف آماده است',
+    practicePartnerReady: 'حریف تمرینی آماده است',
+    practiceDuelVs: 'شروع دوئل تمرینی با {opponent}…',
+    practiceBotNotice: 'حریف شما اینجا یک ربات تمرینی است، نه یک بازیکن دیگر. بدون شرط، بدون جایزه، بدون رتبه.',
     searchingDuelists: 'آماده‌سازی دوئل تمرینی',
-    lockingEscrowAgainst: 'شروع دوئل با {opponent}...',
     connectingWs: 'آماده‌سازی دوئل ۳ راندی...',
     verifyingAntiCheat: 'بررسی سلامت ورودی...',
     matchingReflexTier: 'تنظیم سطح دشواری...',
@@ -1174,9 +1176,10 @@ export const translations = {
     freeTrainingBadge: 'تدريب مجاني',
 
     // Matchmaking & Lobby Modals
-    opponentSecured: 'الخصم جاهز',
+    practicePartnerReady: 'شريك التدريب جاهز',
+    practiceDuelVs: 'بدء مبارزة تدريبية ضد {opponent}…',
+    practiceBotNotice: 'خصمك هنا روبوت تدريبي، وليس لاعبًا آخر. لا رهان ولا جائزة ولا تصنيف.',
     searchingDuelists: 'تحضير مبارزة تدريبية',
-    lockingEscrowAgainst: 'بدء المبارزة ضد {opponent}...',
     connectingWs: 'تحضير مبارزة من 3 جولات...',
     verifyingAntiCheat: 'فحص سلامة الإدخال...',
     matchingReflexTier: 'ضبط مستوى الصعوبة...',
@@ -1618,9 +1621,10 @@ export const translations = {
     freeTrainingBadge: 'Ücretsiz Antrenman',
 
     // Matchmaking & Lobby Modals
-    opponentSecured: 'RAKİP HAZIR',
+    practicePartnerReady: 'ANTRENMAN ORTAĞI HAZIR',
+    practiceDuelVs: '{opponent} ile antrenman düellosu başlıyor…',
+    practiceBotNotice: 'Buradaki rakibin bir antrenman botu, başka bir oyuncu değil. Bahis yok, ödeme yok, sıralama yok.',
     searchingDuelists: 'ANTRENMAN DÜELLOSU HAZIRLANIYOR',
-    lockingEscrowAgainst: '{opponent} ile düello başlıyor...',
     connectingWs: 'Yüksek frekanslı WebSocket\'e bağlanılıyor...',
     verifyingAntiCheat: 'Girdi bütünlüğü kontrol ediliyor...',
     matchingReflexTier: 'Zorluk seviyesi ayarlanıyor...',
@@ -2062,9 +2066,10 @@ export const translations = {
     freeTrainingBadge: '免费训练',
 
     // Matchmaking & Lobby Modals
-    opponentSecured: '对手已就绪',
+    practicePartnerReady: '训练对手已就绪',
+    practiceDuelVs: '正在开始与 {opponent} 的训练对决…',
+    practiceBotNotice: '这里的对手是训练机器人，不是其他玩家。无押注、无奖金、无排名。',
     searchingDuelists: '正在准备训练对决',
-    lockingEscrowAgainst: '正在开始与 {opponent} 的对决...',
     connectingWs: '正在连接高频 WebSocket...',
     verifyingAntiCheat: '正在检查输入完整性...',
     matchingReflexTier: '正在校准难度...',

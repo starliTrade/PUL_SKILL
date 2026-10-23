@@ -627,18 +627,30 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
               </div>
             </div>
 
+            {/* Audit L-12: this overlay is PRACTICE-ONLY — `handleStartMatchmaking`
+                returns early for real mode, where the server does the matching.
+                Its copy used to say "OPPONENT READY" and "Starting duel vs X",
+                so a bot picked from a 12-name list read as another player. The
+                wording now says what it is, and a line states the terms. */}
             <h3 className="text-base font-bold text-white mb-1">
-              {matchedOpponent ? t('opponentSecured') : t('searchingDuelists')}
+              {matchedOpponent ? t('practicePartnerReady') : t('searchingDuelists')}
             </h3>
             
-            <p className="text-xs text-zinc-400 font-mono mb-6">
+            <p className="text-xs text-zinc-400 font-mono mb-2">
               {matchedOpponent 
-                ? t('lockingEscrowAgainst', { opponent: matchedOpponent })
+                ? t('practiceDuelVs', { opponent: matchedOpponent })
                 : searchStep === 1 
                   ? t('connectingWs')
                   : searchStep === 2
                     ? t('verifyingAntiCheat')
                     : t('matchingReflexTier')}
+            </p>
+
+            <p
+              data-testid="practice-bot-notice"
+              className="text-[10px] text-amber-300/80 max-w-[16rem] mx-auto mb-6 leading-relaxed"
+            >
+              {t('practiceBotNotice')}
             </p>
 
             {!matchedOpponent && (
