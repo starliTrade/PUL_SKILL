@@ -15,12 +15,28 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="application-name" content="PULSAR" />
+    <!-- Audit M-20: a link to the product used to render as a bare text row —
+         no image, no url, and a `summary` card instead of a large one.
+         `__SITE_URL__` is replaced at build time by vite-plugin-seo.ts from
+         VITE_SITE_URL, because og:image MUST be absolute for crawlers. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="PULSAR" />
+    <meta property="og:url" content="__SITE_URL__/" />
     <meta property="og:title" content="PULSAR — Skill Battles" />
-    <meta property="og:description" content="Challenge your skill. Winner takes all." />
-    <meta name="twitter:card" content="summary" />
+    <meta property="og:description" content="Best-of-three reaction duels with real USDT stakes, settled by a non-custodial escrow contract. Winner takes 98%." />
+    <meta property="og:image" content="__SITE_URL__/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="PULSAR — reaction duels, on-chain escrow, 98% payout to the winner" />
+    <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="PULSAR — Skill Battles" />
-    <meta name="twitter:description" content="Challenge your skill. Winner takes all." />
+    <meta name="twitter:description" content="Best-of-three reaction duels with real USDT stakes, settled by a non-custodial escrow contract. Winner takes 98%." />
+    <meta name="twitter:image" content="__SITE_URL__/og-image.png" />
+    <meta name="twitter:image:alt" content="PULSAR — reaction duels, on-chain escrow, 98% payout to the winner" />
     <link rel="icon" type="image/svg+xml" href="/pulsar-logo.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=Noto+Sans+Arabic:wght@300;400;500;600;700;800;900&family=Noto+Sans+SC:wght@300;400;500;600;700;800;900&family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&family=Vazirmatn:wght@200;300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
@@ -742,6 +758,17 @@
   </head>
   <body class="bg-[#050505] text-white overflow-x-hidden antialiased select-none">
     <div id="root"></div>
+    <!-- A JS-less visitor gets an explanation instead of a blank page; the app
+         is a wallet-connected SPA and cannot run without scripts. -->
+    <noscript>
+      <div style="padding:24px;font-family:system-ui,sans-serif;color:#e2e8f0">
+        <h1 style="font-size:18px;margin:0 0 8px">PULSAR needs JavaScript</h1>
+        <p style="margin:0;color:#94a3b8">
+          This is a real-time reaction-duel app that signs transactions in your wallet, so it
+          cannot run without JavaScript. Enable it and reload.
+        </p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

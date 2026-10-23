@@ -30,7 +30,18 @@
  */
 const VERSION = '0.9.0';
 const CACHE = `pulsar-shell-${VERSION}`;
-const SHELL = ['/', '/index.html', '/pulsar-logo.svg', '/favicon.svg', '/manifest.webmanifest'];
+const SHELL = [
+  '/',
+  '/index.html',
+  '/pulsar-logo.svg',
+  '/favicon.svg',
+  '/manifest.webmanifest',
+  // Audit M-20: the install icons the launcher asks for before the first
+  // navigation; without them an installed PWA can show a blank tile offline.
+  '/icon-192.png',
+  '/icon-512.png',
+  '/apple-touch-icon.png',
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

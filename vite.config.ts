@@ -2,10 +2,12 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
+import {seoMetaPlugin} from './vite-plugin-seo';
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    // Audit M-20: fills the absolute URL for og:/twitter: metadata at build time.
+    plugins: [react(), tailwindcss(), seoMetaPlugin()],
     resolve: {
       alias: [
         { find: '@', replacement: path.resolve(__dirname, '.') },

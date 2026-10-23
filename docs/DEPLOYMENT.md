@@ -274,6 +274,7 @@ Set in Freebuff **Settings → Environment** (dev) **and** in
 | `VITE_GAME_SERVER_URL` | e.g. `https://api.yourdomain.com` (no trailing slash) |
 | `VITE_WALLETCONNECT_PROJECT_ID` | From cloud.reown.com — needed for mobile wallets |
 | `VITE_SENTRY_DSN` (optional) | Client error monitoring |
+| `VITE_SITE_URL` | Public origin, e.g. `https://app.yourdomain.com` (no trailing slash). Audit M-20: `og:url` / `og:image` / `twitter:image` must be absolute or link previews lose their image; `vite build` warns when it is unset and ships relative URLs |
 
 **Reown works without a domain.** The Project ID is a public client value (not a
 secret), so you can register at cloud.reown.com and create the project today —

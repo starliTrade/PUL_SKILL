@@ -65,7 +65,8 @@
 - [ ] **M-24** خطای ذخیره‌سازی قابل‌مشاهده
 - [x] **M-11** قرارداد نسخه‌دار + پنجره‌ی مهاجرت (proxy رد شد، با دلیل مستند) — `PulsarEscrow.VERSION/VERSION_CODE`، `freeze/unfreeze`، دفتر `totalLocked`/`residualBalance`/`sweepResidual`؛ `api/onchain.escrow_version()` + `escrowVersionProblem` در `/api/health`؛ `docs/UPGRADE-PATH.md`؛ تست: `contracts/test/PulsarEscrowMigration.t.sol` (۱۸)، دو invariant جدید در `PulsarEscrowInvariants.t.sol`، `tests/unit/test_contract_version.py` (۱۲)
 - [x] **M-12** پارامتر کارمزد ثابت و treasury — تصمیم محصولی در `docs/ECONOMICS.md` ثبت شد (مدل، مثال‌های عددی، ردِ `setFeeBps`، الزام multisig برای treasury، و تحلیل واحد-اقتصاد که می‌گوید L1 با این نردبان استیک توجیه ندارد)؛ تست: `tests/unit/test_economics_doc.py` (۹)
-- [ ] **M-18** نسخه‌بندی service worker — نیازمند تست مرورگر
+- [x] **M-18** نسخه‌بندی service worker — `CACHE` از `VERSION` نسخه می‌گیرد، `install` هیچ‌وقت `skipWaiting()` صدا نمی‌زند و سوئیچ فقط با پیام صفحه انجام می‌شود؛ ۱۱ تست در `src/test/pwa.service-worker.test.ts` خود worker را با scope جعلی بارگذاری و fetch handler را اجرا می‌کنند. **باقی‌مانده (خارج از این محیط):** تأیید واقعی «دهانه‌ی خالی بعد از deploy» در مرورگر
+- [x] **M-20** متادیتای PWA/OG و تصویر واقعی — `og:image` واقعی ۱۲۰۰×۶۳۰ (`public/og-image.png`)، `twitter:card=summary_large_image`، `og:url`/`og:type`/`og:site_name`/`image:alt`، آیکون‌های PNG ۱۹۲/۵۱۲ + maskable + apple-touch، `id`/`lang`/`categories` در manifest، جای‌گذاری `__SITE_URL__` در build با `vite-plugin-seo.ts` (هشدار وقتی `VITE_SITE_URL` ست نشده)، `<noscript>`؛ تست: `src/seo/metadata.test.ts` (۱۴)
 
 ### فاز ۴ — نیازمند محیط/انسان (در این سند فقط برنامه)
 
