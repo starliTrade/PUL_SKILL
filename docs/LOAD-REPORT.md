@@ -43,7 +43,7 @@ handler between request start and response write):
 
 | Route (memory store) | 200 users p50 / p95 | 1000 users p50 / p95 |
 |---|---|---|
-| `POST /api/queue` (join) | 0.9 ms / 2.9 ms | 387 ms / 486 ms |
+| `POST /api/queue` (join) | *invalid — measured a 422; see below* | — |
 | `GET /api/challenges` | 1.0 ms / 29.6 ms | 1 863 ms / 2 108 ms |
 | `GET /api/player/{addr}/stats` | 1.1 ms / 25.9 ms | 1 884 ms / 2 181 ms |
 | `GET /api/health` | 1.0 ms / 34.6 ms | 1 747 ms / 2 186 ms |
@@ -61,6 +61,36 @@ The 1000-user run is therefore a **stability** result, not a latency result: at
 359 req/s and ~16 000 requests, **zero** requests failed and the metrics layer
 reported `routesDropped: 0, complete: true` — the route table did not overflow
 and nothing was silently dropped (see audit L-08).
+
+### One defect this run HID until it was fixed (2026-10-23, audit H-21)
+
+The join task posted the stake **without `rttMs`**, and `/api/queue` requires it
+(the ping cap is an entry gate, audit H-03). Every join answered **422** before
+touching the store — and the profile's rule was "only 5xx is a failure", so all
+of them were recorded as **success**.
+
+That is why the join row above (`p50 0.9 ms`) looked both fast and flawless: it
+was timing a request-validation error. The queue numbers from those runs are
+**invalid and are not quoted**; the row is kept only so the correction has
+something to point at.
+
+Re-measured after the fix — same machine, memory store, 100 virtual users,
+45 s, 150 pre-minted sessions:
+
+| `POST /api/queue` (join) | p50 | p95 | max | requests | failures |
+|---|---:|---:|---:|---:|---:|
+| real join path, `rttMs` sent | **4 ms** | **9 ms** | 183 ms | 2 272 | **0** |
+
+11 % of those joins answered **429** (the per-address limiter, 40/min): that is
+a legitimate answer under load and it is now reported separately by the profile
+(`[load] joins answered non-200 but expected: 429=254`) instead of disappearing
+into the failure count. The remaining ~89 % did the actual work — enqueue, pair,
+persist.
+
+**The lesson for every later run:** a 4xx that means "your payload is wrong" is
+never a success, and "0 failures" is only as meaningful as the predicate behind
+it. `tests/unit/test_harness_matches_api_contract.py` now reads the OpenAPI schema
+and fails if any harness posts to `/api/queue` without the required fields.
 
 ### One defect this run found (2026-10-23)
 

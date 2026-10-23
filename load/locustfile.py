@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import random
+from collections import Counter
 
 from eth_account import Account
 from eth_account.messages import encode_defunct
@@ -38,6 +39,9 @@ _SESSIONS: list[str] = []
 # Address per session, index-aligned. Kept as strings rather than Account
 # objects so a tokens file needs no private keys (audit L-06).
 _PLAYERS: list[str] = []
+
+# Answers that are legitimate under load but are NOT a completed join (H-21).
+_EXPECTED_NON_200: Counter[int] = Counter()
 
 
 def _sign_in(client, account: Account) -> str | None:
@@ -142,6 +146,20 @@ def _require_sessions() -> None:
         )
 
 
+@events.test_stop.add_listener
+def _report_expected(environment, **_kwargs) -> None:
+    """Say out loud how many joins were answered with 409/429 (audit H-21).
+
+    Without this line those answers vanish into "0 failures", which is how a
+    100 %-422 endpoint looked healthy for a month.
+    """
+    if _EXPECTED_NON_200:
+        print(
+            "[load] joins answered non-200 but expected: "
+            + ", ".join(f"{code}={count}" for code, count in sorted(_EXPECTED_NON_200.items()))
+        )
+
+
 class PollingPlayer(HttpUser):
     """
     A player sitting in the lobby: polls the queue state, the challenge list and
@@ -164,21 +182,35 @@ class PollingPlayer(HttpUser):
         """The plan's "1000 concurrent pollers on /api/queue" — the JOIN path.
 
         POST, not GET: this is the endpoint a player hits to enter the queue.
-        A 409/429 is a normal answer under load (already queued / rate limited),
-        so only 5xx counts as a failure.
+
+        Audit H-21 (2026-10-23): this posted the stake ALONE while the endpoint
+        requires an rtt (the ping cap is an entry gate, audit H-03). Every join
+        answered **422** before touching the store, and the old rule — "only 5xx
+        is a failure" — recorded all of them as SUCCESS. That is why the join
+        row in docs/LOAD-REPORT.md looked both fast and flawless: it was timing
+        a request-validation error.
+
+        A 4xx that means "your payload is wrong" is never a success. 409/429 are
+        expected answers under load (already queued / rate limited) and are
+        reported separately so they cannot hide inside the failure count either.
         """
         if not self.token:
             return
         with self.client.post(
             "/api/queue",
-            json={"stake": 1},
+            json={"stake": 1, "rttMs": random.randint(20, 80)},
             name="/api/queue (join)",
             catch_response=True,
         ) as res:
-            if res.status_code >= 500:
-                res.failure(f"{res.status_code}")
-            else:
+            if res.status_code == 200:
                 res.success()
+            elif res.status_code in (409, 429):
+                # Expected: a player already queued, or the per-address limiter.
+                # Reported, not failed — but never counted as a join either.
+                res.success()
+                _EXPECTED_NON_200[res.status_code] += 1
+            else:
+                res.failure(f"unexpected {res.status_code}: {res.text[:120]}")
 
     @task(3)
     def poll_challenges(self) -> None:
