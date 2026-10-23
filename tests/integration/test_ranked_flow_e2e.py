@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +29,9 @@ import urllib.request
 import pytest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from foundry_bin import cast_path  # noqa: E402
+
 MANIFEST = os.path.join(ROOT, "contracts", "deployments", "local.json")
 API = os.environ.get("PULSAR_E2E_API", "http://127.0.0.1:8000")
 STAKE = 1.0
@@ -119,7 +123,7 @@ def _selector(signature: str) -> str:
     import subprocess
 
     return subprocess.run(
-        ["/root/workspace/.foundry/bin/cast", "sig", signature],
+        [cast_path(), "sig", signature],
         capture_output=True,
         text=True,
         check=True,

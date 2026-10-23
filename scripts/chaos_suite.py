@@ -34,6 +34,10 @@ import urllib.error
 import urllib.request
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from foundry_bin import cast_path, foundry_path_env  # noqa: E402
+
 API = "http://127.0.0.1:8000"
 ANVIL = "http://127.0.0.1:8545"
 EMULATOR = "http://127.0.0.1:8081"
@@ -126,7 +130,7 @@ def pair_two_players() -> tuple[str | None, str | None]:
     b = sign_in(m["players"][1]["privateKey"])
     if not a or not b:
         return None, None
-    _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=a)
+    _, body = http(f"{API}/api/queue", "POST", {"stake": 1, "rttMs": 40}, timeout=25, token=a)
     try:
         first = json.loads(body)
     except Exception:  # noqa: BLE001
@@ -137,7 +141,7 @@ def pair_two_players() -> tuple[str | None, str | None]:
         # — "Match not found" on the next call, which looks like a gate failure
         # and is a fixture failure. Say so instead.
         return None, a
-    _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=b)
+    _, body = http(f"{API}/api/queue", "POST", {"stake": 1, "rttMs": 40}, timeout=25, token=b)
     try:
         second = json.loads(body)
     except Exception:  # noqa: BLE001
@@ -153,14 +157,14 @@ def pair_two_players_with(keys: list[str]) -> tuple[str | None, str | None]:
     b = sign_in(keys[1])
     if not a or not b:
         return None, None
-    _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=a)
+    _, body = http(f"{API}/api/queue", "POST", {"stake": 1, "rttMs": 40}, timeout=25, token=a)
     try:
         first = json.loads(body)
     except Exception:  # noqa: BLE001
         return None, a
     if first.get("status") != "waiting":
         return None, a
-    _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=b)
+    _, body = http(f"{API}/api/queue", "POST", {"stake": 1, "rttMs": 40}, timeout=25, token=b)
     try:
         second = json.loads(body)
     except Exception:  # noqa: BLE001
@@ -175,7 +179,7 @@ def _manifest() -> dict:
 
 def _selector(signature: str) -> str:
     out = subprocess.run(
-        ["/root/workspace/.foundry/bin/cast", "sig", signature],
+        [cast_path(), "sig", signature],
         capture_output=True,
         text=True,
         check=True,
@@ -258,7 +262,7 @@ def api_up() -> bool:
 
 
 def start_anvil() -> None:
-    env = dict(os.environ, PATH=os.environ.get("PATH", "") + ":/root/workspace/.foundry/bin")
+    env = dict(os.environ, PATH=foundry_path_env())
     subprocess.run(["bash", f"{ROOT}/scripts/start_anvil.sh", "--bg"], env=env,
                    capture_output=True, timeout=180)
     for _ in range(40):
