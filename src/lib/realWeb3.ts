@@ -19,6 +19,7 @@ import { clearSaveFailure, reportSaveFailure } from './saveStatus';
 // `reportError` is a no-op until Sentry is loaded, so this costs nothing when
 // monitoring is not configured (and never throws).
 import { reportError } from './monitoring';
+import { floorToDecimals } from './money';
 
 export const getWalletConnectProjectId = (): string => {
   if (typeof window !== 'undefined') {
@@ -1356,9 +1357,15 @@ class RealWeb3Manager {
         }
         const usdt = parseFloat(ethers.formatUnits(usdtRaw, decimals));
 
+        // Audit 2026-10-24: these used `Math.round(...)`, which rounds UP. The
+        // balance feeds a sufficiency gate (`LobbyPage`: `balance < stake`), so
+        // a wallet holding 4.996 USDT displayed 5.00 and passed the `stake = 5`
+        // gate — then the contract rejected the transaction in the player's
+        // wallet. Truncation errs downward, which never lets a player sign a
+        // duel they cannot pay for.
         return {
-          usdt: isNaN(usdt) ? 0 : Math.round(usdt * 100) / 100,
-          pol: isNaN(pol) ? 0 : Math.round(pol * 10000) / 10000,
+          usdt: floorToDecimals(usdt, 2),
+          pol: floorToDecimals(pol, 4),
           ok: true,
         };
       } catch (err) {
