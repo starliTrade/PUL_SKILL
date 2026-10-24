@@ -15,7 +15,7 @@
 | لایه | وضعیت | شاهد |
 |---|---|---|
 | قرارداد `PulsarEscrow` | نسخه‌دار، **۱۰۷ تست اجرا شد** (۱۰ سوئیت، ۹۸٫۵۷٪ خطوط) — Foundry در همین جلسه نصب و اجرا شد | `forge test` |
-| سرور FastAPI | **۶۷۹ تست سبز / ۲۵ skip** با anvil روشن؛ **۶۶۸ / ۳۶** با anvil خاموش (سوئیت‌های زنجیره skip می‌شوند) | `pytest -q` |
+| سرور FastAPI | **۷۰۶ تست سبز / ۲۵ skip** با anvil و API روشن؛ **۷۰۱ / ۳۰** با هر دو خاموش (سوئیت‌های زنجیره و store skip می‌شوند) | `pytest -q` |
 | کلاینت React | **۳۵۷ تست / ۷۱ فایل**، tsc + eslint پاک | `npm run lint`, `vitest` |
 | مسیر پول (ranked) | **۱۱ تست `-m chain` روی anvil واقعی، سبز** — امضای واقعی `api/oracle.py` توسط قرارداد پذیرفته شد | `pytest -m chain` |
 | فاز عمیق قرارداد | **۷ invariant × ۱٬۰۲۴×۵۰۰ (۳٬۵۸۴٬۰۰۰ فراخوانی)** و ۵ تست fuzz × ۱۰٬۰۰۰ اجرا؛ revertهای بی‌طبقه‌بندی بسته شد و همین پروفایل حالا در CI شبانه اجرا می‌شود | `cd contracts && FOUNDRY_PROFILE=nightly forge test` (شبانه در CI، نه هر PR) |
@@ -75,7 +75,7 @@ bash scripts/verify.sh --strict
 ```bash
 npm run lint                                   # tsc + eslint .
 npx vitest run                                 # انتظار: 357 تست / 71 فایل
-.venv/bin/python -m pytest -q                  # انتظار: 668 (anvil خاموش) تا 679 (anvil بالا)
+.venv/bin/python -m pytest -q                  # انتظار: 701 (همه خاموش) تا 706 (anvil + API بالا)
 .venv/bin/python -m py.test -q -m chain        # فقط با anvil بالا
 ```
 

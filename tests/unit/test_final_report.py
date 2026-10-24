@@ -72,7 +72,7 @@ def test_the_gate_table_uses_the_counts_the_suite_reports() -> None:
     # Cross-checks against files that are themselves enforced by other tests:
     # README's measured table and the coverage config's floor.
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    m = re.search(r"Server \(pytest\) \| (\d+) passed / (\d+) skipped with anvil running", readme)
+    m = re.search(r"Server \(pytest\) \| (\d+) passed / (\d+) skipped with anvil[^|;]*running", readme)
     assert m, "README lost its measured pytest row"
     assert f"**{m.group(1)} pass / {m.group(2)} skip**" in DOC, (
         f"the report and README disagree about pytest ({m.group(1)}/{m.group(2)})"

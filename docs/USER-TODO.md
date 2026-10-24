@@ -86,17 +86,31 @@
 | `ruff check` | پاک | — |
 | `mypy api` | `no issues` (۲۲ فایل) | قرارداد تایپ شکسته |
 | `pytest` هرمتیک + coverage | ≥ **۷۷٪** (امروز **۷۸٪**) | کد جدید بدون تست |
-| `pytest` کامل | **۶۷۹ pass / ۲۵ skip** با anvil · **۶۶۸ / ۳۶** بدون anvil | skip بیشتر از ۳۶ = سرویس بالا نیست |
+| `pytest` کامل | **۷۰۶ pass / ۲۵ skip** با anvil و API · **۷۰۱ / ۳۰** بدون | skip بیشتر از ۳۰ = سرویس بالا نیست |
 | `forge test` | **۱۰۷ تست / ۱۰ سوئیت** | `lib/` ناقص است (0.7) |
 | contract coverage | ≥ ۹۵٪ خط (امروز ۹۸٪) | — |
 | Playwright | **≥ ۲۰** (کامل: ۳۰) | مرورگر نصب نیست → فاز ۴ |
 | live-stack | سبز | پورت اشغال → `bash scripts/start_e2e_stack.sh --stop` |
 
 - [ ] **1.3** شمارش گیت‌ها را خودت ببین: `grep -c 'run_gate "' scripts/verify.sh` → **22**.
-- [ ] **1.4** ببین کدام گیت‌ها `skip_gate` خوردند (۱۶ جای ممکن). یک گیتِ **SKIP سبز نیست**؛ فازهای
-  ۳ و ۴ همان‌ها را می‌بندند.
+- [ ] **1.4** ببین کدام گیت‌ها `skip_gate` خوردند (۱۶ جای ممکن). یک گیتِ **SKIP سبز نیست**.
+
+- [ ] **1.5** **این عدد را با من مقایسه کن.** در محیطی که Firestore و مرورگر ندارد (دقیقاً همین sandbox)،
+  `bash scripts/verify.sh` با `PULSAR_E2E_STORE=memory` این را می‌دهد:
+
+  ```
+  passed: 17   failed: 4   skipped: 1
+  failed: playwright · live-stack · runbook drill · chaos
+  ```
+
+  و هر چهار شکست **یک علت** دارند: نبودِ Firestore emulator یا مرورگر. پیام‌ها را بخوان:
+  `REFUSING TO START … firestore`، `only 0 E2E tests ran`،
+  `matchStore is firestore … memory`، `the emulator is up before the scenario`.
+  اگر روی ماشین تو با Java نصب‌شده و مرورگرِ نصب‌شده **باز هم** یکی از این چهار شکست خورد،
+  آن‌وقت باگ واقعی است — نه محیط. فازهای ۳ و ۴ همان چهار گیت را می‌بندند.
 
 **شرط عبور فاز ۱:** `verify.sh` با کد ۰ تمام شود **و** بدانی کدام گیت‌ها skip شدند (لیست را بنویس).
+اگر در محیطی هستی که Firestore و Playwright دارد و باز هم قرمز شد، آن قرمز **مالِ توست**، نه محیط.
 
 ---
 
@@ -356,7 +370,7 @@ curl -s localhost:8000/api/health | jq '{ok,chainId,escrowConfigured,rpc}'
 
 | نشانه | معنی | کار |
 |---|---|---|
-| `pytest` کمتر از ۶۶۸ | یا محیط فرق دارد یا سرویس بالا نیست | `-rs` بزن و دلیل skip‌ها را بخوان |
+| `pytest` کمتر از ۷۰۱ | یا محیط فرق دارد یا سرویس بالا نیست | `-rs` بزن و دلیل skip‌ها را بخوان |
 | coverage زیر ۷۷ | کد جدید بدون تست | تست بنویس؛ کف را پایین نیاور |
 | `forge test` کامپایل نمی‌شود | `lib/` ناقص یا نسخهٔ solc | فاز ۰.۷ و ۰.۴ |
 | `execution reverted` در settle | deadline گذشته، یا chainId/escrow غلط | `docs/CONTRACT-FUZZ-REPORT.md §4`؛ لاگ `chain_smoke` |

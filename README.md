@@ -75,10 +75,10 @@ previous table said 202/278/81 and was already stale (audit M-17). Run
 | Suite | Count (last measured in this repository) |
 |---|---|
 | Frontend (vitest) | 357 tests, 71 files (measured 2026-10-24) |
-| Server (pytest) | 679 passed / 25 skipped with anvil running; 668 / 36 with anvil stopped (the chain suites skip), measured 2026-10-24 |
-| Contract (forge, `default`) | 104 tests, 9 suites, measured 2026-10-23 (forge 1.7.1, forge-std + OpenZeppelin v5.0.2). The sandbox cannot reach `binaries.soliditylang.org`, so forge was driven with the `solc-js` 0.8.20 build already in `node_modules` via a small shim — the compiler and the tests are real, the toolchain path is not the default one |
+| Server (pytest) | 706 passed / 25 skipped with anvil and the local API running; 701 / 30 with neither (the chain and store suites skip), measured 2026-10-24 |
+| Contract (forge, `default`) | 107 tests, 10 suites, measured 2026-10-24 (forge 1.7.1, forge-std v1.9.7 + OpenZeppelin v5.7.0). The sandbox cannot reach `binaries.soliditylang.org`, so forge was driven with the `solc-js` 0.8.20 build already in `node_modules` via a small shim — the compiler and the tests are real, the toolchain path is not the default one |
 | Chain integration (anvil) | 11 tests passing against `scripts/start_anvil.sh --bg` — real `createDuel`/`joinDuel` and a settlement signed by the real `api/oracle.py` |
-| Contract (forge, `nightly`) | **104 tests, 0 failed in 21 min** — 5 fuzz tests × 10,000 runs (50,000 cases) and 6 invariants × 1,024 runs × 500 depth (**3,072,000 calls**), run 2026-10-23. The profile had never been executed before; the report records where the pass is weaker than its numbers suggest: [docs/CONTRACT-FUZZ-REPORT.md](docs/CONTRACT-FUZZ-REPORT.md) |
+| Contract (forge, `nightly`) | 5 fuzz tests × 10,000 runs (50,000 cases) and **7 invariants** × 1,024 runs × 500 depth (**3,584,000 calls**), measured 2026-10-24 in 18 min 10 s with zero reverts. The first run (2026-10-23, 104 tests, 6 invariants) took 21 min and exposed that 28 % of `join` calls were unclassified reverts; that weakness is now closed and the profile runs nightly in CI. Report: [docs/CONTRACT-FUZZ-REPORT.md](docs/CONTRACT-FUZZ-REPORT.md) |
 | Coverage, hermetic (`.coveragerc-hermetic`) | **78%** over 4314 statements (969 missed), floor 77, measured three times on 2026-10-23 with no emulator and no anvil — this is the gate that must always be green (audit M-15) |
 | Coverage, complete (`.coveragerc`) | 79% floor, only measurable with the Firestore emulator + anvil running; reported as its own gate, skipped loudly when they are absent |
 | Contract coverage (`forge coverage --report summary`) | `PulsarEscrow.sol`: **98.57%** lines (207/210), 98.48% statements, **86.73%** branches, **100%** functions (31/31), measured 2026-10-23 on the same commit |
@@ -131,3 +131,9 @@ contract suite, never this table. The contract is versioned (`VERSION` /
 The full runbook — env vars, Amoy rehearsal, oracle key handling — lives in
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Incident response is in
 [`docs/INCIDENT-RUNBOOK.md`](docs/INCIDENT-RUNBOOK.md).
+
+If you are the person who has to actually do this, start with
+[`docs/USER-TODO.md`](docs/USER-TODO.md): eleven phases, a checkbox per step, the
+exact command, the expected output, and the condition that lets you move on.
+[`docs/MANUAL-CHECKLIST.md`](docs/MANUAL-CHECKLIST.md) explains *why* each phase
+exists.

@@ -157,7 +157,7 @@ def _readme_row(pattern: str) -> tuple[str, str] | None:
 
 
 def test_the_counts_it_quotes_are_the_ones_the_repo_reports() -> None:
-    pytest_row = _readme_row(r"Server \(pytest\) \| (\d+) passed / (\d+) skipped with anvil running")
+    pytest_row = _readme_row(r"Server \(pytest\) \| (\d+) passed / (\d+) skipped with anvil[^|;]*running")
     assert pytest_row, "README lost its measured pytest row"
     assert f"**{pytest_row[0]} pass / {pytest_row[1]} skip**" in DOC
 
@@ -174,7 +174,7 @@ def test_the_gate_count_is_the_script_s_gate_count() -> None:
     script = (ROOT / "scripts" / "verify.sh").read_text(encoding="utf-8")
     gates = len(re.findall(r'^\s*run_gate "', script, re.M))
     skips = len(re.findall(r"\s*skip_gate \"", script))
-    assert f'**22**' in DOC and gates == 22, f"verify.sh has {gates} gates"
+    assert "**22**" in DOC and gates == 22, f"verify.sh has {gates} gates"
     assert f"`skip_gate` خوردند ({skips} جای ممکن)" in DOC, f"verify.sh has {skips} skips"
 
 
