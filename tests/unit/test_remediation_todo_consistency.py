@@ -75,3 +75,25 @@ def test_every_row_that_says_done_names_a_test() -> None:
         assert re.search(r"`[^`]+`|\.test\.|\.t\.sol|probe", cells[3]), (
             f"row claims done with no test artifact: {cells[0]}"
         )
+
+def test_no_identifier_means_two_different_findings() -> None:
+    """An audit trail with duplicate ids is not an audit trail.
+
+    Found on 2026-10-24: `H-17` and `H-18` each name TWO unrelated findings —
+    the original RUTHLESS-AUDIT ones (`recordMatch`/`history`, `doc_ref.create`)
+    and the ones this session found (`store.writable`, memory mode). The history
+    is not rewritten (commits and code cite those ids), so the collision is
+    documented in the document itself instead.
+
+    This test allows exactly that documented pair and fails on any NEW reuse.
+    """
+    ids = re.findall(r"^- \[[ x]\] \*\*([A-Z]-[0-9]+[a-z]?)\*\*", DOC, re.M)
+    duplicated = sorted({i for i in ids if ids.count(i) > 1})
+    assert duplicated == ["H-17", "H-18"], (
+        f"new identifier reuse: {duplicated}. Give the new finding its own id — a "
+        "reader cannot look up an id that means two things"
+    )
+    # And the collision must stay documented, with both meanings named.
+    assert "برخورد شناسه" in DOC
+    for meaning in ("store.writable", "recordMatch", "history", "memory"):
+        assert meaning in DOC, f"the collision note lost the meaning of {meaning}"
