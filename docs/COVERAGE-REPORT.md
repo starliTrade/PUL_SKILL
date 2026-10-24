@@ -31,16 +31,25 @@ not measured here** and this document does not claim it.
 
 ## 2. The number, before and after this audit pass
 
-| module | before | after | what moved it |
-|---|---:|---:|---|
-| `onchain.py` | 81 % | **90 %** | `verify_settlement_tx` had **zero** direct tests (H-26) |
-| `main.py` | 74 % | 74 % | — (see §3) |
-| `oracle.py` | 86 % | 86 % | one branch (unknown horizon) added by H-25 |
-| `store.py` | 71 % | 71 % | Firestore-only code (see §3) |
-| `signer.py` | 69 % | 69 % | KMS/HSM paths, no hardware here |
-| `privacy.py` | 47 % | 47 % | export/delete against Firestore |
-| **TOTAL** | **77 %** | **78 %** | |
-| hermetic floor | 74 | **77** | ratcheted in the same commit, per the rule in the config |
+Two configurations produce two numbers. Quoting one without the other is how the
+old single gate became a coin flip, so both are given, and the column says which
+is which.
+
+| module | full run, before | full run, after | hermetic, after | what moved it |
+|---|---:|---:|---:|---|
+| `onchain.py` | 81 % | **90 %** | 87 % | `verify_settlement_tx` had **zero** direct tests (H-26); the gap between the two columns is the chain-marked integration tests, deselected hermetically |
+| `main.py` | 74 % | 74 % | 74 % | — (see §3) |
+| `oracle.py` | 86 % | 86 % | 86 % | one branch (unknown horizon) added by H-25 |
+| `store.py` | 71 % | 71 % | 71 % | Firestore-only code (see §3) |
+| `signer.py` | 69 % | 69 % | 69 % | KMS/HSM paths, no hardware here |
+| `privacy.py` | 47 % | 47 % | 47 % | export/delete against Firestore |
+| **TOTAL** | **77 %** (988 missed) | **78 %** (957 missed) | **78 %** (969 missed) | |
+| statements | — | 4314 | 4314 | |
+| floor | 74 (hermetic) | **77** (hermetic) | 77 | ratcheted in the same commit, per the rule in the config |
+
+The two totals agree at 78 % by coincidence, not by construction: the full run
+executes more lines (the chain suites) and also counts more missed lines in code
+that only the emulator would reach.
 
 ---
 
@@ -84,7 +93,7 @@ is recorded" while the verification itself was assumed.
 The match-key derivation is also cross-checked against `tests/fixtures/chain.py`,
 which documents that its own derivation must equal the server's.
 
-**Still open, ranked by what a bug there would cost:**
+**Still open, ranked by what a bug there would cost** (hermetic line numbers):
 
 | # | area | lines | what it would cost | effort |
 |---|---|---|---|---|

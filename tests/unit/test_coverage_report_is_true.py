@@ -28,7 +28,9 @@ def test_the_floor_it_quotes_is_the_floor_in_the_config() -> None:
     match = re.search(r"^fail_under\s*=\s*(\d+)", HERMETIC.read_text(encoding="utf-8"), re.M)
     assert match, ".coveragerc-hermetic has no fail_under"
     floor = match.group(1)
-    assert f"| hermetic floor | 74 | **{floor}** |" in _text(), (
+    # The floor moved out of a single "hermetic floor" row into the per-column
+    # table in §2; the assertion followed it there.
+    assert f"| floor | 74 (hermetic) | **{floor}** (hermetic) | {floor} |" in _text(), (
         f"the report does not say the floor is now {floor}"
     )
 
