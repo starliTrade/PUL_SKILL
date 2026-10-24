@@ -186,7 +186,7 @@
 
 ### ۳.۴ چک‌لیست اجرای Amoy (به‌ترتیب)
 
-1. `forge script script/Deploy.s.sol --rpc-url $AMOY_RPC --broadcast` (با `ORACLE_ADDRESS` و `TREASURY`).
+1. `forge script script/Deploy.s.sol --rpc-url $AMOY_RPC --broadcast` (با `ORACLE_SIGNER_ADDRESS` و `TREASURY_ADDRESS` و `DEPLOYER_PRIVATE_KEY` — نام‌های `Deploy.s.sol`).
 2. توکن USDT تستی را deploy یا از faucet بگیر؛ `VITE_USDT_ADDRESS` را ست کن.
 3. env سرور: `PULSAR_ENV=production`, `PULSAR_MATCH_STORE=firestore`, `ESCROW_ADDRESS`, `ESCROW_RPC_URL`, `ORACLE_PRIVATE_KEY`, `ORACLE_CHAIN_ID=80002`, `ORACLE_SIGNING_SECRET`, `ALLOWED_DOMAIN`, `CORS_ALLOW_ORIGINS`, `ALLOWED_HOSTS`, `ADMIN_SECRET`.
 4. env کلاینت: `VITE_CHAIN_ID=80002`, `VITE_ESCROW_ADDRESS`, `VITE_USDT_ADDRESS`, `VITE_GAME_SERVER_URL`, `VITE_WALLETCONNECT_PROJECT_ID`.

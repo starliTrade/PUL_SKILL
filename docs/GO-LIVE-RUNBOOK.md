@@ -14,11 +14,11 @@
 
 | لایه | وضعیت | شاهد |
 |---|---|---|
-| قرارداد `PulsarEscrow` | نسخه‌دار، **۱۰۴ تست اجرا شد** (۹ سوئیت، ۹۸٫۵۷٪ خطوط) — Foundry در همین جلسه نصب و اجرا شد | `forge test` |
+| قرارداد `PulsarEscrow` | نسخه‌دار، **۱۰۷ تست اجرا شد** (۱۰ سوئیت، ۹۸٫۵۷٪ خطوط) — Foundry در همین جلسه نصب و اجرا شد | `forge test` |
 | سرور FastAPI | **۶۷۹ تست سبز / ۲۵ skip** با anvil روشن؛ **۶۶۸ / ۳۶** با anvil خاموش (سوئیت‌های زنجیره skip می‌شوند) | `pytest -q` |
 | کلاینت React | **۳۵۷ تست / ۷۱ فایل**، tsc + eslint پاک | `npm run lint`, `vitest` |
 | مسیر پول (ranked) | **۱۱ تست `-m chain` روی anvil واقعی، سبز** — امضای واقعی `api/oracle.py` توسط قرارداد پذیرفته شد | `pytest -m chain` |
-| فاز عمیق قرارداد | **۱۰۴ تست / ۰ شکست در ۲۱ دقیقه** — ۵ تست fuzz × ۱۰٬۰۰۰ اجرا و ۶ invariant × ۱٬۰۲۴×۵۰۰ (**۳٬۰۷۲٬۰۰۰ فراخوانی**) | `cd contracts && FOUNDRY_PROFILE=nightly forge test` (اجرای شبانه، نه هر PR) |
+| فاز عمیق قرارداد | **۷ invariant × ۱٬۰۲۴×۵۰۰ (۳٬۵۸۴٬۰۰۰ فراخوانی)** و ۵ تست fuzz × ۱۰٬۰۰۰ اجرا؛ revertهای بی‌طبقه‌بندی بسته شد و همین پروفایل حالا در CI شبانه اجرا می‌شود | `cd contracts && FOUNDRY_PROFILE=nightly forge test` (شبانه در CI، نه هر PR) |
 | سلامت ذخیره‌سازی (H-17) | `store.writable` + `?deep=1` با مهلت واقعی؛ روی endpoint مرده در ۱٫۵ ثانیه «ok: false» داد | `test_health_store_signal.py` |
 | هارنس‌ها (H-19…H-22) | cast از PATH/`~/.foundry/bin`؛ chaos ۲۰ pass؛ locust فقط 200=موفق؛ ۴۲۹ رعایت می‌شود | `test_no_sandbox_paths.py`, `test_rate_limit_is_not_a_failure.py` |
 | مرورگر واقعی (E2E) | **انجام نشده در این محیط** | `npx playwright install` در sandbox مسدود است |
@@ -181,7 +181,7 @@ npx playwright show-report
 ```bash
 export DEPLOYER_PRIVATE_KEY=0x...     # کیف گس؛ هرگز همان کلید اوراکل نباشد
 export TREASURY_ADDRESS=0x...         # ۲٪ به اینجا می‌رود
-export ORACLE_ADDRESS=0x...           # آدرس عمومیِ کلید امضا
+export ORACLE_SIGNER_ADDRESS=0x...    # آدرس عمومیِ کلید امضا (سرور آن را ORACLE_ADDRESS می‌نامد)
 forge script script/Deploy.s.sol --rpc-url https://rpc-amoy.polygon.technology --broadcast
 # خروجی: آدرس MockUSDT و PulsarEscrow را بردار
 cast call $ESCROW "VERSION()(string)" --rpc-url https://rpc-amoy.polygon.technology   # باید 2.0.0

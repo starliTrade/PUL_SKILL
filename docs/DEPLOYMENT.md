@@ -29,7 +29,7 @@ First scaffold forge-std (one time) and run the test suite on your machine:
 
 ```bash
 cd contracts && forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-commit
-forge test        # 104 tests / 9 suites: replay, forged sig, high-s, deadlines,
+forge test        # 107 tests / 10 suites: replay, forged sig, high-s, deadlines,
                   # refunds, tokens, invariants, versioning + migration window
 ```
 

@@ -3,6 +3,9 @@
 **هدف این سند:** هر کاری که در sandbox انجام نشد (یا نمی‌شد) و فقط روی ماشین تو معنا دارد، به‌صورت
 **گام‌به‌گام، با دستور دقیق، خروجی مورد انتظار، و معنای شکست**. هر گام یک چک‌باکس دارد.
 
+> **نسخهٔ عملیاتی:** همین مسیر، ولی ریزتر و با چک‌باکسِ هر قدم، در **`docs/USER-TODO.md`** است
+> (۱۱ فاز، ~۸۰ قدم، با «شرط عبور» برای هر فاز). اگر فقط یکی را می‌خوانی، آن یکی.
+
 **قاعده:** اگر خروجی با «انتظار» یکی نبود، **متوقف شو** و به بخش ۱۰ برو. عدد را عوض نکن تا سبز شود؛
 عددِ متفاوت یعنی محیط تو با این محیط فرق دارد و باید بفهمی کدام.
 
@@ -51,7 +54,7 @@ bash scripts/verify.sh
 | `ruff check` / `mypy api` | پاک / `no issues in 22 files` | خطای تایپ در پایتون = قرارداد شکسته |
 | `pytest` (coverage هرمتیک) | **≥ ۷۷٪** (امروز **۷۸٪**، ۴۳۱۴ statement) | افت پوشش = کد جدید بدون تست |
 | `pytest` کامل | **۶۷۹ pass / ۲۵ skip** با anvil؛ ۶۶۸/۳۶ بدون | skip بیشتر از ۳۶ = سرویس لازم بالا نیست |
-| `forge test` | **۱۰۴ تست / ۹ سوئیت** | اگر کامپایل نشد، `lib/` را چک کن (گام ۰) |
+| `forge test` | **۱۰۷ تست / ۱۰ سوئیت** | اگر کامپایل نشد، `lib/` را چک کن (گام ۰) |
 | contract coverage | **≥ ۹۵٪** خطوط (امروز ۹۸٫۵۷٪) | — |
 | Playwright | **≥ ۲۰ تست** | اگر مرورگر نصب نیست، گام ۴ را اول بزن |
 | live-stack | سبز (API روی ۸۰۰۰) | پورت اشغال است — `start_e2e_stack.sh --stop` |
@@ -162,11 +165,12 @@ npm run test:e2e
 ## گام ۷ — Amoy: اولین تراکنش واقعی (نیم‌روز) ⬜
 
 ```bash
-# ۷.۱ دیپلوی
+# ۷.۱ دیپلوی — سه نام env که Deploy.s.sol واقعاً می‌خواند:
 cd contracts
-ORACLE_ADDRESS=0x… TREASURY=0x… forge script script/Deploy.s.sol \
-  --rpc-url "$AMOY_RPC" --broadcast --verify
+DEPLOYER_PRIVATE_KEY=0x… TREASURY_ADDRESS=0x… ORACLE_SIGNER_ADDRESS=0x… \
+  forge script script/Deploy.s.sol --rpc-url "$AMOY_RPC" --broadcast
 # خروجی: آدرس PulsarEscrow و MockUSDT را بردار
+# توجه: سرور همین آدرس را با نام ORACLE_ADDRESS می‌خواند — همان آدرس، دو اسم.
 
 # ۷.۲ env سرور (لیست کامل در .env.example)
 PULSAR_ENV=production PULSAR_MATCH_STORE=firestore \
