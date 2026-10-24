@@ -11,6 +11,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The deep contract campaign is too slow for a PR (~21 min); it runs here.
+  schedule:
+    - cron: '0 3 * * *'   # 03:00 UTC nightly
+  workflow_dispatch:
 
 concurrency:
   # A superseded run on the same ref is cancelled: the newest commit is the one
@@ -200,6 +204,90 @@ jobs:
         run: python3 -m pytest -q -m chain
       - name: Contract compile gate (solc 0.8.20, paris + shanghai)
         run: bun run test:contract
+
+  # --- The deep campaign, which ran NOWHERE -----------------------------------
+  #
+  # Audit 2026-10-24: `contracts/foundry.toml` has carried a `[profile.nightly]`
+  # since CT14 (`fuzz.runs = 10000`, `invariant.runs = 1024 depth = 500`), and
+  # no workflow, script or CI job ever selected it. The deepest configuration in
+  # the repository was a number in a file. It takes ~21 minutes on 2 vCPUs
+  # (measured), which is why it is not a PR gate — and why "it exists" was never
+  # the same as "it runs".
+  #
+  # Scheduled + manual, on the same pinned toolchain and the same pinned test
+  # dependencies as the `contracts` job. A red run here is a real finding: the
+  # default profile only explores 256 fuzz runs and 64x100 invariant calls.
+  nightly-contracts:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.5
+      - name: Install Solidity test dependencies (forge-std + OpenZeppelin)
+        run: |
+          set -euo pipefail
+          cd contracts
+          test -d lib/forge-std || git clone --depth 1 --branch v1.9.7 \
+            https://github.com/foundry-rs/forge-std.git lib/forge-std
+          test -d lib/openzeppelin-contracts || git clone --depth 1 --branch v5.7.0 \
+            https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts
+          test -f lib/forge-std/src/Test.sol
+          test -f lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol
+      - name: forge test --profile nightly (fuzz 10k, invariant 1024x500)
+        # ONE run, machine-readable, summarised by the next step.
+        #
+        # The first draft ran `forge test -vvv` here and then `forge test --json`
+        # in the guard — on this profile that is the whole ~30-minute campaign
+        # twice. A guard that doubles the cost of the thing it guards is how a
+        # nightly job gets disabled.
+        env:
+          FOUNDRY_PROFILE: nightly
+        run: |
+          set -euo pipefail
+          cd contracts
+          forge test -vvv --json > /tmp/forge-nightly.json
+      - name: Assert the deep campaign actually ran, with the deep budgets
+        # `always()`: when `forge test` fails it exits non-zero and the log holds
+        # only the JSON, so this step is what names the failing tests. It cannot
+        # mask the failure — the job has already failed by then.
+        if: always()
+        # The same guard the `contracts` job needed (CI-1): a green forge run
+        # that executed the DEFAULT budgets would look identical to this one.
+        # Read the profile back, then summarise the run that just happened.
+        #
+        # Written with `python3 -c`/a script on purpose: a heredoc inside a YAML
+        # block scalar needs its terminator unindented, and an indented one is
+        # silently just input — the gate would "pass" by never running.
+        run: |
+          set -euo pipefail
+          cd contracts
+          python3 -c "import tomllib;c=tomllib.load(open('foundry.toml','rb'))['profile']['nightly'];f=c['fuzz']['runs'];i=c['invariant'];assert f==10000,'fuzz budget is %d' % f;assert i['runs']==1024 and i['depth']==500,i;print('nightly budgets: fuzz=%d invariant=%dx%d' % (f,i['runs'],i['depth']))"
+          python3 - <<'PYEOF'
+          import json, sys
+          data = json.load(open("/tmp/forge-nightly.json"))
+          ran = passed = failed = 0
+          for suite, body in data.items():
+              for name, result in body.get("test_results", {}).items():
+                  ran += 1
+                  status = result.get("status")
+                  if status == "Success":
+                      passed += 1
+                  else:
+                      failed += 1
+                      print(f"FAILED {suite}::{name}: {result.get('reason')}")
+          print(f"deep campaign: {ran} tests, {passed} passed, {failed} failed")
+          if ran < 100:
+              sys.exit(f"expected >= 100 tests in the deep campaign, ran {ran}")
+          if failed:
+              sys.exit(f"{failed} failed")
+          PYEOF
 
   # --- The gates CI was NOT running -------------------------------------------
   #
