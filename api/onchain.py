@@ -22,6 +22,7 @@ import enum
 import json
 import os
 import re
+import time
 import urllib.request
 from typing import Any
 
@@ -386,7 +387,9 @@ _rpc_probed_at = 0.0
 #
 # A few seconds of staleness is free: the deadline is a 10-minute window.
 _CHAIN_NOW_TTL_SECONDS = 5.0
-_chain_now_cache: tuple[float, int] | None = None
+# (rpc url it was read from, monotonic stamp, chain time).
+# NOT a `timebase.now()` stamp: see `chain_now`.
+_chain_now_cache: tuple[str, float, int] | None = None
 
 
 def reset_escrow_version_cache() -> None:
@@ -418,9 +421,36 @@ def chain_now() -> int | None:
     The fix is to stop guessing which clock the contract will use: ask it.
     """
     global _chain_now_cache
-    now = timebase.now()
-    if _chain_now_cache is not None and now - _chain_now_cache[0] < _CHAIN_NOW_TTL_SECONDS:
-        return _chain_now_cache[1]
+    # The TTL is measured on `time.monotonic()`, NOT on `timebase.now()`.
+    #
+    # Audit 2026-10-24, and it cost a red chain gate to find: the first version
+    # stamped the cache with `timebase.now()` — the app's business clock, which
+    # tests and the time-travel drill MOVE. A test that advances the clock by two
+    # hours and then calls `chain_now()` writes a stamp two hours in the FUTURE;
+    # when the clock is restored, `now - stamp` is negative and therefore "fresh"
+    # for the next two real hours. The cached value then outlives the anvil it was
+    # read from, `oracle.sign_settlement` mints `deadline = stale_chain_time + 600`,
+    # and every proof arrives already expired — settlement impossible, the winner
+    # forced onto the refund path, which is exactly the failure this function was
+    # added to prevent (see the docstring above).
+    #
+    # A wall clock is not allowed to decide how long a cache stays valid: NTP
+    # steps and operator time changes do the same thing in production. Monotonic
+    # time cannot go backwards or jump.
+    now = time.monotonic()
+    # The URL is part of the key. `test_chain_now_returns_none_...` used to need a
+    # manual `reset_chain_now_cache()` after changing ESCROW_RPC_URL, with a
+    # comment explaining that otherwise it "reads the previous chain's value" —
+    # a manual step every future caller would have to remember. Two chains do not
+    # share a clock, so a cached value must never cross an endpoint change.
+    url = os.environ.get("ESCROW_RPC_URL", "")
+    cache = _chain_now_cache
+    if (
+        cache is not None
+        and cache[0] == url
+        and now - cache[1] < _CHAIN_NOW_TTL_SECONDS
+    ):
+        return cache[2]
     try:
         out = _rpc_call("eth_getBlockByNumber", ["latest", False])
         result = (out or {}).get("result") or {}
@@ -428,7 +458,7 @@ def chain_now() -> int | None:
         if not isinstance(stamp, str):
             return None
         value = int(stamp, 16)
-        _chain_now_cache = (now, value)
+        _chain_now_cache = (url, now, value)
         return value
     except Exception:  # noqa: BLE001
         return None
