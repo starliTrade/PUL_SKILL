@@ -19,9 +19,9 @@ untested** (a test could, and should).
 |---|---|
 | config | `.coveragerc-hermetic` (the gate that runs everywhere) |
 | command | `env -u FIRESTORE_EMULATOR_HOST coverage run --rcfile=.coveragerc-hermetic --source=api -m pytest -q -m "not emulator and not chain"` |
-| suite | **769 passed / 14 skipped / 28 deselected** (the deselected ones are the `emulator`/`chain` markers) |
-| statements | 4318, missed **910** (79 %) |
-| repeats | two consecutive runs on 2026-10-25: identical (769 passed, 910 missed, 79 %) |
+| suite | **773 passed / 14 skipped / 28 deselected** (the deselected ones are the `emulator`/`chain` markers) |
+| statements | 4318, missed **906** (79 %) |
+| repeats | two consecutive runs on 2026-10-25: identical (773 passed, 906 missed, 79 %) |
 | machine | 2 vCPU sandbox, no JRE, no emulator, anvil available but deselected |
 
 The complete gate (`.coveragerc`, floor 79) needs the emulator + anvil. **It was
@@ -40,12 +40,12 @@ the H-26 pass (the claim verifier); column 3 is this pass.
 | `onchain.py` | 81 % | 87 % | **90 %** | the version/decoding edges: hostile `VERSION()` payloads, a truncated `paymentToken()`, the decimals cooldown (§3.2 #3) |
 | `oracle.py` | 86 % | 86 % | **90 %** | all three `eth-account` signing spellings + the loud failure (§3.2 #2) |
 | `metrics.py` | — | 91 % | **100 %** | the middleware promise, the read attribution, the empty-percentile case (§3.2 #4) |
-| `main.py` | 74 % | 74 % | **77 %** | settle/re-sign/void branches, and the two post-commit side effects (§3.2 #1 and “the fifth cluster”) |
+| `main.py` | 74 % | 74 % | **78 %** | settle/re-sign/void branches, the post-commit side effects, and the queue endpoint's contention branch (§3.2 #1, #5, #6) |
 | `store.py` | 71 % | 71 % | 71 % | Firestore-only code (§3.1) |
 | `signer.py` | 69 % | 69 % | 69 % | KMS/HSM paths, no hardware here |
 | `privacy.py` | 47 % | 47 % | 47 % | export/delete against Firestore |
 | `economy.py` | 62 % | 62 % | 62 % | ledger and stats rows against Firestore |
-| **TOTAL** | **77 %** (988 missed) | **78 %** (969 missed) | **79 %** (910 missed) | 50 new tests, no test deleted or weakened |
+| **TOTAL** | **77 %** (988 missed) | **78 %** (969 missed) | **79 %** (906 missed) | 70 new tests, no test deleted or weakened |
 | statements | 4314 | 4314 | 4318 | statements moved with the code, not with the config |
 | floor | 74 (hermetic) | 77 (hermetic) | **78** |
 
@@ -96,6 +96,19 @@ triage below turned up.
 | 4 | `metrics.py` overflow/attribution | `test_metrics_attribution.py` | 11 | the middleware promise ("never raise"), the three counters that had zero callers, `readsPerMatch: None` before the first match, the signature failure rate, `_percentile([])` |
 | 5 | `main.py` post-commit side effects | `test_post_commit_side_effects.py` | 8 | a settled match writes ONE ledger row and an unsettled one writes none; a failed row emits `ledger.write_failed` with the match and the error type and does not pass silently; integrity scoring uses the server's `observed_ms`, never the client's `measuredMs`, and swallows its own failure |
 
+**#6, added the same day (`test_queue_contention.py`, 4 cases).** §3.3 of the
+previous version of this document named `main.queue`'s contention branch as
+"testable but not done". It is the branch that failed **157 of 157** queue
+requests at 1000 concurrent pollers (audit 2026-10-14): Firestore's transaction
+helper raises a plain `ValueError` after five attempts, and the endpoint now
+answers a retryable **503 with `Retry-After`** instead of a 500. The tests pin
+the three answers — busy store → 503 + Retry-After, a real bug → re-raised (an
+over-eager fix that turns everything into 503 is its own incident), matchmaking
+refusal → 409 with the message the player can act on — plus the success control,
+which also asserts the response is built by `public_view(for_address=…)` and not
+the internal match record. Mutation-checked both ways: deleting the 503 branch →
+FAIL; changing `if _is_store_contention(exc)` to `if True` → FAIL.
+
 **One defect fixed under #4.** `metrics.note_firestore_read` incremented a module
 global outside `_lock` while `snapshot()` read it inside: `+=` is a
 read-modify-write, so concurrent requests could lose an increment — always
@@ -111,7 +124,7 @@ deleted, because it did not go through `store.update`; it was rewritten, and the
 
 ### 3.3 What is left, ranked by cost (triage, not a promise)
 
-The remaining 910 lines, grouped by the function that owns them (an AST mapping
+The remaining 906 lines, grouped by the function that owns them (an AST mapping
 of coverage's own missing set, so the numbers add up to the total). The reason
 column is the classification, not a hope.
 
@@ -122,7 +135,6 @@ column is the classification, not a hope.
 | 24 | `economy.record_settlement._apply` | environmental — Firestore transaction body |
 | 23 | `privacy.erase` | environmental — Firestore collections |
 | 21 | `signer._public_key` | environmental — KMS |
-| 19 | `main.queue` (the endpoint body) | **testable** — the store-contention 503 belongs to the global handler (tested); the per-endpoint duplicate is reached only by injecting a store failure mid-request |
 | 18 + 14 | `store.enqueue`, `enqueue._txn_body` | environmental — Firestore |
 | 18 + 9 | `store.update`, `update._txn_body` | environmental — Firestore (the memory-mode twin IS tested) |
 | 17 | `main._rl_check` | environmental — Firestore window |
@@ -137,9 +149,12 @@ column is the classification, not a hope.
 | 10 + 10 | `main._resign_stale_settlements`, `store.recent/settled_matches` | mixed: the memory sweep and the past-horizon skip are tested; the Firestore variants are not |
 
 Nothing in that table is a known bug. It is the set of places where a future
-change could land without a failing test — which is what a ratchet is for — and
-the two "testable" rows are named as such rather than quietly filed under
-"environment" with the rest.
+change could land without a failing test — which is what a ratchet is for. The
+table no longer contains a row that a test could reach on this machine: the two
+rows that used to say "testable" (`main.queue`'s contention branch and the
+sweep's memory path) are now covered, so what is left needs Firestore, a KMS
+endpoint, or a live node. That claim is checked by reading this table against
+the measured missing set, not by memory: it was true when the last row moved.
 
 ---
 
