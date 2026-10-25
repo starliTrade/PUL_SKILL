@@ -121,6 +121,11 @@ class FakeRpc:
     publishes_version: bool = True
     escrow_version_code: int = 2
     escrow_version_name: str = "2.0.0"
+    # A raw ABI payload for `VERSION()`, bypassing `encode_string`. A hostile or
+    # broken contract does not have to answer with a well-formed string, so the
+    # decoder's failure paths need a way to deliver garbage that a real node
+    # could plausibly return.
+    escrow_version_raw: str | None = None
 
     # failure injection
     fail_next_calls: int = 0
@@ -178,6 +183,8 @@ class FakeRpc:
             if data.startswith(SEL_VERSION_CODE) and self.publishes_version:
                 return "0x" + word(self.escrow_version_code)
             if data.startswith(SEL_VERSION) and self.publishes_version:
+                if self.escrow_version_raw is not None:
+                    return self.escrow_version_raw
                 return encode_string(self.escrow_version_name)
             return "0x"
 

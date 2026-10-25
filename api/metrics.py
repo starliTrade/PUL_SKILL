@@ -102,8 +102,20 @@ def observe_request(method: str, path: str, elapsed_ms: float) -> None:
 
 
 def note_firestore_read(count: int = 1) -> None:
+    """Count reads. Incremented under `_lock` like every other counter here.
+
+    This one used to be a bare `_firestore_reads += count` while `snapshot()`
+    read it inside the lock: `+=` on a module global is a read-modify-write, so
+    two threads could read the same value and one increment would vanish. The
+    lost counts land exactly on the number the "<20 reads per match" target is
+    measured with, and under-counting is the direction that hides a regression.
+    The bound-and-attribution tests in `tests/unit/test_metrics_attribution.py`
+    pin the lock (structurally, and labelled as such — a data race cannot be
+    asserted deterministically).
+    """
     global _firestore_reads
-    _firestore_reads += count
+    with _lock:
+        _firestore_reads += count
 
 
 def reset_endpoint_counts() -> None:
