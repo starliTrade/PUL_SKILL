@@ -122,6 +122,26 @@ run_gate_skippable() { # run_gate_skippable <name> <command...>
   rm -f "$log"
 }
 
+# --- precondition helpers ----------------------------------------------------
+#
+# Audit 2026-10-25 (found by building the audit package and reading its own
+# evidence file): four gates drove a LIVE stack — anvil, a deployed escrow, the
+# Firestore emulator, uvicorn — and on a machine without them they did not SKIP.
+# They FAILED, one of them with a 40-line urllib traceback, and `chaos` printed
+# "the API is not up" and then exited non-zero. The summary said "4 failed",
+# which reads as "the server is broken" and was the exact misdiagnosis this
+# script was rewritten to stop. Each gate now asks first and SKIPs with the
+# reason and the remedy.
+API_HEALTH_URL="${PULSAR_API_HEALTH_URL:-http://127.0.0.1:${PULSAR_API_PORT:-8000}/api/health}"
+
+api_reachable() {
+  curl -fsS --max-time 3 "$API_HEALTH_URL" >/dev/null 2>&1
+}
+
+foundry_available() {
+  command -v forge >/dev/null 2>&1 && command -v anvil >/dev/null 2>&1
+}
+
 skip_gate() { # skip_gate <name> <reason>
   hr
   echo "▶ $1"
@@ -379,6 +399,10 @@ fi
 # ran. It moves the chain clock forward and anvil cannot rewind it, so it runs
 # here, on its own, and the chain is restarted afterwards.
 if [[ -f "$ROOT/tests/integration/test_refund_after_timeout.py" ]]; then
+  if ! foundry_available; then
+    skip_gate "refund after timeout (time travel)" \
+      "anvil/forge are not installed — install Foundry, then scripts/start_anvil.sh --bg"
+  else
   run_gate "refund after timeout (time travel)" bash -c \
     "cd '$ROOT' && PULSAR_TEST_TIME_TRAVEL=1 PULSAR_FAIL_ON_SKIP=1 \
      FIRESTORE_EMULATOR_HOST=127.0.0.1:${PULSAR_FIRESTORE_PORT:-8081} GCLOUD_PROJECT=demo-pulsar \
@@ -400,6 +424,7 @@ if [[ -f "$ROOT/tests/integration/test_refund_after_timeout.py" ]]; then
   bash "$ROOT/scripts/start_e2e_stack.sh" --stop >/dev/null 2>&1 || true
   sleep 1
   bash "$ROOT/scripts/start_e2e_stack.sh" >/dev/null 2>&1 || true
+  fi
 fi
 
 # --- 8c2. Alerting — plan item 11.2 ------------------------------------------
@@ -409,8 +434,13 @@ fi
 # fires on a healthy server is worse than none, because it trains people to
 # ignore it.
 if [[ -f "$ROOT/scripts/check_alerts.py" ]]; then
-  run_gate "alerting (healthy server must be quiet)" bash -c \
-    "cd '$ROOT' && '$PY' scripts/check_alerts.py --quiet"
+  if ! api_reachable; then
+    skip_gate "alerting (healthy server must be quiet)" \
+      "the API is not up at ${API_HEALTH_URL} — run scripts/start_e2e_stack.sh first"
+  else
+    run_gate "alerting (healthy server must be quiet)" bash -c \
+      "cd '$ROOT' && '$PY' scripts/check_alerts.py --quiet"
+  fi
 else
   skip_gate "alerting (healthy server must be quiet)" "scripts/check_alerts.py is missing"
 fi
@@ -422,8 +452,13 @@ fi
 # breaks the RPC and asserts every signal the runbook names reads what the
 # runbook says it will.
 if [[ -f "$ROOT/scripts/runbook_drill.py" ]]; then
-  run_gate "runbook drill (the document matches the server)" bash -c \
-    "cd '$ROOT' && '$PY' scripts/runbook_drill.py"
+  if ! api_reachable; then
+    skip_gate "runbook drill (the document matches the server)" \
+      "the API is not up at ${API_HEALTH_URL} — run scripts/start_e2e_stack.sh first"
+  else
+    run_gate "runbook drill (the document matches the server)" bash -c \
+      "cd '$ROOT' && '$PY' scripts/runbook_drill.py"
+  fi
 else
   skip_gate "runbook drill (the document matches the server)" "scripts/runbook_drill.py is missing"
 fi

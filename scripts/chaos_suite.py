@@ -752,8 +752,17 @@ def main(argv: list[str] | None = None) -> int:
     print("PULSAR chaos suite (plan item 10.4)")
     print("=" * 60)
     if not api_up():
-        print("the API is not up — run scripts/start_e2e_stack.sh first")
-        return 2
+        # A missing PREREQUISITE is not a failed scenario (audit 2026-10-25, found
+        # while building the audit package: its evidence run showed four red
+        # lines whose only meaning was "no services on this machine"). Return 0
+        # with the machine-readable line `scripts/verify.sh` turns into SKIP; the
+        # gate then reads "not exercised" instead of "broken". `--strict` still
+        # fails the run, so a CI that expects the stack cannot pass by accident.
+        skip("all scenarios", "the API is not up (run scripts/start_e2e_stack.sh first)")
+        print(f"\nSKIPPED (environment): {len(SKIP)} scenario(s)")
+        for entry in SKIP:
+            print(f"  - {entry}")
+        return 0
     for name in wanted:
         fn = SCENARIOS.get(name)
         if not fn:
