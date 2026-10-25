@@ -19,9 +19,9 @@ untested** (a test could, and should).
 |---|---|
 | config | `.coveragerc-hermetic` (the gate that runs everywhere) |
 | command | `env -u FIRESTORE_EMULATOR_HOST coverage run --rcfile=.coveragerc-hermetic --source=api -m pytest -q -m "not emulator and not chain"` |
-| suite | **773 passed / 14 skipped / 28 deselected** (the deselected ones are the `emulator`/`chain` markers) |
-| statements | 4318, missed **906** (79 %) |
-| repeats | two consecutive runs on 2026-10-25: identical (773 passed, 906 missed, 79 %) |
+| suite | **794 passed / 14 skipped / 28 deselected** (the deselected ones are the `emulator`/`chain` markers) |
+| statements | 4318, missed **878** (80 %) |
+| repeats | two consecutive runs on 2026-10-25: identical (794 passed, 878 missed, 80 %) |
 | machine | 2 vCPU sandbox, no JRE, no emulator, anvil available but deselected |
 
 The complete gate (`.coveragerc`, floor 79) needs the emulator + anvil. **It was
@@ -40,14 +40,14 @@ the H-26 pass (the claim verifier); column 3 is this pass.
 | `onchain.py` | 81 % | 87 % | **90 %** | the version/decoding edges: hostile `VERSION()` payloads, a truncated `paymentToken()`, the decimals cooldown (§3.2 #3) |
 | `oracle.py` | 86 % | 86 % | **90 %** | all three `eth-account` signing spellings + the loud failure (§3.2 #2) |
 | `metrics.py` | — | 91 % | **100 %** | the middleware promise, the read attribution, the empty-percentile case (§3.2 #4) |
-| `main.py` | 74 % | 74 % | **78 %** | settle/re-sign/void branches, the post-commit side effects, and the queue endpoint's contention branch (§3.2 #1, #5, #6) |
+| `main.py` | 74 % | 74 % | **80 %** | settle/re-sign/void branches, the post-commit side effects, the queue endpoint's guards, and the rate limiter's key/fallback helpers (§3.2 #1, #5, #6, #7) |
 | `store.py` | 71 % | 71 % | 71 % | Firestore-only code (§3.1) |
 | `signer.py` | 69 % | 69 % | 69 % | KMS/HSM paths, no hardware here |
 | `privacy.py` | 47 % | 47 % | 47 % | export/delete against Firestore |
 | `economy.py` | 62 % | 62 % | 62 % | ledger and stats rows against Firestore |
-| **TOTAL** | **77 %** (988 missed) | **78 %** (969 missed) | **79 %** (906 missed) | 70 new tests, no test deleted or weakened |
+| **TOTAL** | **77 %** (988 missed) | **78 %** (969 missed) | **80 %** (878 missed) | 91 new tests, no test deleted or weakened |
 | statements | 4314 | 4314 | 4318 | statements moved with the code, not with the config |
-| floor | 74 (hermetic) | 77 (hermetic) | **78** |
+| floor | 74 (hermetic) | 77 (hermetic) | **79** |
 
 The floor is ratcheted in the same commit as the tests that earn it, and it is
 one point below the measurement, never equal to it: a floor equal to the wall
@@ -109,6 +109,38 @@ which also asserts the response is built by `public_view(for_address=…)` and n
 the internal match record. Mutation-checked both ways: deleting the 503 branch →
 FAIL; changing `if _is_store_contention(exc)` to `if True` → FAIL.
 
+**#7, added the same day — the rate limiter (`test_queue_contention.py` +10
+cases, `test_rate_limit_key.py` +15 cases).** Both files were written because
+§3.3 named rows as "testable"; writing them found that the classification in the
+previous version of this document was wrong in both directions:
+
+* `/api/queue`'s remaining branch was not just the contention 503. The endpoint
+  also decides what a player is told when the CONTROLS cannot run: a limits
+  store outage (H-02 — "we cannot read your limits" must never mean "you have
+  none", so 503, not a silent pass), a limit refusal (403 with its reason), an
+  abuse-record outage (503 + `Retry-After`, **not** the 403 that tells a player
+  they are suspended — audit M-03), and a ban (403). Plus the three lazy sweeps
+  that run on the poll: each failure must be counted in `sweep_health()` under
+  its own name and none of them may fail the player's poll, and a failing
+  velocity `note_start` must emit `abuse.note_failed` rather than 500 a duel the
+  player is now holding.
+* `_rl_check_ip` decides WHO gets rate limited. Before M-09 it honoured
+  `X-Forwarded-For` whenever the socket address looked private — and every
+  container network is private, including one where the header passes through
+  untouched, so a script could rotate its quota across forged IPs and pin the
+  blame on a victim. The four cases pin the key for both `TRUST_PROXY_HEADERS`
+  settings, an empty hop list, and a client-less request.
+* `_rl_note_fallback`, `_is_transient_backend_error` and `_rl_expiry` were
+  untested: a silent downgrade to the in-process window is exactly how audit C1
+  survived, and a `ValueError` from our own code being treated as "transient" is
+  how a bug becomes invisible. 13 cases cover the counter, the bounded recorded
+  reason, the stderr line, the three transient classes, the three non-transient
+  ones, and the TTL stamp's type and value.
+
+Mutation-checked: honouring XFF unconditionally → FAIL; `if True` in
+`_is_transient_backend_error` → 3 FAIL; deleting the limits-503 handler → FAIL;
+deleting the abuse-503 handler → FAIL; deleting the sweep counter → FAIL.
+
 **One defect fixed under #4.** `metrics.note_firestore_read` incremented a module
 global outside `_lock` while `snapshot()` read it inside: `+=` is a
 read-modify-write, so concurrent requests could lose an increment — always
@@ -124,20 +156,20 @@ deleted, because it did not go through `store.update`; it was rewritten, and the
 
 ### 3.3 What is left, ranked by cost (triage, not a promise)
 
-The remaining 906 lines, grouped by the function that owns them (an AST mapping
+The remaining 878 lines, grouped by the function that owns them (an AST mapping
 of coverage's own missing set, so the numbers add up to the total). The reason
 column is the classification, not a hope.
 
 | lines | where | classification |
 |---:|---|---|
 | 41 | `store.sweep_expired` | environmental — Firestore sweep |
-| 25 | `main.py` module level | import-time production guards; run only under a production env (see §3.1) |
+| 25 | `main.py` import-time production block (`_looks_deployed`, `_is_prod_like`, the mandatory-env / signer / TrustedHost / CORS / Sentry setup) | **exercised, not counted**: `tests/unit/test_prod_detection.py` boots a subprocess per case and asserts the same lines; coverage does not follow child processes, so they read as missed. Not a gap — and the fix, if it is ever wanted, is `coverage` with subprocess support, not a new test |
 | 24 | `economy.record_settlement._apply` | environmental — Firestore transaction body |
 | 23 | `privacy.erase` | environmental — Firestore collections |
 | 21 | `signer._public_key` | environmental — KMS |
 | 18 + 14 | `store.enqueue`, `enqueue._txn_body` | environmental — Firestore |
 | 18 + 9 | `store.update`, `update._txn_body` | environmental — Firestore (the memory-mode twin IS tested) |
-| 17 | `main._rl_check` | environmental — Firestore window |
+| 16 | `main._rl_check` | environmental — the Firestore transaction window (`226-274`); the in-process fallback and the key derivation are covered |
 | 17 | `store.player_live_match` | environmental — Firestore |
 | 16 | `store._round_from_doc` | environmental — Firestore document shape |
 | 15 + 15 | `main.username_lookup`, `store.pending_challenges` | environmental — Firestore |
@@ -149,12 +181,19 @@ column is the classification, not a hope.
 | 10 + 10 | `main._resign_stale_settlements`, `store.recent/settled_matches` | mixed: the memory sweep and the past-horizon skip are tested; the Firestore variants are not |
 
 Nothing in that table is a known bug. It is the set of places where a future
-change could land without a failing test — which is what a ratchet is for. The
-table no longer contains a row that a test could reach on this machine: the two
-rows that used to say "testable" (`main.queue`'s contention branch and the
-sweep's memory path) are now covered, so what is left needs Firestore, a KMS
-endpoint, or a live node. That claim is checked by reading this table against
-the measured missing set, not by memory: it was true when the last row moved.
+change could land without a failing test — which is what a ratchet is for.
+
+The rows that used to say "testable" are gone: `main.queue`'s contention branch,
+its four guard/refusal branches, the rate limiter's key and fallback helpers,
+and the window's stale-eviction pass were all covered on 2026-10-25 after this
+table named them (they are 29 of the 91 new cases). What is left needs
+Firestore, a KMS endpoint, a live node — or, for the import-time block,
+subprocess-aware coverage rather than another test.
+
+That is a claim about a specific measurement on a specific day, so it is stated
+with its escape hatch: re-run §1's command, map the new missing set onto
+functions, and any row that names a function reachable with `monkeypatch` alone
+is a bug in this table.
 
 ---
 

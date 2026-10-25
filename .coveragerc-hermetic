@@ -27,7 +27,10 @@
 # (`onchain.verify_settlement_tx`) had no direct coverage at all — the claim
 # integration tests replaced it with a stub — and now has 15 cases.
 #
-# 2026-10-25: 77 -> 78. 4318 statements / 910 missed, two identical runs (79%).
+# 2026-10-25: 77 -> 78 -> 79. 4318 statements / 878 missed, two identical runs
+# (80%). The second step within the same day closed the last rows the report's
+# triage called "testable" (the queue endpoint's guards, the rate limiter's key
+# and fallback helpers).
 # Again real tests: the four ranked gaps in docs/COVERAGE-REPORT.md §3.2 plus the
 # post-commit side effects (50 tests). They also found a real defect — the
 # Firestore read counter was incremented outside this module's lock.
@@ -40,7 +43,7 @@ omit =
     api/requirements*.txt
 
 [report]
-fail_under = 78
+fail_under = 79
 show_missing = True
 skip_covered = False
 exclude_lines =
