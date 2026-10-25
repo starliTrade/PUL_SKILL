@@ -152,7 +152,10 @@ else
 fi
 
 if "$PY" -m mypy --version >/dev/null 2>&1 && [[ -f "$ROOT/mypy.ini" ]]; then
-  run_gate "python types (mypy)" "$PY" -m mypy api
+  # No path argument: `mypy` reads `files = api, scripts` from mypy.ini. Passing
+  # `api` here (as this line used to) overrides the config and silently narrows
+  # the gate — which is how `scripts/` kept 13 type errors, two of them real.
+  run_gate "python types (mypy, api + scripts)" "$PY" -m mypy
 else
   skip_gate "python types (mypy)" "mypy not configured yet (plan item 0.4)"
 fi

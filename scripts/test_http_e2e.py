@@ -32,6 +32,7 @@ os.environ.setdefault("PULSAR_ENV", "dev")
 import main as server  # noqa: E402
 from eth_account import Account  # noqa: E402
 from eth_account.messages import encode_defunct  # noqa: E402
+from eth_account.signers.local import LocalAccount  # noqa: E402
 from fastapi import HTTPException as _HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -72,7 +73,7 @@ check("CORSMiddleware is installed", "CORSMiddleware" in _mw_names)
 DOMAIN = "pulsar.test"
 
 
-def make_session(account: Account, domain: str = DOMAIN) -> tuple[str, dict]:
+def make_session(account: LocalAccount, domain: str = DOMAIN) -> tuple[str, str]:
     """Full SIWE handshake over HTTP; returns (bearer token, address).
     Audit-#4: the wallet signs the SERVER's returned message VERBATIM — the
     previous version rebuilt its own message, which masked the server-side
@@ -93,7 +94,7 @@ def make_session(account: Account, domain: str = DOMAIN) -> tuple[str, dict]:
         headers={"host": domain},
     )
     assert r.status_code == 200, r.text
-    token = r.json()["token"]
+    token = str(r.json()["token"])
     # Plan item 11.3/G2: the queue requires a SERVER-RECORDED eligibility
     # attestation. The gate is on `/api/queue` — the entry — not on the
     # round/settle/claim endpoints, so money already committed is never trapped.
@@ -389,7 +390,10 @@ try:
         check("RL: over-limit raises 429", False)
     except _HTTPException as e:
         check("RL: over-limit raises 429", e.status_code == 429)
-        check("RL: 429 carries Retry-After header", bool(e.headers) and "Retry-After" in e.headers)
+        # `e.headers` is `Mapping[str, str] | None`; mypy (once `scripts/` was
+        # added to the gate) is what made that explicit.
+        headers = dict(e.headers or {})
+        check("RL: 429 carries Retry-After header", "Retry-After" in headers)
 finally:
     server._rl_window.clear()
 

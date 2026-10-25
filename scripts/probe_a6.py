@@ -74,7 +74,13 @@ os.environ.setdefault("PULSAR_ENV", "dev")
 
 import main as server  # noqa: E402
 
-check("claim endpoint registered", any(r.path == "/api/match/{match_id}/claim" for r in server.app.routes))
+# `app.routes` is typed `list[BaseRoute]` and only `APIRoute` carries `.path`;
+# `getattr` is the honest way to ask "does any route expose this path" without
+# asserting a subtype the list does not guarantee.
+check(
+    "claim endpoint registered",
+    any(getattr(r, "path", None) == "/api/match/{match_id}/claim" for r in server.app.routes),
+)
 check("record_settlement wired into settle path", "economy.record_settlement" in open("api/main.py").read())
 check("RL_VERIFY_MAX defined", server.RL_VERIFY_MAX >= 20)
 check("RL_ROUND_MAX defined", server.RL_ROUND_MAX >= 40)

@@ -37,6 +37,7 @@ os.environ.setdefault("PULSAR_ENV", "dev")
 import main as server  # noqa: E402
 from eth_account import Account  # noqa: E402
 from eth_account.messages import encode_defunct  # noqa: E402
+from eth_account.signers.local import LocalAccount  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import auth as auth_module  # noqa: E402
@@ -54,7 +55,7 @@ client = TestClient(server.app)
 DOMAIN = "pulsar-a8.test"
 
 
-def make_session(account: Account) -> tuple[str, str]:
+def make_session(account: LocalAccount) -> tuple[str, str]:
     addr = account.address.lower()
     r = client.post("/api/auth/nonce", json={"address": addr}, headers={"host": DOMAIN})
     assert r.status_code == 200, r.text
@@ -155,11 +156,14 @@ check("F-02 immediate replay blocked", r2.status_code != 200)
 flood_account = Account.create()
 evicted = False
 for _i in range(4096):
-    rr = client.post("/api/auth/nonce", json={"address": flood_account.address.lower()}, headers={"host": DOMAIN})
-    if rr.status_code != 200:  # rate-limited: flood throttled is also a pass
+    # `rr` above is a Round (`m.rounds[player][idx]`); reusing the name for an
+    # HTTP response made mypy read the response as a Round. A separate name, and
+    # the reader no longer has to guess which `rr` line 159 means.
+    resp = client.post("/api/auth/nonce", json={"address": flood_account.address.lower()}, headers={"host": DOMAIN})
+    if resp.status_code != 200:  # rate-limited: flood throttled is also a pass
         evicted = False
         break
-    msg = rr.json()["message"]
+    msg = resp.json()["message"]
     sig = flood_account.sign_message(encode_defunct(text=msg)).signature.hex()
     if not sig.startswith("0x"):
         sig = "0x" + sig

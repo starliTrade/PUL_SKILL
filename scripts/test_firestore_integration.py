@@ -78,9 +78,20 @@ def main() -> int:
     # replica 1 applies its own commit from its (freshly re-read) state:
     store.update(m1.match_id, lambda m, eng: eng.commit_intent(m, a, 0, commit_hash))
     merged = store.get(m1.match_id)
-    check("both players' commits coexist (no lost update)",
-          bool(merged.rounds.get(a, {}).get(0, None) and merged.rounds.get(a, {}).get(0).commit_hash == commit_hash)
-          and bool(merged.rounds.get(b, {}).get(0, None) and merged.rounds.get(b, {}).get(0).commit_hash == "0x" + "d" * 64))
+    # `store.get` returns `Round | None`. The checker is right to demand this:
+    # the lines below would raise AttributeError on None, which in a suite whose
+    # job is to prove durability would look like a durability failure.
+    assert merged is not None, "the match vanished between two updates"
+    # Read the two rounds ONCE each. The original expression called
+    # `.get(0)` twice per player and mypy flagged the second call as
+    # "Round | None" — which is also the reason the old form was hard to read.
+    ra = merged.rounds.get(a, {}).get(0, None)
+    rb = merged.rounds.get(b, {}).get(0, None)
+    check(
+        "both players' commits coexist (no lost update)",
+        ra is not None and ra.commit_hash == commit_hash
+        and rb is not None and rb.commit_hash == "0x" + "d" * 64,
+    )
     del stale  # (snapshot intentionally unused beyond documenting the scenario)
 
     # --- 4. Distributed rate limiter against REAL Firestore (audit #7) --------

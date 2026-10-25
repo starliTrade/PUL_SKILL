@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime
+from typing import TypedDict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -63,7 +64,23 @@ def vitest_counts() -> dict[str, int]:
     return {"tests": tests, "files": files, "failed": failed}
 
 
-def forge_counts() -> dict[str, object]:
+class ForgeCounts(TypedDict, total=False):
+    """The two shapes `forge_counts()` can return.
+
+    Before this annotation the return type was `dict[str, object]`, so every
+    reader of `contract["passed"]` was indexing `object` — the kind of type that
+    says "I have not decided what this is". `total=False` because a measurement
+    that could not be taken carries `status` INSTEAD of `passed`/`suites`.
+    """
+
+    suites: int
+    passed: int
+    failed: int
+    measured: str
+    status: str
+
+
+def forge_counts() -> ForgeCounts:
     """Measure the contract suite — only if Foundry is really installed."""
     forge = shutil.which("forge")
     if forge is None:
@@ -99,12 +116,24 @@ def main(argv: list[str] | None = None) -> int:
     server = pytest_counts()
     web = {"tests": 0, "files": 0, "failed": 0} if args.skip_vitest else vitest_counts()
 
-    table = {
+    # Never invented: either measured by a real `forge test`, or it says why not.
+    contract = forge_counts()
+    table: dict[str, object] = {
         "vitest": web if not args.skip_vitest else {"skipped": True},
         "pytest": server,
-        # Never invented: either measured by a real `forge test`, or it says why not.
-        "contract": forge_counts(),
+        "contract": contract,
     }
+
+    # ONE computation of `failed`. It used to exist twice — once to print the
+    # warning, once to choose the exit code — and two copies of a rule are two
+    # rules waiting to disagree. (This is the version mypy saw as `object`
+    # indexing; it is also the version a reader can trust.)
+    failed = (
+        (bool(web["failed"]) and not args.skip_vitest)
+        or bool(server["failed"])
+        or bool(contract.get("failed", 0))
+    )
+
     if args.json:
         print(json.dumps(table, indent=2))
     else:
@@ -115,26 +144,16 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"| Frontend (vitest) | {web['tests']} passed, {web['files']} files |")
         print(f"| Server (pytest) | {server['passed']} passed, {server['skipped']} skipped |")
-        contract = table["contract"]
-        if "passed" in contract:
+        passed = contract.get("passed")
+        if passed is not None:
             print(
-                f"| Contract (forge) | {contract['passed']} tests, "
-                f"{contract['suites']} suites, measured {contract['measured']} |"
+                f"| Contract (forge) | {passed} tests, "
+                f"{contract.get('suites')} suites, measured {contract.get('measured')} |"
             )
         else:
-            print(f"| Contract (forge) | {contract['status']} |")
-        failed = (
-            (bool(web["failed"]) and not args.skip_vitest)
-            or bool(server["failed"])
-            or bool(contract.get("failed", 0))
-        )
+            print(f"| Contract (forge) | {contract.get('status')} |")
         if failed:
             print("\nFAILURES present — fix them before copying this table.")
-    failed = (
-        (bool(web["failed"]) and not args.skip_vitest)
-        or bool(server["failed"])
-        or bool(table["contract"].get("failed", 0))
-    )
     return 1 if failed else 0
 
 

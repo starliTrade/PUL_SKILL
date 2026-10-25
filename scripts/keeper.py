@@ -60,6 +60,7 @@ stops, players can still settle or refund themselves (the contract permits it).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -181,9 +182,10 @@ def _rpc(payload: dict[str, Any]) -> Any:
     url = os.environ.get("ESCROW_RPC_URL", "").strip()
     if not url:
         raise RuntimeError("ESCROW_RPC_URL is not set")
-    body = {}
-    import json
-
+    # `body = {}` used to sit here, immediately overwritten by the encoded
+    # request — a dead assignment left over from an earlier draft that typed the
+    # function's own variable as a dict. Found by running mypy over `scripts/`
+    # (the gate only covered `api/`), which is the argument for the widened gate.
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
         url, data=body, headers={"Content-Type": "application/json"}, method="POST"
