@@ -67,6 +67,10 @@ bash scripts/verify.sh
 > `PULSAR_E2E_STORE=memory bash scripts/verify.sh` نتیجه **۱۷ pass / ۴ fail / ۱ skip** بود و هر چهار
 > شکست یک علت داشتند: نبودِ Firestore emulator (که `live-stack`، `chaos` و `runbook drill` را هم
 > می‌خواباند) و نبودِ مرورگر Playwright. روی ماشین تو با گام ۳ و ۴، همهٔ ۲۲ گیت باید سبز شود.
+>
+> **بهبود بعدی:** گیتِ `chaos` دیگر «اجرا نشد» را با «غلط است» یکی نمی‌کند — پنج سناریو با دلیل `SKIP`
+> می‌شوند و `verify.sh` آن را `⏭ SKIP` می‌نویسد، نه `PASS`. پس بعد از گام ۳ اگر `chaos` هنوز `SKIP`
+> بود یعنی emulator بالا نیامده؛ اگر `FAIL` بود، واقعاً یک نقص است.
 
 ---
 

@@ -33,11 +33,21 @@
 | تایپ و لینت | `tsc --noEmit` · `eslint --max-warnings=0` · `ruff` · `mypy api` | پاک (۲۲ فایل) |
 | build | `vite build` | سبز، ۱۱ ثانیه |
 
-**`verify.sh` در همین محیط (اندازه‌گیری‌شده):** با `PULSAR_E2E_STORE=memory` → **۱۷ pass / ۴ fail / ۱ skip**.
-هر چهار شکست یک علتِ محیطی دارند و نه یک باگ: نبودِ Firestore emulator (Java نیست) که `live-stack`,
-`chaos` و `runbook drill` را هم می‌خواباند، و نبودِ مرورگر Playwright (دانلود مسدود). پیام هر چهار گیت
-در متن است: `REFUSING TO START … firestore` · `only 0 E2E tests ran` ·
-`matchStore is firestore … memory` · `the emulator is up before the scenario`.
+**`verify.sh` در همین محیط (اندازه‌گیری ۲۰۲۶-۱۰-۲۴، پیش از تغییر زیر):** با `PULSAR_E2E_STORE=memory` →
+**۱۷ pass / ۴ fail / ۱ skip**. هر چهار شکست یک علتِ محیطی داشتند و نه یک باگ: نبودِ Firestore emulator
+(Java نیست) که `live-stack`، `chaos` و `runbook drill` را هم می‌خواباند، و نبودِ مرورگر Playwright.
+پیام‌ها: `REFUSING TO START … firestore` · `only 0 E2E tests ran` · `matchStore is firestore … memory` ·
+`the emulator is up before the scenario`.
+
+**و همان جمله یک نقص بود.** یک ابزارِ بررسی که «اجرا نشد» و «غلط است» را در یک ستون می‌نویسد، به خواننده
+یاد می‌دهد نادیده‌اش بگیرد — و من مجبور شدم در سه سند توضیح بدهم که آن چهار خط قرمز «محیطی» هستند. یعنی
+خودِ ابزار گویا نبود. حالا `scripts/chaos_suite.py` پیش‌شرط‌ها را از نتیجه جدا می‌کند: پنج سناریو اگر
+anvil/emulator/پروسهٔ API نبود، `SKIP` با **دلیل و راه‌حل** می‌دهند و خروجی صفر دارند
+(اندازه‌گیری‌شده: `chaos summary: 0 passed, 0 failed, 5 skipped (environment)`)، و
+`scripts/verify.sh` آن خط را به `⏭ SKIP` با همان دلیل ترجمه می‌کند — نه `PASS`. با `--strict` همان
+SKIP به FAIL تبدیل می‌شود. با این تغییر گیتِ `chaos` از `FAIL` به `SKIP` می‌رود و سه قرمزِ باقی‌مانده
+همان علتِ محیطی را دارند؛ **جمع کل را دوباره اندازه‌گیری نکردم** چون toolchain این محیط پیش از اجرای
+دوباره پاک شد (بخش ۷).
 
 **آنچه در این محیط اجرا نشد و اجرا نشده گزارش می‌شود:**
 Playwright (۳۰ تست — دانلود مرورگر مسدود) · Firestore emulator (Java نیست) · Amoy · دو گوشی ·

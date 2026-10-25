@@ -96,18 +96,27 @@
 - [ ] **1.4** ببین کدام گیت‌ها `skip_gate` خوردند (۱۶ جای ممکن). یک گیتِ **SKIP سبز نیست**.
 
 - [ ] **1.5** **این عدد را با من مقایسه کن.** در محیطی که Firestore و مرورگر ندارد (دقیقاً همین sandbox)،
-  `bash scripts/verify.sh` با `PULSAR_E2E_STORE=memory` این را می‌دهد:
+  `bash scripts/verify.sh` با `PULSAR_E2E_STORE=memory` پیش از اصلاحِ امروز این را می‌داد:
 
   ```
   passed: 17   failed: 4   skipped: 1
   failed: playwright · live-stack · runbook drill · chaos
   ```
 
-  و هر چهار شکست **یک علت** دارند: نبودِ Firestore emulator یا مرورگر. پیام‌ها را بخوان:
-  `REFUSING TO START … firestore`، `only 0 E2E tests ran`،
-  `matchStore is firestore … memory`، `the emulator is up before the scenario`.
-  اگر روی ماشین تو با Java نصب‌شده و مرورگرِ نصب‌شده **باز هم** یکی از این چهار شکست خورد،
-  آن‌وقت باگ واقعی است — نه محیط. فازهای ۳ و ۴ همان چهار گیت را می‌بندند.
+  اندازه‌گیریِ دوباره انجام نشد (toolchain این محیط پاک شد)، ولی با تغییر امروز گیتِ `chaos` به‌جای
+  چهار خط قرمزِ بی‌معنا، **`⏭ SKIP` با دلیل** می‌دهد:
+
+  ```
+  chaos summary: 0 passed, 0 failed, 5 skipped (environment)
+  SKIPPED (environment): 5 scenario(s)
+    - rpc_kill — needs a local anvil … (needs foundry: forge --version)
+    - firestore_kill — needs the Firestore emulator … (needs a JRE: java -version)
+  ```
+
+  یعنی روی ماشین تو، سه قرمزِ باقی‌مانده (`playwright`، `live-stack`، `runbook drill`) و پنج SKIPِ
+  chaos همه **یک** معنا دارند: سرویس یا مرورگر نیست.
+  **نکتهٔ مهم:** بعد از فاز ۳ و ۴، اگر `chaos` باز هم `SKIP` داد، یعنی emulator/anvil بالا نیامده —
+  و اگر `FAIL` داد، آن یک باگ واقعی است، چون این ابزار دیگر محیط را با نقص قاطی نمی‌کند.
 
 **شرط عبور فاز ۱:** `verify.sh` با کد ۰ تمام شود **و** بدانی کدام گیت‌ها skip شدند (لیست را بنویس).
 اگر در محیطی هستی که Firestore و Playwright دارد و باز هم قرمز شد، آن قرمز **مالِ توست**، نه محیط.

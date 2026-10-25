@@ -97,7 +97,7 @@ def test_the_counts_it_quotes_are_the_ones_this_repo_collects() -> None:
 
 def test_the_gate_count_is_the_script_s_gate_count() -> None:
     script = (ROOT / "scripts" / "verify.sh").read_text(encoding="utf-8")
-    gates = len(re.findall(r'^\s*run_gate "', script, re.M))
+    gates = len(re.findall(r'^\s*run_gate(?:_skippable)? "', script, re.M))
     skips = len(re.findall(r'\s*skip_gate "', script))
     assert f"**{gates} گیت**" in DOC, f"verify.sh has {gates} gates"
     assert f"{skips} جای دیگر `skip_gate`" in DOC, f"verify.sh has {skips} skip_gate calls"

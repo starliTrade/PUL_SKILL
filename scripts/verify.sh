@@ -82,6 +82,46 @@ run_gate() { # run_gate <name> <command...>
   fi
 }
 
+run_gate_skippable() { # run_gate_skippable <name> <command...>
+  # A gate whose suite can legitimately report "I exercised some scenarios and
+  # skipped others because the environment is missing a service".
+  #
+  # Audit 2026-10-24: the chaos suite folded those into its failure list, so a
+  # machine without a JRE produced four red lines that meant "Java is not
+  # installed" — and the summary read as if the server were broken. The suite now
+  # separates them; this wrapper turns its machine-readable line into a SKIP with
+  # a reason. It is deliberately NOT a pass: a skipped scenario is still
+  # unverified, and `--strict` still fails the run.
+  local name="$1"; shift
+  local log
+  log="$(mktemp)"
+  hr
+  echo "▶ $name"
+  hr
+  if "$@" >"$log" 2>&1; then
+    cat "$log"
+    if grep -q '^SKIPPED (environment)' "$log"; then
+      echo "⏭  SKIP  $name — scenarios NOT exercised (environment):"
+      sed -n '/^SKIPPED (environment)/,$p' "$log" | sed 's/^/     /'
+      SKIP=$((SKIP + 1))
+      if [[ "$STRICT" == "1" ]]; then
+        echo "❌ FAIL  $name (--strict: a skipped scenario is a failure)"
+        FAIL=$((FAIL + 1))
+        FAILED_NAMES+=("$name (skipped under --strict)")
+      fi
+    else
+      echo "✅ PASS  $name"
+      PASS=$((PASS + 1))
+    fi
+  else
+    cat "$log"
+    echo "❌ FAIL  $name"
+    FAIL=$((FAIL + 1))
+    FAILED_NAMES+=("$name")
+  fi
+  rm -f "$log"
+}
+
 skip_gate() { # skip_gate <name> <reason>
   hr
   echo "▶ $1"
@@ -396,7 +436,7 @@ if [[ -f "$ROOT/scripts/chaos_suite.py" ]]; then
   bash "$ROOT/scripts/start_e2e_stack.sh" --stop >/dev/null 2>&1 || true
   sleep 2
   bash "$ROOT/scripts/start_e2e_stack.sh" >/dev/null 2>&1 || true
-  run_gate "chaos suite (rpc/firestore/replica/delay/soak)" bash -c \
+  run_gate_skippable "chaos suite (rpc/firestore/replica/delay/soak)" bash -c \
     "cd '$ROOT' && FIRESTORE_EMULATOR_HOST=127.0.0.1:${PULSAR_FIRESTORE_PORT:-8081} \
      GCLOUD_PROJECT=demo-pulsar '$PY' scripts/chaos_suite.py"
 else
