@@ -94,23 +94,42 @@ Stated so you can price the work:
 
 ## 5. How to build and test
 
+This section used to carry hard-coded counts: the number of contract tests, the
+number of Python tests, the number of gates in `verify.sh`, and the number of
+files the type-checker saw. Every one of them went stale (the type gate's scope
+widened on 2026-10-25 and the page still named the old one), and a package whose
+own instructions are wrong teaches an auditor to distrust the rest of it. So the
+counts now live in ONE place — the documents a test enforces — and this page
+gives only the commands:
+
 ```bash
 # contracts
-cd contracts && forge test            # 80 test functions, 8 files
-forge coverage                        # gate: PulsarEscrow.sol >= 95% lines
+cd contracts && forge test
+forge coverage                 # gate: PulsarEscrow.sol >= 95% lines
 
-# server
-python3 -m pytest tests/ -q           # 334 tests
-python3 -m mypy api                   # clean
+# server  (mypy takes NO path argument: mypy.ini governs, and it covers
+#          api/ AND scripts/ — the operational scripts move money too)
+python3 -m pytest tests/ -q
+python3 -m mypy
 
 # the whole gate
-bash scripts/verify.sh                # 21 gates, 0 fail, 0 skip
+bash scripts/verify.sh
 ```
 
-`scripts/verify.sh` is the single entry point. It runs typecheck, unit tests on
-both sides, the contract suite, the chain suite against a real anvil, the browser
-E2E against the real stack, the chaos suite, the runbook drill, and a coverage
-ratchet. If it is green, the claims in this document are reproducible.
+`python -m pytest tests/ -q` on a machine with no Firestore emulator and no
+browser reports ~750 passing tests and ~40 skips; the exact figure, with the
+conditions it was measured under, is in `docs/COVERAGE-REPORT.md §1`. The
+contract suite's inventory is in `evidence/PROVENANCE.md`, generated at build
+time from the sources in this package rather than copied from a document.
+
+`scripts/verify.sh` is the single entry point: typecheck, unit tests on both
+sides, the contract suite, the chain suite against a real anvil, the browser E2E
+against the real stack, the chaos suite, the runbook drill, and two coverage
+ratchets. Its gate count is printed by the script itself (the gate list lives in
+`grep -c 'run_gate' scripts/verify.sh`); do not take a number from this page.
+Where a gate cannot run — no JVM for the emulator, no Playwright browser — it
+SKIPs with the reason and the remedy instead of passing silently, and that is
+part of what this package is asking you to check.
 
 ---
 
