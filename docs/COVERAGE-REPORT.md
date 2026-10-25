@@ -19,9 +19,9 @@ untested** (a test could, and should).
 |---|---|
 | config | `.coveragerc-hermetic` (the gate that runs everywhere) |
 | command | `env -u FIRESTORE_EMULATOR_HOST coverage run --rcfile=.coveragerc-hermetic --source=api -m pytest -q -m "not emulator and not chain"` |
-| suite | **753 passed / 42 skipped** |
+| suite | **769 passed / 14 skipped / 28 deselected** (the deselected ones are the `emulator`/`chain` markers) |
 | statements | 4318, missed **910** (79 %) |
-| repeats | two consecutive runs on 2026-10-25: identical (910 missed, 753 passed) |
+| repeats | two consecutive runs on 2026-10-25: identical (769 passed, 910 missed, 79 %) |
 | machine | 2 vCPU sandbox, no JRE, no emulator, anvil available but deselected |
 
 The complete gate (`.coveragerc`, floor 79) needs the emulator + anvil. **It was
