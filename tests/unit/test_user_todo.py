@@ -210,6 +210,28 @@ def test_it_is_granular_enough_to_be_a_checklist() -> None:
         assert sorted(set(steps)) == steps, f"phase {phase} repeats a step number"
 
 
+def _fa(number: int) -> str:
+    """A count as this document writes it (Persian digits)."""
+    return "".join(_PERSIAN[int(ch)] for ch in str(number))
+
+
+def test_the_other_documents_quote_this_list_s_real_size() -> None:
+    """`FINAL-REPORT` and `MANUAL-CHECKLIST` both advertise "how many phases".
+
+    Both said 11 phases / ~85 steps while this file had 12 / 80, and nothing
+    caught it — a reader who trusts the advertisement is misled about the size of
+    the job they are agreeing to. The numbers are derived here, not typed.
+    """
+    phases = len(re.findall(r"(?m)^## فاز ", DOC))
+    steps = len(re.findall(r"(?m)^- \[ \] ", DOC))
+    assert phases >= 11 and steps >= 60
+
+    expected = f"{_fa(phases)} فاز، {_fa(steps)} قدم"
+    for name in ("FINAL-REPORT.md", "MANUAL-CHECKLIST.md"):
+        text = (ROOT / "docs" / name).read_text(encoding="utf-8")
+        assert expected in text, f"{name} does not say {expected!r} about USER-TODO"
+
+
 def test_it_does_not_pretend_a_never_run_step_passed() -> None:
     # Phase 11 is the scoreboard. The things this sandbox could not run must be
     # marked as such, not ticked.
