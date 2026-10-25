@@ -1,13 +1,13 @@
-# Server coverage — what the number means (measured 2026-10-23)
+# Server coverage — what the number means (measured 2026-10-25)
 
 **Why this document exists.** `pytest --cov` prints one percentage, and a single
-percentage invites exactly the wrong conclusion: "78 % covered" does not mean
-"22 % of the risk is untested". It means 22 % of *statements* never executed in
-this environment — and a large part of that 22 % is code that **cannot** execute
-here (Firestore, the emulator, Java), not code that is dangerous.
+percentage invites exactly the wrong conclusion: "79 % covered" does not mean
+"21 % of the risk is untested". It means 21 % of *statements* never executed in
+this environment — and most of what remains is code that **cannot** execute here
+(Firestore, the emulator, Java, a KMS endpoint), not code that is dangerous.
 
 So this file records three things separately: the measurement conditions, the
-number, and an explicit classification of every remaining gap into
+number over time, and an explicit classification of every remaining gap into
 **environmental** (no test can reach it on this machine) and **genuinely
 untested** (a test could, and should).
 
@@ -19,9 +19,9 @@ untested** (a test could, and should).
 |---|---|
 | config | `.coveragerc-hermetic` (the gate that runs everywhere) |
 | command | `env -u FIRESTORE_EMULATOR_HOST coverage run --rcfile=.coveragerc-hermetic --source=api -m pytest -q -m "not emulator and not chain"` |
-| suite | **645 passed / 8 skipped / 28 deselected** |
-| statements | 4314, missed **969** |
-| repeats | three consecutive runs: 78 %, 78 %, 78 % (missed 969/970/969 — one test touches a thread-timing line) |
+| suite | **753 passed / 42 skipped** |
+| statements | 4318, missed **910** (79 %) |
+| repeats | two consecutive runs on 2026-10-25: identical (910 missed, 753 passed) |
 | machine | 2 vCPU sandbox, no JRE, no emulator, anvil available but deselected |
 
 The complete gate (`.coveragerc`, floor 79) needs the emulator + anvil. **It was
@@ -29,27 +29,29 @@ not measured here** and this document does not claim it.
 
 ---
 
-## 2. The number, before and after this audit pass
+## 2. The number over time
 
-Two configurations produce two numbers. Quoting one without the other is how the
-old single gate became a coin flip, so both are given, and the column says which
-is which.
+Three columns, because a ratchet that only records "now" cannot show whether it
+moved forward or was redefined. Column 1 is where this audit started; column 2 is
+the H-26 pass (the claim verifier); column 3 is this pass.
 
-| module | full run, before | full run, after | hermetic, after | what moved it |
+| module | 2026-10-22 | 2026-10-23 (H-26) | 2026-10-25 (this pass) | what moved it |
 |---|---:|---:|---:|---|
-| `onchain.py` | 81 % | **90 %** | 87 % | `verify_settlement_tx` had **zero** direct tests (H-26); the gap between the two columns is the chain-marked integration tests, deselected hermetically |
-| `main.py` | 74 % | 74 % | 74 % | — (see §3) |
-| `oracle.py` | 86 % | 86 % | 86 % | one branch (unknown horizon) added by H-25 |
-| `store.py` | 71 % | 71 % | 71 % | Firestore-only code (see §3) |
+| `onchain.py` | 81 % | 87 % | **90 %** | the version/decoding edges: hostile `VERSION()` payloads, a truncated `paymentToken()`, the decimals cooldown (§3.2 #3) |
+| `oracle.py` | 86 % | 86 % | **90 %** | all three `eth-account` signing spellings + the loud failure (§3.2 #2) |
+| `metrics.py` | — | 91 % | **100 %** | the middleware promise, the read attribution, the empty-percentile case (§3.2 #4) |
+| `main.py` | 74 % | 74 % | **77 %** | settle/re-sign/void branches, and the two post-commit side effects (§3.2 #1 and “the fifth cluster”) |
+| `store.py` | 71 % | 71 % | 71 % | Firestore-only code (§3.1) |
 | `signer.py` | 69 % | 69 % | 69 % | KMS/HSM paths, no hardware here |
 | `privacy.py` | 47 % | 47 % | 47 % | export/delete against Firestore |
-| **TOTAL** | **77 %** (988 missed) | **78 %** (957 missed) | **78 %** (969 missed) | |
-| statements | — | 4314 | 4314 | |
-| floor | 74 (hermetic) | **77** (hermetic) | 77 | ratcheted in the same commit, per the rule in the config |
+| `economy.py` | 62 % | 62 % | 62 % | ledger and stats rows against Firestore |
+| **TOTAL** | **77 %** (988 missed) | **78 %** (969 missed) | **79 %** (910 missed) | 50 new tests, no test deleted or weakened |
+| statements | 4314 | 4314 | 4318 | statements moved with the code, not with the config |
+| floor | 74 (hermetic) | 77 (hermetic) | **78** |
 
-The two totals agree at 78 % by coincidence, not by construction: the full run
-executes more lines (the chain suites) and also counts more missed lines in code
-that only the emulator would reach.
+The floor is ratcheted in the same commit as the tests that earn it, and it is
+one point below the measurement, never equal to it: a floor equal to the wall
+makes every skipped test on a slower machine look like a regression.
 
 ---
 
@@ -62,48 +64,82 @@ go-live checklist names the command that closes each one.
 
 | area | lines | why it cannot run here | how it gets closed |
 |---|---|---|---|
-| `store.py` Firestore store (≈ 200) | `915-984`, `1594-1625`, … | needs the Firestore emulator (Java) | `bash scripts/start_emulator.sh --bg` then the `-m emulator` suite |
-| `main.py` distributed rate limiter | `226-274` | transactional Firestore window | same |
-| `main.py` admin/export/delete | `2502-2565` | Firestore-backed | same |
-| `signer.py` external signer | `285-370` | KMS/HSM endpoint | a real cloud account |
-| `privacy.py` export/delete | `107-165` | Firestore collections | same as §3.1 row 1 |
-| `onchain.py` RPC edge cases | `339-345`, `433-434`, `508`, `536-542` | needs a misbehaving live node | the fake-RPC suite covers the shapes; the rest is latency/transport |
+| `store.py` Firestore store (≈ 200) | `915-984`, `1594-1625`, `sweep_expired`, `enqueue`, `update`, `pending_challenges` | needs the Firestore emulator (Java) | `bash scripts/start_emulator.sh --bg` then the `-m emulator` suite |
+| `main.py` distributed rate limiter | `226-274`, `_rl_check` | transactional Firestore window | same |
+| `main.py` admin/export/delete | `2493-2581` | Firestore-backed | same |
+| `economy.py` ledger and stats | `256-282`, `325-368`, `452-549`, `640-650` | rows in Firestore | same |
+| `auth.py` durable revocation | `334-360` | Firestore `auth_revocations` | same |
+| `privacy.py` export/delete | `107-165` | Firestore collections | same as above |
+| `signer.py` external signer | `285-370`, `_public_key`, `_raw_sign` | KMS/HSM endpoint | a real cloud account |
+| `onchain.py` RPC transport edges | `340-346`, `475-486`, `510-519` | needs a misbehaving live node | the fake-RPC suite covers the shapes; the rest is latency/transport |
 
-### 3.2 Genuinely untested — a test could reach it, and now does where it mattered
+### 3.2 Genuinely untested — closed in this pass
 
-**Closed in this pass (H-26).** `onchain.verify_settlement_tx` — the function
-that decides whether a supplied transaction hash really settled *this* match for
-*this* claimer — was stubbed out (`lambda *a, **k: True`) in the only two tests
-that exercised the claim endpoint. The tests therefore proved "a verified claim
-is recorded" while the verification itself was assumed.
+**Already closed (H-26, 2026-10-23).** `onchain.verify_settlement_tx` — the
+function that decides whether a supplied transaction hash really settled *this*
+match for *this* claimer — was stubbed out (`lambda *a, **k: True`) in the only
+two tests that exercised the claim endpoint. The tests therefore proved "a
+verified claim is recorded" while the verification itself was assumed. 15 cases
+now drive the real function through the shared `FakeRpc`, and one of them found
+a real defect: a malformed `logs` entry raised `AttributeError` inside the claim
+endpoint, answering **500** to a player whose prize was already on chain.
 
-15 cases now drive the real function through the shared `FakeRpc`:
+**Closed in this pass (2026-10-25).** The four ranked gaps in the previous
+version of this table, in the order they were ranked, plus a fifth cluster the
+triage below turned up.
 
-* accepts a genuine receipt (correct escrow, correct match key, correct winner);
-* refuses a reverted transaction, a transaction to another contract, an event
-  emitted by another contract, a settlement for a different match, a settlement
-  paid to a different address, a receipt with no event, a log with truncated
-  topics, a malformed hash (without even calling the RPC), an unreadable receipt,
-  an RPC outage, a wrong chain, and an unconfigured escrow;
-* **never raises** — and this one found a real defect: a malformed `logs` entry
-  (a string instead of an object, a `null`, a provider quirk) raised
-  `AttributeError` inside the claim endpoint, which would have answered **500**
-  to a player whose prize was already on chain. Fixed.
+| # | area | test file | cases | what the tests now pin |
+|---|---|---|---:|---|
+| 1 | `main.py` settle/claim/re-sign | `test_institution_resign.py` | 11 | a failed signature leaves the STORED match untouched (asserted through `store.update`, the mechanism that actually rolls it back); the counter and the `match.sign_failed` event; a spendable envelope replays without re-signing; an expired one is re-signed with `resigned: true` and its `roundWins` preserved; a failed re-sign returns the stale envelope instead of a 5xx; a match past its refund horizon is voided with the refund reason, not resigned; the sweep counts its own failures |
+| 2 | `oracle.py` signer fallbacks | `test_oracle_signer_api.py` | 6 | `unsafe_sign_hash` → `signHash` → `sign_hash`, precedence, digest passthrough, the loud failure when none exists, and a guard that the LOCKED eth-account still exposes the preferred method |
+| 3 | `onchain.py` version/decode edges | `test_rpc_decoding.py` | 14 | non-hex, non-UTF-8, truncated, control-ridden and empty `VERSION()` payloads all answer `None` (never raise, never reflect); a truncated `paymentToken()` is not an address; a failing `decimals()` read is not retried on every call, and IS retried after its cooldown |
+| 4 | `metrics.py` overflow/attribution | `test_metrics_attribution.py` | 11 | the middleware promise ("never raise"), the three counters that had zero callers, `readsPerMatch: None` before the first match, the signature failure rate, `_percentile([])` |
+| 5 | `main.py` post-commit side effects | `test_post_commit_side_effects.py` | 8 | a settled match writes ONE ledger row and an unsettled one writes none; a failed row emits `ledger.write_failed` with the match and the error type and does not pass silently; integrity scoring uses the server's `observed_ms`, never the client's `measuredMs`, and swallows its own failure |
 
-The match-key derivation is also cross-checked against `tests/fixtures/chain.py`,
-which documents that its own derivation must equal the server's.
+**One defect fixed under #4.** `metrics.note_firestore_read` incremented a module
+global outside `_lock` while `snapshot()` read it inside: `+=` is a
+read-modify-write, so concurrent requests could lose an increment — always
+downward, on the number the "<20 reads per match" target is measured with. It is
+now incremented under the lock. A data race cannot be asserted
+deterministically, so the test pins the lock itself and says so.
 
-**Still open, ranked by what a bug there would cost** (hermetic line numbers):
+Every one of these was mutation-checked: the fix was reverted (or the branch
+deleted) and at least one test failed. In one case this exposed a test that
+proved nothing — the first version of the rollback test passed with the rollback
+deleted, because it did not go through `store.update`; it was rewritten, and the
+`api/main.py` comment claiming that line was the protection was corrected.
 
-| # | area | lines | what it would cost | effort |
-|---|---|---|---|---|
-| 1 | `main.py` settle/claim error branches | `2162-2174`, `2210-2232`, `2300-2327` | a settlement failing in a way nobody sees | 1 day |
-| 2 | `oracle.py` signer fallbacks | `148-152` | an eth-account version where signing silently changes shape | 2 h |
-| 3 | `onchain.py` version/decode edges | `249-250`, `268`, `284` | a pre-2.0 escrow mistaken for a 2.0 one | 4 h |
-| 4 | `metrics.py` overflow paths | `99-164` | the route table dropping entries under load | 3 h |
+### 3.3 What is left, ranked by cost (triage, not a promise)
 
-None of these is a known bug. They are the places where a *future* change could
-land without a failing test, which is exactly what a ratchet is for.
+The remaining 910 lines, grouped by the function that owns them (an AST mapping
+of coverage's own missing set, so the numbers add up to the total). The reason
+column is the classification, not a hope.
+
+| lines | where | classification |
+|---:|---|---|
+| 41 | `store.sweep_expired` | environmental — Firestore sweep |
+| 25 | `main.py` module level | import-time production guards; run only under a production env (see §3.1) |
+| 24 | `economy.record_settlement._apply` | environmental — Firestore transaction body |
+| 23 | `privacy.erase` | environmental — Firestore collections |
+| 21 | `signer._public_key` | environmental — KMS |
+| 19 | `main.queue` (the endpoint body) | **testable** — the store-contention 503 belongs to the global handler (tested); the per-endpoint duplicate is reached only by injecting a store failure mid-request |
+| 18 + 14 | `store.enqueue`, `enqueue._txn_body` | environmental — Firestore |
+| 18 + 9 | `store.update`, `update._txn_body` | environmental — Firestore (the memory-mode twin IS tested) |
+| 17 | `main._rl_check` | environmental — Firestore window |
+| 17 | `store.player_live_match` | environmental — Firestore |
+| 16 | `store._round_from_doc` | environmental — Firestore document shape |
+| 15 + 15 | `main.username_lookup`, `store.pending_challenges` | environmental — Firestore |
+| 14 | `auth.verify_siwe` (durable nonce branch) + 10 `revoke_session` | environmental — Firestore |
+| 13 + 13 | `abuse._firestore_client`, `limits._firestore_client` | environmental — client construction |
+| 13 | `main.admin_force_settle` | environmental — admin + Firestore |
+| 12 | `store.__init__` | environmental — Firestore client init |
+| 10 | `main.players_search` | environmental — Firestore query |
+| 10 + 10 | `main._resign_stale_settlements`, `store.recent/settled_matches` | mixed: the memory sweep and the past-horizon skip are tested; the Firestore variants are not |
+
+Nothing in that table is a known bug. It is the set of places where a future
+change could land without a failing test — which is what a ratchet is for — and
+the two "testable" rows are named as such rather than quietly filed under
+"environment" with the rest.
 
 ---
 
@@ -117,3 +153,5 @@ land without a failing test, which is exactly what a ratchet is for.
 4. Coverage is a floor, not a goal: 100 % of statements says nothing about
    whether `verify_settlement_tx` checks the right topics — which is why §3.2
    lists behaviour, not lines.
+5. A test that does not fail when its subject is broken is not a test. The
+   mutation that was run is recorded next to the claim it supports.

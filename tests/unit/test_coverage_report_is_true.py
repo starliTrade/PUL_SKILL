@@ -28,11 +28,12 @@ def test_the_floor_it_quotes_is_the_floor_in_the_config() -> None:
     match = re.search(r"^fail_under\s*=\s*(\d+)", HERMETIC.read_text(encoding="utf-8"), re.M)
     assert match, ".coveragerc-hermetic has no fail_under"
     floor = match.group(1)
-    # The floor moved out of a single "hermetic floor" row into the per-column
-    # table in §2; the assertion followed it there.
-    assert f"| floor | 74 (hermetic) | **{floor}** (hermetic) | {floor} |" in _text(), (
-        f"the report does not say the floor is now {floor}"
-    )
+    # The floor lives in the last column of §2's history table (it moved
+    # 74 -> 77 -> 78); the assertion reads that column rather than one literal
+    # string, so the report cannot drift from the config without failing.
+    row = next(ln for ln in _text().splitlines() if ln.startswith("| floor |"))
+    cells = [c.strip() for c in row.strip().strip("|").split("|")]
+    assert cells[-1] == f"**{floor}**", f"the report does not say the floor is now {floor}"
 
 
 def test_it_says_what_it_did_NOT_measure() -> None:

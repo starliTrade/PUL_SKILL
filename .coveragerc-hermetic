@@ -27,6 +27,11 @@
 # (`onchain.verify_settlement_tx`) had no direct coverage at all — the claim
 # integration tests replaced it with a stub — and now has 15 cases.
 #
+# 2026-10-25: 77 -> 78. 4318 statements / 910 missed, two identical runs (79%).
+# Again real tests: the four ranked gaps in docs/COVERAGE-REPORT.md §3.2 plus the
+# post-commit side effects (50 tests). They also found a real defect — the
+# Firestore read counter was incremented outside this module's lock.
+#
 # Raise `fail_under` only in the commit that adds the tests.
 [run]
 source = api
@@ -35,7 +40,7 @@ omit =
     api/requirements*.txt
 
 [report]
-fail_under = 77
+fail_under = 78
 show_missing = True
 skip_covered = False
 exclude_lines =

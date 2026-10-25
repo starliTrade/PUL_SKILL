@@ -47,14 +47,23 @@ def test_the_hermetic_gate_exists_and_has_its_own_data_file():
 def test_the_hermetic_floor_is_what_that_configuration_actually_reaches():
     """The floor tracks the MEASURED number, one point below it.
 
-    It moved 74 -> 77 on 2026-10-23 in the same commit that added the tests
-    (H-26: the claim verifier had none). The margin is deliberate: a floor equal
-    to the measurement turns any single skipped test into a red build, which
-    teaches people to lower the floor. Two points of headroom, one point of slack.
+    The margin is deliberate: a floor equal to the measurement turns any single
+    skipped test into a red build, which teaches people to lower the floor.
+
+    This used to assert the literal 77. It moved to 74 -> 77 -> 78 and will move
+    again, so the assertion reads the report's CURRENT column instead of pinning
+    one number here: the report and the config must agree, and the historic
+    first column must still say where the ratchet started.
     """
-    assert _floor(HERMETIC) == 77, (
-        "raise this floor only in the commit that adds the tests, and only after "
-        "a measured run of the hermetic configuration"
+    doc = (ROOT / "docs" / "COVERAGE-REPORT.md").read_text(encoding="utf-8")
+    row = next(ln for ln in doc.splitlines() if ln.startswith("| floor |"))
+    cells = [c.strip() for c in row.strip().strip("|").split("|")]
+    assert cells[0] == "floor" and len(cells) == 4, f"unparseable floor row: {row}"
+    assert cells[1] == "74 (hermetic)", "the ratchet's starting point was rewritten"
+    assert cells[-1] == f"**{_floor(HERMETIC)}**", (
+        "docs/COVERAGE-REPORT.md does not quote the floor that .coveragerc-hermetic "
+        "enforces — raise the floor only in the commit that adds the tests, and "
+        "only after a measured run of the hermetic configuration"
     )
 
 
