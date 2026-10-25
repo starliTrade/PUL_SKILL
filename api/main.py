@@ -2154,6 +2154,22 @@ def _attach_signed_envelope(m: Any, result: dict[str, Any]) -> dict[str, Any]:
     match behind. Firestore rolls the transaction back on its own, but the
     in-memory object mutates IN PLACE — without this snapshot the match would
     be permanently wedged as 'settled' with no signature (audit #4)."""
+    # A LOCAL SNAPSHOT, and an honest note about what it does and does not do
+    # (corrected 2026-10-24, after a test proved the old comment wrong).
+    #
+    # The comment here used to say that "without this snapshot the match would be
+    # permanently wedged as settled with no signature (audit #4)". That is not
+    # where the protection comes from: `store.update` deep-copies the match and
+    # restores it if the mutation raises (`store.py`, memory mode) or relies on
+    # the Firestore transaction (durable mode) — and both callers of this function
+    # run INSIDE `store.update`. Nothing between `saved = ...` and the raise below
+    # mutates `m` either: `eng.settle(m)` already ran, and `oracle.sign_settlement`
+    # does not touch `matchish`. So the restore is unreachable today.
+    #
+    # It is kept because it is three tuple assignments and it becomes the only
+    # protection the moment someone calls this function outside a transaction —
+    # but the REAL guarantee is `store.update`, and `tests/unit/test_settlement_rollback.py`
+    # pins it there rather than here.
     saved = (m.status, m.winner, m.settled_at, m.signed_settlement)
     try:
         # Audit #10 (item 5): pass the match so the signature deadline is
