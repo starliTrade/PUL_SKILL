@@ -33,11 +33,14 @@ interface LobbyPageProps {
   ) => void;
 }
 
+// The `tag` is a translation key, not copy: it is rendered under the stake
+// amount in all five languages (i18n audit, 2026-10-23). The unused `label`
+// field that used to sit here was English copy nothing ever displayed.
 const STAKE_TIERS = [
-  { fee: 1, label: 'Micro Duel', color: '#e2e8f0', tag: 'Micro' },
-  { fee: 2, label: 'Novice Arena', color: '#34d399', tag: 'Novice' },
-  { fee: 5, label: 'Veteran Clash', color: '#38bdf8', tag: 'Veteran' },
-  { fee: 10, label: 'High Roller', color: '#fbbf24', tag: 'High' },
+  { fee: 1, color: '#e2e8f0', tag: 'tagMicro' as const },
+  { fee: 2, color: '#34d399', tag: 'tagNovice' as const },
+  { fee: 5, color: '#38bdf8', tag: 'tagVeteran' as const },
+  { fee: 10, color: '#fbbf24', tag: 'tagHigh' as const },
 ];
 
 export const LobbyPage: React.FC<LobbyPageProps> = ({
@@ -339,7 +342,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                           ${tier.fee}
                         </span>
                         <span className={cn('text-[8px] font-mono mt-0.5', isSelected ? 'text-emerald-400/90 font-semibold' : 'text-zinc-400')}>
-                          {tier.tag}
+                          {t(tier.tag)}
                         </span>
                       </button>
                     );
@@ -431,7 +434,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                   <div className="w-7 h-7 rounded-lg bg-white/[0.06] border border-white/10 flex items-center justify-center text-white shrink-0 group-hover:scale-105 transition-transform">
                     {gameMode === 'real' ? <Swords className="w-3.5 h-3.5 text-sky-400" /> : <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />}
                   </div>
-                  <div className="text-left">
+                  <div className="text-start">
                     <div className="text-[11.5px] font-bold text-white tracking-tight flex items-center gap-1.5">
                       <span>{gameMode === 'real' ? t('joinDuelBtn', { stake: selectedStake }) : t('startPracticeBtn')}</span>
                     </div>
@@ -541,7 +544,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
 
               return matchesToDisplay.slice(0, 5).map((match: any) => {
                 const isWin = match.result === 'win';
-                const opp = match.opponentName || match.opponent || 'Arena Duelist';
+                const opp = match.opponentName || match.opponent || t('arenaDuelist');
                 // Audit 9.2 (M32): this fell back to the literal `185` when a
                 // match carried no recorded time, so the feed displayed a
                 // reaction time that was never measured. A missing measurement
@@ -562,7 +565,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                       if (m < 60) return `${m}m ${t('ago')}`;
                       return `${Math.floor(m / 60)}h ${t('ago')}`;
                     })()
-                  : 'Recent';
+                  : t('recent');
 
                 return (
                   <div
@@ -592,7 +595,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
                       </div>
                     </div>
 
-                    <div className="text-right font-mono">
+                    <div className="text-end font-mono">
                       <div className={cn(
                         "font-bold text-[11px]",
                         isWin ? "text-emerald-400" : "text-zinc-400"
@@ -627,18 +630,30 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
               </div>
             </div>
 
+            {/* Audit L-12: this overlay is PRACTICE-ONLY — `handleStartMatchmaking`
+                returns early for real mode, where the server does the matching.
+                Its copy used to say "OPPONENT READY" and "Starting duel vs X",
+                so a bot picked from a 12-name list read as another player. The
+                wording now says what it is, and a line states the terms. */}
             <h3 className="text-base font-bold text-white mb-1">
-              {matchedOpponent ? t('opponentSecured') : t('searchingDuelists')}
+              {matchedOpponent ? t('practicePartnerReady') : t('searchingDuelists')}
             </h3>
             
-            <p className="text-xs text-zinc-400 font-mono mb-6">
+            <p className="text-xs text-zinc-400 font-mono mb-2">
               {matchedOpponent 
-                ? t('lockingEscrowAgainst', { opponent: matchedOpponent })
+                ? t('practiceDuelVs', { opponent: matchedOpponent })
                 : searchStep === 1 
                   ? t('connectingWs')
                   : searchStep === 2
                     ? t('verifyingAntiCheat')
                     : t('matchingReflexTier')}
+            </p>
+
+            <p
+              data-testid="practice-bot-notice"
+              className="text-[10px] text-amber-300/80 max-w-[16rem] mx-auto mb-6 leading-relaxed"
+            >
+              {t('practiceBotNotice')}
             </p>
 
             {!matchedOpponent && (
@@ -664,7 +679,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
           >
             <button
               onClick={() => setEscrowOfflineAlert(false)}
-              className="absolute top-3 right-3 text-zinc-400 hover:text-white cursor-pointer"
+              className="absolute top-3 end-3 text-zinc-400 hover:text-white cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
@@ -699,7 +714,7 @@ export const LobbyPage: React.FC<LobbyPageProps> = ({
           >
             <button
               onClick={() => setShowWalletAlert(false)}
-              className="absolute top-3 right-3 text-zinc-400 hover:text-white cursor-pointer"
+              className="absolute top-3 end-3 text-zinc-400 hover:text-white cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>

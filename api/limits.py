@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import backendmode
 import timebase
 
 COLLECTION = "pulsar_limits"
@@ -44,6 +45,15 @@ def _firestore_client() -> Any:
     global _CLIENT, _CLIENT_RESOLVED
     if _CLIENT_RESOLVED:
         return _CLIENT
+    # Audit H-18: `PULSAR_MATCH_STORE=memory` means this process must not depend
+    # on Firestore. Obeying it here — AFTER the resolved-client cache, so an
+    # intentionally injected client still wins — is what stops the launcher from
+    # leaving a client pointed at an emulator that was never started (60 s of
+    # blocked requests per call, reported as a dead test rather than a missing
+    # dependency).
+    if not backendmode.firestore_may_be_used():
+        _CLIENT_RESOLVED = True
+        return None
     _CLIENT_RESOLVED = True
     try:
         from google.cloud import firestore as _firestore  # type: ignore[attr-defined]
@@ -66,7 +76,24 @@ class LimitError(RuntimeError):
     """The player may not stake right now, or the change is not allowed yet."""
 
 
+class StoreUnavailable(LimitError):
+    """The controls could not be read. Fail CLOSED — see `_load`."""
+
+
 def _load(address: str) -> dict[str, Any]:
+    """Read a player's controls.
+
+    Audit H-02 (2026-10-22): this used to fall through to the in-process map on
+    a store error, and an address absent from that map resolves to "no limits" —
+    so a transient Firestore outage silently LIFTED every self-exclusion and
+    every deposit ceiling for players whose record lived on another replica or
+    an earlier process. In a money product that is the wrong direction to fail:
+    a control that opens when the database is unavailable is not a control.
+
+    A configured client that cannot answer now raises `LimitError`, which the
+    HTTP layer turns into a refusal. Memory mode (no client) keeps the local
+    map, because there the map IS the source of truth.
+    """
     addr = address.lower()
     client = _firestore_client()
     if client is not None:
@@ -74,11 +101,13 @@ def _load(address: str) -> dict[str, Any]:
             snap = client.collection(COLLECTION).document(addr).get()
             if snap.exists:
                 return dict(snap.to_dict() or {})
-        except Exception:  # noqa: BLE001
-            # A store outage must not LIFT a control. Fall through to the local
-            # record; an unknown player is unlimited, which is the documented
-            # default rather than a guess.
-            pass
+            return {}
+        except Exception as exc:  # noqa: BLE001
+            raise StoreUnavailable(
+                "Your responsible-gaming controls could not be read. Staked play "
+                "is paused until the store is reachable — this is deliberate: a "
+                "limit must never disappear because a database is unavailable."
+            ) from exc
     return dict(_memory.get(addr, {}))
 
 
@@ -90,24 +119,38 @@ def _save(address: str, data: dict[str, Any]) -> None:
     _memory[addr] = dict(data)
 
 
+def _resolved(data: dict[str, Any], now: float) -> tuple[float | None, float | None]:
+    """(effective limit, pending limit) at `now`.
+
+    Audit M-01 (2026-10-22): `state()` used to PERSIST the matured pending raise
+    as a side effect — a GET wrote to the database, and two replicas could
+    resolve the same pending value concurrently. The effective value is a pure
+    function of the stored document and the clock, so it is computed here and
+    only written by the endpoint that actually changes the limit.
+    """
+    current = data.get("depositLimit")
+    pending = data.get("pendingLimit")
+    pending_at = float(data.get("pendingLimitAt", 0) or 0)
+    if pending is not None and now >= pending_at:
+        return float(pending), None
+    return (None if current is None else float(current)), (None if pending is None else float(pending))
+
+
 def state(address: str) -> dict[str, Any]:
     """The player's controls, with the effective values resolved."""
     now = timebase.now()
     data = _load(address)
-    pending_limit = data.get("pendingLimit")
-    pending_at = float(data.get("pendingLimitAt", 0) or 0)
-    # A pending RAISE becomes effective once its delay has passed.
-    if pending_limit is not None and now >= pending_at:
-        data["depositLimit"] = pending_limit
-        data.pop("pendingLimit", None)
-        data.pop("pendingLimitAt", None)
-        _save(address, data)
+    limit, pending = _resolved(data, now)
     exclusion_until = float(data.get("excludedUntil", 0) or 0)
     cooloff_until = float(data.get("cooloffUntil", 0) or 0)
     return {
-        "depositLimit": data.get("depositLimit"),
-        "pendingLimit": data.get("pendingLimit"),
-        "pendingLimitAt": data.get("pendingLimitAt"),
+        "depositLimit": limit,
+        # M-02: the name is a historical label. What is enforced is a ceiling on
+        # ONE duel's stake, not a cumulative deposit total; say so in the payload
+        # so no client (or operator) can read it as the stronger control.
+        "enforcedAs": "maxStakePerDuel",
+        "pendingLimit": pending,
+        "pendingLimitAt": data.get("pendingLimitAt") if pending is not None else None,
         "excludedUntil": exclusion_until,
         "cooloffUntil": cooloff_until,
         "selfExcluded": exclusion_until > now,
@@ -143,7 +186,14 @@ def self_exclude(address: str, seconds: int) -> dict[str, Any]:
     if seconds > MAX_EXCLUSION_SECONDS:
         raise LimitError("Self-exclusion cannot exceed one year")
     data = _load(address)
-    data["excludedUntil"] = timebase.now() + seconds
+    now = timebase.now()
+    # Audit H-01 (2026-10-22): this used to OVERWRITE `excludedUntil`, so a
+    # player who had excluded themselves for a year could call the endpoint
+    # again with 24 hours and shorten their own exclusion. The UI promises the
+    # opposite ("cannot be lifted early"), and an exclusion a player can shorten
+    # the moment they regret it is not a control. Only a LONGER period applies.
+    current = float(data.get("excludedUntil", 0) or 0)
+    data["excludedUntil"] = max(current, now + seconds)
     _save(address, data)
     return state(address)
 
@@ -153,7 +203,11 @@ def cool_off(address: str, seconds: int) -> dict[str, Any]:
     if seconds <= 0 or seconds > MAX_COOLOFF_SECONDS:
         raise LimitError(f"A cool-off must be between 1 second and {MAX_COOLOFF_SECONDS // 3600} hours")
     data = _load(address)
-    data["cooloffUntil"] = timebase.now() + seconds
+    now = timebase.now()
+    # Same direction rule as self-exclusion: a cool-off may be extended, never
+    # shortened (setting a new 1-second pause must not cut a 24-hour one).
+    current = float(data.get("cooloffUntil", 0) or 0)
+    data["cooloffUntil"] = max(current, now + seconds)
     _save(address, data)
     return state(address)
 

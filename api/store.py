@@ -24,6 +24,8 @@ import os
 import secrets
 import sys
 import threading
+import time
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -183,6 +185,51 @@ def _queue_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+class _EntryView:
+    """A queue slot that can answer `choose_opponent` WITHOUT reading its match.
+
+    Audit H-11 (2026-10-22): the pairing transaction read one match document per
+    waiting slot on every poll. With a busy stake that is N reads inside a
+    transaction that already serialises on one document — latency grows with the
+    queue, which is exactly when it must not. The slot now carries the few fields
+    the decision needs (creator, target, rating, rtt, joinedAt), and the match is
+    read only for the winner, to confirm it is still waiting.
+
+    Duck-typed on purpose: `choose_opponent` takes Match objects, and this view
+    provides the attributes it uses, so there is still ONE pairing rule.
+    """
+
+    __slots__ = ("match_id", "creator", "players", "target", "min_rtt_ms", "status")
+
+    def __init__(self, entry: dict[str, Any]) -> None:
+        self.match_id = str(entry["matchId"])
+        self.creator = str(entry.get("creator", "")).lower()
+        self.target = str(entry.get("target", "") or "").lower()
+        joined = float(entry.get("joinedAt", 0.0) or 0.0)
+        self.players = {self.creator: {"address": self.creator, "joinedAt": joined}}
+        self.min_rtt_ms = (
+            {self.creator: float(entry["rttMs"])} if entry.get("rttMs") is not None else {}
+        )
+        self.status = "waiting"
+
+
+def _entry_from_match(match: Match, target: str, rating: float) -> dict[str, Any]:
+    """The denormalised slot written for a new waiting match (audit H-11)."""
+    creator = _creator_of(match)
+    return {
+        "matchId": match.match_id,
+        "target": target,
+        "creator": creator,
+        # The rating is captured at queue time, exactly as choose_opponent reads
+        # it today (it calls rating_for(creator) at decision time). A stale value
+        # can only WIDEN or NARROW the band by one duel, and the band widens with
+        # waiting time anyway — the alternative is a read per slot.
+        "rating": float(rating),
+        "rttMs": _creator_rtt(match),
+        "joinedAt": float(match.players.get(creator, {}).get("joinedAt", 0.0) or 0.0),
+    }
+
+
 def _round_to_doc(r: Round) -> dict[str, Any]:
     return {
         "index": r.index,
@@ -244,6 +291,14 @@ def _round_from_doc(d: dict[str, Any]) -> Round:
 #   2. legacy documents are migrated forward (derived fields stamped);
 #   3. a document NEWER than this code refuses to be read, loudly.
 SCHEMA_VERSION = 1
+
+
+class DisputeStoreUnavailable(RuntimeError):
+    """The dispute record could not be written or updated (audit L-09).
+
+    Distinguished from "not found": an unavailable store must never be reported
+    to a player as "your report was accepted" or to an operator as "resolved".
+    """
 
 
 class SchemaVersionError(RuntimeError):
@@ -595,6 +650,10 @@ class FirestoreStore:
         self.local = InMemoryStore()  # write-through cache for hot reads
         # Audit H9: the last sweep failure, surfaced through /api/health.
         self.last_sweep_error: str = ""
+        # Audit H-12 (2026-10-22): cursor + backlog signal for the re-sign sweep.
+        self._sweep_cursor: Any = None
+        self.last_sweep_scanned = 0
+        self.sweep_backlog_suspected = False
         # address -> live (waiting|active) match id for idempotent re-polls.
         self.player_match: dict[str, str] = {}
         # Audit CRITICAL-2: the rating lookup used by the pairing band. Injected
@@ -644,30 +703,45 @@ class FirestoreStore:
         def _txn_body(transaction: Any) -> Match | None:
             snap = queue_ref.get(transaction=transaction)
             data = (snap.to_dict() or {}) if snap.exists else {}
-            # Load every live waiting slot (dangling/paired slots are dropped).
-            loaded: list[tuple[dict[str, Any], Match]] = []
-            for entry in _queue_entries(data):
+            entries = _queue_entries(data)
+
+            # Audit H-11: slots written by this version carry what the decision
+            # needs. A legacy slot (no `creator`) is read once so an in-flight
+            # deployment keeps matchmaking during the upgrade.
+            views: list[Any] = []
+            legacy_slots: list[tuple[dict[str, Any], Match]] = []
+            for entry in entries:
+                if entry.get("creator"):
+                    views.append(_EntryView(entry))
+                    continue
                 msnap = self._match_ref(str(entry["matchId"])).get(transaction=transaction)
                 if not msnap.exists:
                     continue
                 m = _match_from_doc(msnap.to_dict())
                 if m.status != "waiting":
                     continue
-                loaded.append((entry, m))
+                legacy_slots.append((entry, m))
+                views.append(m)
 
             # Idempotent re-poll: the caller already owns a waiting slot. Without
             # this branch the slot was stolen from under them and every poll
             # minted an orphan match.
-            for _entry, m in loaded:
-                if addr in m.players:
-                    transaction.set(queue_ref, {"waiting": [e for e, _ in loaded]})
-                    return m
+            for view in views:
+                if addr in view.players:
+                    transaction.set(
+                        queue_ref, {"waiting": [e for e in entries if e.get("matchId") != view.match_id]}
+                    )
+                    return (
+                        view
+                        if isinstance(view, Match)
+                        else self._load_waiting(view.match_id, transaction)
+                    )
 
             # Audit CRITICAL-2: the SAME pairing decision the memory backend
             # uses — ping cap, rating band and closest-connection preference all
             # apply here, because production runs THIS path.
             chosen = choose_opponent(
-                [m for _e, m in loaded],
+                views,
                 addr=addr,
                 target=reserved_for,
                 rtt_ms=rtt_ms,
@@ -675,40 +749,35 @@ class FirestoreStore:
                 now=timebase.now(),
             )
             if chosen is not None:
-                chosen.players[addr] = {"address": addr, "joinedAt": timebase.now()}
-                chosen.status = "active"
-                chosen.joiner = addr
+                # Audit H-11: ONE match read, for the winner only — and it is a
+                # real read of the authoritative state, not a trust in the slot
+                # metadata: a match that stopped waiting since it was queued must
+                # not be paired.
+                chosen_match = self._load_waiting(chosen.match_id, transaction)
+                if chosen_match is None:
+                    remaining = [e for e in entries if e.get("matchId") != chosen.match_id]
+                    transaction.set(queue_ref, {"waiting": remaining})
+                    return self._create_waiting(
+                        transaction, queue_ref, entries, addr, stake, reserved_for, rtt_ms
+                    )
+                chosen_match.players[addr] = {"address": addr, "joinedAt": timebase.now()}
+                chosen_match.status = "active"
+                chosen_match.joiner = addr
                 # Audit #8 F-05: activation instant — the play/grace clock
                 # starts at pairing, not queue entry.
-                chosen.activated_at = timebase.now()
+                chosen_match.activated_at = timebase.now()
                 if rtt_ms is not None:
-                    chosen.min_rtt_ms[addr] = float(rtt_ms)
-                transaction.set(self._match_ref(chosen.match_id), _match_to_doc(chosen))
+                    chosen_match.min_rtt_ms[addr] = float(rtt_ms)
+                transaction.set(self._match_ref(chosen_match.match_id), _match_to_doc(chosen_match))
                 transaction.set(
                     queue_ref,
-                    {"waiting": [e for e, mm in loaded if mm is not chosen]},
+                    {"waiting": [e for e in entries if e.get("matchId") != chosen_match.match_id]},
                 )
-                return chosen
+                return chosen_match
 
-            # No compatible opponent: create a fresh waiting match and append a
-            # slot for it.
-            match_id = secrets.token_hex(16)
-            m = Match(
-                match_id=match_id,
-                stake=stake,
-                created_at=timebase.now(),
-                players={addr: {"address": addr, "joinedAt": timebase.now()}},
-                creator=addr,
-                target=reserved_for,
+            return self._create_waiting(
+                transaction, queue_ref, entries, addr, stake, reserved_for, rtt_ms
             )
-            if rtt_ms is not None:
-                m.min_rtt_ms[addr] = float(rtt_ms)
-            transaction.set(self._match_ref(match_id), _match_to_doc(m))
-            transaction.set(
-                queue_ref,
-                {"waiting": [e for e, _ in loaded] + [{"matchId": match_id, "target": reserved_for}]},
-            )
-            return m
 
         # P0-fix: the decorator MUST come from the imported module (aliased
         # `_firestore`). The old `@firestore.transactional` referenced an
@@ -727,6 +796,53 @@ class FirestoreStore:
         self.local.put(match)
         self.player_match[addr] = match.match_id
         return match
+
+    def _load_waiting(self, match_id: str, transaction: Any) -> Match | None:
+        """The authoritative match, if it is still WAITING. One read (H-11)."""
+        msnap = self._match_ref(match_id).get(transaction=transaction)
+        if not msnap.exists:
+            return None
+        m = _match_from_doc(msnap.to_dict())
+        return m if m.status == "waiting" else None
+
+    def _create_waiting(
+        self,
+        transaction: Any,
+        queue_ref: Any,
+        entries: list[dict[str, Any]],
+        addr: str,
+        stake: float,
+        reserved_for: str,
+        rtt_ms: float | None,
+    ) -> Match:
+        """Mint a waiting match and append its denormalised slot (audit H-11)."""
+        match_id = secrets.token_hex(16)
+        m = Match(
+            match_id=match_id,
+            stake=stake,
+            created_at=timebase.now(),
+            players={addr: {"address": addr, "joinedAt": timebase.now()}},
+            creator=addr,
+            target=reserved_for,
+        )
+        if rtt_ms is not None:
+            m.min_rtt_ms[addr] = float(rtt_ms)
+        slot = _entry_from_match(m, reserved_for, self._rating_for(addr))
+        # Drop slots that MUST be dead, so the document cannot grow without
+        # bound. Deliberately not a liveness check (that is one read per slot —
+        # exactly the cost H-11 removes): a waiting match cannot outlive
+        # QUEUE_EXPIRY, so an older slot is dangling by construction. A slot
+        # whose match is missing for any other reason is dropped when someone
+        # tries to pair with it (`_load_waiting` returns None).
+        cutoff = timebase.now() - _default_engine.QUEUE_EXPIRY_SECONDS - 60
+        kept = [
+            e
+            for e in entries
+            if e.get("creator") and float(e.get("joinedAt", 0.0) or 0.0) >= cutoff
+        ]
+        transaction.set(self._match_ref(match_id), _match_to_doc(m))
+        transaction.set(queue_ref, {"waiting": kept + [slot]})
+        return m
 
     def get(self, match_id: str) -> Match:
         # Audit 2026-10-13: `metrics.note_firestore_read` had NO caller, so the
@@ -872,7 +988,7 @@ class FirestoreStore:
         self.local.put(match)
 
     def sweep_stale_settlements(self) -> list[Match]:
-        """Audit #11 C2: re-sign sweep over the DURABLE backend.
+        """Audit #11 C2 / H-12: re-sign sweep over the DURABLE backend.
 
         ``_resign_stale_settlements`` used to iterate ``store.memory.matches``
         — the per-REPLICA cache. On Firestore, a settled match written by
@@ -888,14 +1004,34 @@ class FirestoreStore:
         index or a transient error returns what was scanned so far."""
         now = timebase.now()
         found: list[Match] = []
-        try:
-            docs = (
+
+        def _page(cursor: Any) -> list[Any]:
+            query = (
                 self.db.collection(COLLECTION)
                 .where("status", "==", "settled")
                 .order_by("settled_at")
-                .limit(100)
-                .stream()
+                .limit(SWEEP_PAGE_SIZE)
             )
+            if cursor is not None:
+                query = query.start_after(cursor)
+            return list(query.stream())
+
+        try:
+            docs = _page(self._sweep_cursor)
+            if not docs and self._sweep_cursor is not None:
+                # End of the collection: wrap. Without this, a deployment with
+                # more than one page of settled matches would eventually stop
+                # sweeping the OLDEST ones forever — the exact matches most
+                # likely to hold an unspendable prize.
+                self._sweep_cursor = None
+                docs = _page(None)
+            self.last_sweep_scanned = len(docs)
+            # A full page means there MAY be more work than one pass covers.
+            # Not an error, but the signal that H-12's "100 and no cursor"
+            # window is actually being hit.
+            self.sweep_backlog_suspected = len(docs) >= SWEEP_PAGE_SIZE
+            if docs:
+                self._sweep_cursor = docs[-1]
             for doc in docs:
                 try:
                     m = _match_from_doc(doc.to_dict() or {})
@@ -917,6 +1053,25 @@ class FirestoreStore:
         return found
 
 
+def _requires_durable_store() -> bool:
+    """True in every deployment that has not explicitly opted out (audit H-06).
+
+    The default is production-like: a deployment opts OUT with PULSAR_ENV=dev.
+    `PULSAR_REQUIRE_DURABLE_STORE=0` is the escape hatch for a deliberate
+    single-process demo, and it must be set on purpose.
+    """
+    if os.environ.get("PULSAR_REQUIRE_DURABLE_STORE", "").strip().lower() in ("0", "false", "no"):
+        return False
+    if str(os.environ.get("PULSAR_ENV", "")).strip().lower() in ("dev", "test", "local", "ci"):
+        return False
+    return True
+
+
+# Audit H-12: one page of the re-sign sweep. Small enough to stay inside a
+# request's time budget, large enough that a healthy deployment needs one page.
+SWEEP_PAGE_SIZE = 100
+
+
 class DurableMatchStore:
     """
     Facade with the MatchStore interface used by api/main.py:
@@ -927,8 +1082,10 @@ class DurableMatchStore:
     """
 
     def __init__(self, backend: str | None = None) -> None:
-        # Phase 6.4: match id -> list of dispute reports.
+        # Phase 6.4: match id -> list of dispute reports (cache; durable copy
+        # lives in pulsar_disputes since audit H-10).
         self.disputes: dict[str, list[dict]] = {}
+        self._dispute_write_failures = 0
         backend = backend or os.environ.get("PULSAR_MATCH_STORE", "auto")
         self.backend_name = "memory"
         self._firestore: Any = None
@@ -942,6 +1099,14 @@ class DurableMatchStore:
         # install_persistence() so transactional mutations never double-save.
         self._orig_engine: Any = None
         self.memory = InMemoryStore()
+        # Audit H-17: write ACCOUNTING, not write configuration. `matchStore`
+        # says which client we built; these say whether it ever worked.
+        self._writes = 0
+        self._write_failures = 0
+        self._last_ok_at: float | None = None
+        self._last_failure_at: float | None = None
+        self._last_error = ""
+        self._last_write_failed = False
 
         if backend in ("firestore", "auto") and _FIRESTORE_AVAILABLE:
             project = os.environ.get("FIRESTORE_PROJECT_ID") or None
@@ -976,9 +1141,36 @@ class DurableMatchStore:
                 self._firestore = None
                 self._fs_store = None
                 self.backend_name = "memory"
+                # Audit H-06 (2026-10-22): in a production-like deployment the
+                # fallback is not a survivable mode — waiters and their matches
+                # would live in ONE replica's memory, so a re-poll routed to
+                # another replica answers "match not found" while the stake is
+                # already in escrow. Refuse to boot instead of serving traffic
+                # that cannot keep the promise the contract makes.
+                if _requires_durable_store():
+                    raise RuntimeError(
+                        "Refusing to start: the durable match store is required "
+                        f"(PULSAR_MATCH_STORE={backend}) but Firestore could not be "
+                        f"reached ({type(exc).__name__}: {exc}). Monetary play "
+                        "cannot run on per-replica memory. Fix credentials, or set "
+                        "PULSAR_ENV=dev for a local run."
+                    ) from exc
         elif backend == "firestore":
             raise RuntimeError(
                 "PULSAR_MATCH_STORE=firestore but google-cloud-firestore is not installed"
+            )
+        elif backend == "memory" and _requires_durable_store():
+            # Audit H-18 (found by running the stack, 2026-10-23): H-06 refuses
+            # an IMPLICIT fallback in production, but an explicit
+            # `PULSAR_MATCH_STORE=memory` was accepted silently — matches then
+            # live in one replica's memory and vanish on restart, which is the
+            # same money-path failure with a config line that looks deliberate.
+            # One word in an env file should not be able to do that quietly.
+            raise RuntimeError(
+                "Refusing to start: PULSAR_MATCH_STORE=memory in a production-like "
+                "environment means matches are lost on restart and invisible to "
+                "other replicas. Set PULSAR_ENV=dev for a local run, or "
+                "PULSAR_REQUIRE_DURABLE_STORE=0 if this really is a throwaway demo."
             )
 
     # -- interface ---------------------------------------------------------
@@ -986,6 +1178,105 @@ class DurableMatchStore:
     @property
     def durable(self) -> bool:
         return self.backend_name == "firestore"
+
+    # -- write accountability (audit H-17) ---------------------------------
+    #
+    # `matchStore: "firestore"` only ever proved that a CLIENT OBJECT could be
+    # constructed: google-cloud-firestore does no I/O in its constructor, so a
+    # wrong project id, revoked IAM or a blocked network still reported
+    # `matchStore: firestore` on /api/health and looked durable. Verified
+    # 2026-10-23 against a dead emulator endpoint: the client built fine, health
+    # said `firestore`, and the first read hung for 60 s.
+    #
+    # The counters below move only when a durable write actually happened, so
+    # they are EVIDENCE, not configuration.
+
+    def _note_write_ok(self) -> None:
+        self._writes += 1
+        self._last_ok_at = timebase.now()
+        self._last_write_failed = False
+
+    def _note_write_failure(self, exc: BaseException) -> None:
+        self._write_failures += 1
+        self._last_failure_at = timebase.now()
+        self._last_write_failed = True
+        # Truncated: /api/health is unauthenticated, and a driver error can echo
+        # a project name, an endpoint or a certificate subject.
+        self._last_error = f"{type(exc).__name__}: {exc}"[:200]
+
+    def write_stats(self) -> dict[str, Any]:
+        """Configuration AND evidence, so an operator can tell them apart.
+
+        `writable` is deliberately tri-state:
+          * None — no durable write has been attempted yet (or the backend is
+            memory), so nothing is proven either way;
+          * True — the last durable write succeeded;
+          * False — the last durable write failed (see `lastError`).
+        A boolean would have to guess, and a guess is exactly what H-17 is about.
+        """
+        attempted = self._writes + self._write_failures
+        if not self.durable or attempted == 0:
+            writable: bool | None = None
+        else:
+            writable = not self._last_write_failed
+        return {
+            "backend": self.backend_name,
+            "durable": self.durable,
+            "writes": self._writes,
+            "failures": self._write_failures,
+            "writable": writable,
+            "lastOkAt": self._last_ok_at,
+            "lastFailureAt": self._last_failure_at,
+            "lastError": self._last_error,
+        }
+
+    def probe(self, timeout_ms: int = 1500) -> dict[str, Any]:
+        """One bounded read against the durable backend (`/api/health?deep=1`).
+
+        Deliberately NOT part of the default health response: a liveness probe
+        that waits on a dead database turns a slow dependency into an
+        unresponsive process, and the load balancer then kills a server that was
+        otherwise fine. The deadline is wall-clock in a daemon thread rather
+        than a gRPC argument — measured 2026-10-23: `get(timeout=3)` against a
+        dead endpoint hung for 60 s, because the client's retry policy outlives
+        the per-call timeout.
+        """
+        if not self.durable or self._firestore is None:
+            # `ok` is None, not True. Nothing was checked, so nothing is known —
+            # the same rule this file applies to `writable`. A monitoring rule
+            # that greps `ok` must not read "no database configured" as "healthy".
+            return {"checked": False, "ok": None, "reason": "no durable backend configured"}
+
+        started = time.monotonic()
+        outcome: dict[str, Any] = {}
+
+        def _read() -> None:
+            try:
+                self._firestore.collection("pulsar_health").document("probe").get(
+                    timeout=timeout_ms / 1000
+                )
+                outcome["ok"] = True
+            except Exception as exc:  # noqa: BLE001 — the probe reports, never raises
+                outcome["ok"] = False
+                outcome["error"] = f"{type(exc).__name__}: {exc}"[:200]
+
+        worker = threading.Thread(target=_read, name="store-probe", daemon=True)
+        worker.start()
+        worker.join(timeout_ms / 1000)
+        latency_ms = int((time.monotonic() - started) * 1000)
+        if worker.is_alive() or "ok" not in outcome:
+            return {
+                "checked": True,
+                "ok": False,
+                "latencyMs": latency_ms,
+                "error": f"no answer within {timeout_ms} ms",
+            }
+        return {
+            "checked": True,
+            "ok": bool(outcome.get("ok")),
+            "latencyMs": latency_ms,
+            "error": outcome.get("error", ""),
+        }
 
     def enqueue(
         self,
@@ -1001,19 +1292,114 @@ class DurableMatchStore:
         # Audit M27: `target` is forwarded for the same reason — a friend
         # challenge that only works on the memory backend is not a feature.
         if self._fs_store is not None:
-            match = self._fs_store.enqueue(address, stake, rtt_ms, target)
+            try:
+                match = self._fs_store.enqueue(address, stake, rtt_ms, target)
+            except Exception as exc:  # noqa: BLE001 — counted, then re-raised
+                self._note_write_failure(exc)
+                raise
+            self._note_write_ok()
             self._mirror(match)
             return match
         return self.memory.enqueue(address, stake, rtt_ms, target)
 
-    def record_dispute(self, match_id: str, report: dict) -> None:
-        """Attach a player's dispute report to a match (phase 6.4).
+    def record_dispute(self, match_id: str, report: dict) -> str:
+        """Persist a player's dispute report (phase 6.4, audit H-10).
 
-        Kept on the match so an operator inspecting it finds the report
-        alongside the state it is about. In-process for now: persisting reports
-        durably needs their own collection, which is a separate change.
+        Audit H-10 (2026-10-22): this lived ONLY in a process-local dict. A
+        restart erased it and another replica never saw it, so the one artefact
+        an operator needs in a payout disagreement could silently not exist.
+
+        The report is written to `pulsar_disputes` (Admin SDK, rules deny
+        clients) keyed by a generated id, and mirrored in memory for tests and
+        for `disputes_for()` on the replica that took the report. A write
+        failure is COUNTED and surfaced on `/api/health` — losing a dispute
+        silently is worse than refusing it.
         """
-        self.disputes.setdefault(match_id, []).append(report)
+        # Audit L-09: the report now has an IDENTITY and a LIFECYCLE. It used to
+        # be an anonymous append: the player could file one and never learn what
+        # happened, and an operator could not say which report they had answered.
+        # The id is what `GET /api/dispute/{match}` and the admin resolve call
+        # both address, so "under review" is a fact rather than a hope.
+        #
+        # NOTE: the stored record is created FIRST with `status: "open"`; the
+        # player-visible object is the same one the operator resolves.
+        dispute_id = uuid.uuid4().hex
+        record = {"id": dispute_id, **report, "status": report.get("status", "open")}
+        self.disputes.setdefault(match_id, []).append(record)
+        if self._fs_store is None:
+            return dispute_id
+        try:
+            ref = self._fs_store.db.collection("pulsar_disputes").add(
+                {"matchId": match_id, **record, "at": timebase.now()}
+            )[1]
+            # The durable id wins: another replica must be able to address it.
+            dispute_id = ref.id
+            record["id"] = dispute_id
+        except Exception as exc:  # noqa: BLE001
+            self._dispute_write_failures += 1
+            print(f"[dispute] durable write failed: {exc!r}", file=sys.stderr)
+            raise DisputeStoreUnavailable(str(exc)) from exc
+        return dispute_id
+
+    def resolve_dispute(
+        self,
+        match_id: str,
+        dispute_id: str,
+        *,
+        status: str,
+        note: str,
+        by: str,
+    ) -> bool:
+        """Close a dispute report with a decision the player can read (L-09).
+
+        Returns False when the id does not belong to this match, so the HTTP
+        layer can answer 404 instead of silently "resolving" nothing. A durable
+        write failure RAISES: telling an operator "resolved" when the record was
+        never updated is the same class of lie as losing the report entirely.
+        """
+        resolved_at = timebase.now()
+        found = False
+        for report in self.disputes.get(match_id, []):
+            if str(report.get("id")) == str(dispute_id):
+                report.update(
+                    status=status, resolution=note, resolvedAt=resolved_at, resolvedBy=by
+                )
+                found = True
+                break
+        if self._fs_store is not None:
+            try:
+                doc = self._fs_store.db.collection("pulsar_disputes").document(dispute_id)
+                if doc.get().exists:
+                    doc.update(
+                        {
+                            "status": status,
+                            "resolution": note,
+                            "resolvedAt": resolved_at,
+                            "resolvedBy": by,
+                        }
+                    )
+                    found = True
+            except Exception as exc:  # noqa: BLE001
+                self._dispute_write_failures += 1
+                print(f"[dispute] durable resolve failed: {exc!r}", file=sys.stderr)
+                raise DisputeStoreUnavailable(str(exc)) from exc
+        return found
+
+    def disputes_for(self, match_id: str) -> list[dict[str, Any]]:
+        """Every dispute report for a match: durable first, cache as a fallback."""
+        out: list[dict[str, Any]] = []
+        if self._fs_store is not None:
+            try:
+                for snap in (
+                    self._fs_store.db.collection("pulsar_disputes")
+                    .where("matchId", "==", match_id)
+                    .stream()
+                ):
+                    out.append(dict(snap.to_dict() or {}))
+            except Exception as exc:  # noqa: BLE001
+                print(f"[dispute] durable read failed: {exc!r}", file=sys.stderr)
+        cached = list(self.disputes.get(match_id, []))
+        return out or cached
 
     def rating_for(self, address: str) -> float:
         """Audit H23: the durable store keeps ratings in the in-memory backend.
@@ -1129,10 +1515,22 @@ class DurableMatchStore:
                 unique.append(m)
         return unique
 
+    @property
+    def sweep_backlog(self) -> bool:
+        """Whether the last durable sweep filled its page (audit H-12)."""
+        if self._fs_store is None:
+            return False
+        return bool(getattr(self._fs_store, "sweep_backlog_suspected", False))
+
     def sweep_stale_settlements(self) -> list[Match]:
         """Audit #11 C2: settled matches with an expired envelope, read from
         the DURABLE backend (empty list on the memory backend — the caller's
-        own cache IS the full dataset there, the original path still works)."""
+        own cache IS the full dataset there, the original path still works).
+
+        Audit H-12: the durable scan pages with a cursor, so a deployment with
+        more settled matches than one page keeps sweeping the oldest ones
+        instead of re-reading the same first page forever.
+        """
         if self._fs_store is not None:
             return self._fs_store.sweep_stale_settlements()
         return []
@@ -1140,7 +1538,12 @@ class DurableMatchStore:
     def put(self, match: Match) -> None:
         """Persist after a mutation (commit/reveal/submit/settle)."""
         if self._fs_store is not None:
-            self._fs_store.put(match)
+            try:
+                self._fs_store.put(match)
+            except Exception as exc:  # noqa: BLE001 — counted, then re-raised
+                self._note_write_failure(exc)
+                raise
+            self._note_write_ok()
         self.memory.put(match)
 
     def update(self, match_id: str, mutate: Any) -> Any:
@@ -1155,7 +1558,12 @@ class DurableMatchStore:
             return mutate(m, eng)
 
         if self._fs_store is not None:
-            out = self._fs_store.update(match_id, _one_arg)
+            try:
+                out = self._fs_store.update(match_id, _one_arg)
+            except Exception as exc:  # noqa: BLE001 — counted, then re-raised
+                self._note_write_failure(exc)
+                raise
+            self._note_write_ok()
             self._mirror_idempotent(match_id)
             return out
         return self.memory.update(match_id, _one_arg)

@@ -226,6 +226,17 @@ def do_settle_mode():
         f"server up, escrow gate configured (chain {expected_chain})",
         h.get("escrowConfigured") is True and h.get("chainId") == expected_chain,
     )
+    # Audit M-11: rehearse against the code you think is deployed. A redeploy
+    # that forgot to update ESCROW_ADDRESS produces a script that "runs" but
+    # exercises the previous contract — the exact failure a rehearsal is
+    # supposed to catch.
+    version_problem = h.get("escrowVersionProblem")
+    check(
+        f"escrow publishes the expected version ({h.get('escrowVersion')})",
+        version_problem is None,
+    )
+    if version_problem:
+        print(f"  !! {version_problem}")
     p1pol, p2pol = pol_balance(P1.address), pol_balance(P2.address)
     check(f"P1 has gas ({p1pol / 1e18:.4f} POL)", p1pol > 5_000_000_000_000_000)
     check(f"P2 has gas ({p2pol / 1e18:.4f} POL)", p2pol > 5_000_000_000_000_000)
@@ -258,8 +269,8 @@ def do_settle_mode():
     check("both players hold sessions", bool(t1) and bool(t2))
 
     print("== matchmaking ==")
-    m1 = s.post("/api/queue", json={"stake": STAKE}, headers=hdrs(t1)).json()
-    m2 = s.post("/api/queue", json={"stake": STAKE}, headers=hdrs(t2)).json()
+    m1 = s.post("/api/queue", json={"stake": STAKE, "rttMs": 40}, headers=hdrs(t1)).json()
+    m2 = s.post("/api/queue", json={"stake": STAKE, "rttMs": 40}, headers=hdrs(t2)).json()
     if m1["matchId"] == m2["matchId"] and m2["status"] == "active":
         check("paired into one active match", True)
     elif m1["matchId"] == m2["matchId"]:

@@ -213,3 +213,115 @@ describe('server-authoritative progression (audit M31)', () => {
     expect(summary?.totalAwardedXP).toBe(205);
   });
 });
+
+/**
+ * Audit M-14 — a verified stat and a local estimate must not look the same.
+ *
+ * The ledger is authoritative, but when it cannot answer the client used to
+ * render its own counters as if they were stats. After a ranked duel whose
+ * settlement the server never confirmed, that showed a win the payout ledger
+ * does not have. The numbers are still advanced (the match did happen); the
+ * provenance is what changes, and the profile screen renders "—" for
+ * `'unknown'` instead of an unverified figure.
+ */
+describe('progression provenance (audit M-14)', () => {
+  beforeEach(() => {
+    h.stored = null;
+    h.fetchPlayerStats.mockReset();
+  });
+
+  it('marks a ranked duel as server-verified when the ledger answers', async () => {
+    h.fetchPlayerStats.mockResolvedValue({
+      available: true,
+      wins: 1,
+      losses: 0,
+      voids: 0,
+      totalMatches: 1,
+      xp: 205,
+      level: 2,
+      winStreak: 1,
+      bestReactionMs: 200,
+      avgReactionMs: 200,
+      lastXpAwarded: 205,
+    });
+
+    const { result } = renderHook(() => usePulsarStore());
+    await act(async () => {
+      await result.current.recordMatch(MATCH);
+    });
+
+    expect(h.stored?.progressionSource).toBe('server');
+    expect(typeof h.stored?.progressionCheckedAt).toBe('number');
+    expect(h.stored?.progressionCheckedAt as number).toBeGreaterThan(0);
+  });
+
+  it('marks a ranked duel as UNKNOWN when the ledger cannot confirm it', async () => {
+    h.fetchPlayerStats.mockResolvedValue({ available: false });
+
+    const { result } = renderHook(() => usePulsarStore());
+    await act(async () => {
+      await result.current.recordMatch(MATCH);
+    });
+
+    expect(h.stored?.progressionSource).toBe('unknown');
+    // The estimate is still stored (history and the next reconciliation need
+    // it) — it is the DISPLAY that must not treat it as a fact.
+    expect(h.stored?.wins).toBe(1);
+    // No verification timestamp: claiming one would be the bug this fixes.
+    expect(h.stored?.progressionCheckedAt ?? 0).toBe(0);
+  });
+
+  it('leaves a practice duel alone: practice XP is local by design', async () => {
+    h.fetchPlayerStats.mockResolvedValue({ available: false });
+
+    const { result } = renderHook(() => usePulsarStore());
+    await act(async () => {
+      await result.current.recordMatch({ ...MATCH, ranked: false });
+    });
+
+    expect(h.stored?.progressionSource).toBeUndefined();
+    expect(h.stored?.wins).toBe(1);
+  });
+
+  it('refreshProgression() clears the unknown flag when the ledger answers', async () => {
+    h.fetchPlayerStats.mockResolvedValue({ available: false });
+    const { result } = renderHook(() => usePulsarStore());
+    await act(async () => {
+      await result.current.recordMatch(MATCH);
+    });
+    expect(h.stored?.progressionSource).toBe('unknown');
+
+    h.fetchPlayerStats.mockResolvedValue({
+      available: true,
+      wins: 7,
+      losses: 2,
+      voids: 0,
+      totalMatches: 9,
+      xp: 1500,
+      level: 6,
+      winStreak: 2,
+      bestReactionMs: 190,
+      avgReactionMs: 240,
+      lastXpAwarded: 120,
+    });
+    let source: string | undefined;
+    await act(async () => {
+      source = await result.current.refreshProgression();
+    });
+
+    expect(source).toBe('server');
+    expect(h.stored?.progressionSource).toBe('server');
+    expect(h.stored?.wins).toBe(7);
+    expect(h.stored?.xp).toBe(1500);
+  });
+
+  it('refreshProgression() reports the failure instead of pretending', async () => {
+    h.fetchPlayerStats.mockResolvedValue({ available: false });
+    const { result } = renderHook(() => usePulsarStore());
+    let source: string | undefined;
+    await act(async () => {
+      source = await result.current.refreshProgression();
+    });
+    expect(source).toBe('local'); // no ranked history yet: nothing to distrust
+  });
+});

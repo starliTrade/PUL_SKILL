@@ -37,3 +37,13 @@ export async function playPracticeDuel(page: Page): Promise<void> {
     await page.waitForTimeout(300);
   }
 }
+
+/**
+ * The API origin the specs talk to (audit L-04).
+ *
+ * `playwright.config.ts` already honours `PULSAR_E2E_API_PORT`, but three specs
+ * hard-coded 8000 — so setting the port moved the server and left the tests
+ * knocking on a closed door (measured: `ECONNREFUSED 127.0.0.1:8000` while the
+ * stack was healthy on another port). One place now decides.
+ */
+export const API_ORIGIN = `http://127.0.0.1:${process.env.PULSAR_E2E_API_PORT ?? '8000'}`;

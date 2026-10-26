@@ -161,6 +161,106 @@ def test_game_server_install_step_cannot_fail_before_any_test(workflow: dict):
     )
 
 
+def test_the_firestore_suite_runs_in_its_own_namespace(workflow: dict) -> None:
+    """The suite asserts on an EMPTY queue; the tests above it fill one.
+
+    In CI the script and the server suite both landed in the emulator's
+    `default` project (no project id configured), so by the time the script
+    enqueued its first player the queue held someone else's waiter. `enqueue`
+    paired them, the "waiting match" assert failed, and every later check was
+    about a match the script never created — ending in "Not a participant of
+    this match". The emulator keeps data per project, so a named project makes
+    the suite start empty however often it runs.
+    """
+    steps = _steps(workflow["jobs"]["game-server"])
+    step = next(s for s in steps if "Firestore integration suite" in s.get("name", ""))
+    assert step.get("env", {}).get("FIRESTORE_PROJECT_ID"), (
+        "the suite shares the default namespace with the server tests"
+    )
+    script = (WORKFLOW.parents[2] / "scripts" / "test_firestore_integration.py").read_text()
+    assert 'os.environ.setdefault("FIRESTORE_PROJECT_ID"' in script, (
+        "running the script by hand must land in the same private namespace"
+    )
+
+
+def test_the_verify_gates_job_installs_dependencies_that_exist(workflow: dict) -> None:
+    """This job exists to prove "CI runs the same gates a human runs".
+
+    It read `requirements.txt` from the repository ROOT. The requirements live in
+    `api/`, so the step failed in eight seconds and — because it is not
+    `|| true` — every later step was skipped: frontend deps, Foundry, Playwright,
+    anvil, and `bash scripts/verify.sh`. A job that never reaches its gate shows
+    the same red X as a gate that failed, which is how "verify-gates is red" was
+    true for the whole life of the job while the gate itself had never run.
+    """
+    scripts = _job_scripts(workflow, "verify-gates")
+    assert "-r api/requirements-dev.txt" in scripts, (
+        "the verify-gates job must install the server deps from api/"
+    )
+    assert "-r requirements.txt" not in scripts, (
+        "there is no requirements.txt at the repository root; this step fails "
+        "before verify.sh is ever reached"
+    )
+
+
+def test_the_verify_gates_job_installs_the_solidity_libraries(workflow: dict) -> None:
+    """`start_anvil.sh` compiles PulsarEscrow, which imports OpenZeppelin.
+
+    The repo does not vendor `lib/` (deliberately), so a clean runner must clone
+    it. verify-gates did not, and the run stopped at "Deploy the escrow to a
+    local anvil" — one step before the gate it exists to run.
+    """
+    steps = _steps(workflow["jobs"]["verify-gates"])
+    names = [step.get("name", "") for step in steps]
+    lib_at = next(i for i, n in enumerate(names) if "Solidity test dependencies" in n)
+    anvil_at = next(i for i, n in enumerate(names) if n == "Deploy the escrow to a local anvil")
+    assert lib_at < anvil_at, "the libraries are installed after the deploy that needs them"
+    install = steps[lib_at]["run"]
+    assert "openzeppelin-contracts" in install and "forge-std" in install
+    assert "test -f lib/forge-std/src/Test.sol" in install, (
+        "a clone that silently produced nothing must fail here, not three steps later"
+    )
+
+
+def test_a_failing_test_step_reports_the_failing_ids(workflow: dict) -> None:
+    """A red X with "exit code 1" cannot be attributed.
+
+    The server-test step produces thousands of lines of output; the failing test
+    ids are in there and nowhere else. The step now re-emits them as check
+    annotations, which the API returns as structured data — that is the
+    difference between "CI is red" and "these four tests failed".
+    """
+    scripts = _job_scripts(workflow, "game-server")
+    assert "::error::" in scripts, "the test step does not surface failures as annotations"
+    assert "PIPESTATUS" in scripts, (
+        "the step must exit with pytest's status, not tee's — otherwise a failing "
+        "suite reports success"
+    )
+
+
+def test_a_failing_gate_lists_the_gate_that_failed(workflow: dict) -> None:
+    """A red build must say WHICH of the 22 gates failed.
+
+    `::error::` annotations were tried first and do not survive: the check-run
+    API returns only GitHub's generic "Process completed with exit code 1" for a
+    failing step. The job summary does survive — it comes back as
+    `output.summary` — so that is the channel, and this test pins it.
+    """
+    steps = _steps(workflow["jobs"]["verify-gates"])
+    summaries = [s for s in steps if s.get("if") == "failure()" and "$GITHUB_STEP_SUMMARY" in s.get("run", "")]
+    assert summaries, "a failing gate run leaves no evidence outside the unreadable log"
+    dump = "\n".join(s["run"] for s in summaries)
+    assert "/tmp/verify-run.log" in dump, "the summary does not contain verify.sh's own output"
+    assert "VERIFY SUMMARY" in dump, "the summary does not include which gates failed"
+
+
+def test_a_failing_server_suite_leaves_its_evidence_in_the_summary(workflow: dict) -> None:
+    steps = _steps(workflow["jobs"]["game-server"])
+    summaries = [s for s in steps if s.get("if") == "failure()" and "$GITHUB_STEP_SUMMARY" in s.get("run", "")]
+    assert summaries, "a failing server suite leaves no evidence outside the unreadable log"
+    assert any("/tmp/pytest.log" in s["run"] for s in summaries)
+
+
 # --- audit 2026-10-13: the gates must be the SAME gates -----------------------
 
 
@@ -215,8 +315,11 @@ def test_the_contract_test_floor_is_near_the_real_count(workflow: dict):
     scripts = _job_scripts(workflow, "contracts")
     match = re.search(r'test "\$ran" -ge (\d+)', scripts)
     assert match, "no contract-test floor"
-    assert int(match.group(1)) >= 75, (
-        f"the contract-test floor is {match.group(1)} while the suite has ~81 tests"
+    # 2026-10-23: the suite is 104 tests (measured, FOUNDRY_PROFILE=ci). The
+    # floor guards against a regression that deletes tests, so it must sit just
+    # under the real number — 75 allowed 29 tests to vanish without a failure.
+    assert int(match.group(1)) >= 100, (
+        f"the contract-test floor is {match.group(1)} while the suite has 104 tests"
     )
 
 

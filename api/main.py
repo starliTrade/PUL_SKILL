@@ -53,11 +53,18 @@ except Exception:  # pragma: no cover - local dev without the SDK
 
 import abuse
 import analytics
+import auditlog
 import eligibility
+import eventlog
+import integrity
+import leaderboard
 import limits
 import metrics
+import privacy
+import profiles
 
 import oracle
+import store as store_mod  # the MODULE, for exception types (audit L-09)
 from auth import EXPECTED_CHAIN_ID as _CHAIN_ID
 from auth import NONCE_WINDOW_SECONDS as _NONCE_WINDOW
 from auth import issue_nonce, issue_session, verify_session, verify_siwe
@@ -76,10 +83,17 @@ _rl_window: dict[str, list[float]] = {}
 # the quiet windows are dropped (see `_rl_check`).
 _RL_WINDOW_MAX_KEYS = 10_000
 RL_WINDOW_SECONDS = 60.0
+RL_PROFILE_MAX = 30
+# Audit M-21: erasure and export are rare, deliberate operations.
+RL_EXPORT_MAX = 5
+RL_LEADERBOARD_MAX = 60
+RL_PLAYERS_SEARCH_MAX = 30
+RL_DELETE_MAX = 3    # profile reads/writes per minute per address
 RL_QUEUE_MAX = 40        # queue calls per minute per address (audit #6 C3:
                          # the client's 2.5s poll = 24/min; 20/min kicked
                          # honest waiting players out of matchmaking at t≈50s)
 RL_COMMIT_MAX = 40       # round commits per minute per address
+RL_HEALTH_DEEP_MAX = 12  # deep health probes per minute per IP (see health())
 RL_AUTH_MAX = 10         # SIWE handshakes per minute per address
 RL_VERIFY_MAX = 30       # SIWE verifications per minute per IP (ecrecover is
 RL_SETTLE_MAX = 10       # settle calls per minute per address (audit #10 #7:
@@ -90,6 +104,7 @@ RL_CLAIM_MAX = 10        # claim calls per minute per address (audit #10 #7:
 RL_ROUND_MAX = 60        # target reveals + result submissions per minute per
 RL_USERNAME_LOOKUP_MAX = 60  # GET /api/username/{name} per minute per IP
 RL_PLAYER_STATS_MAX = 60     # GET /api/player/{addr}/stats per minute per address
+RL_DISPUTE_STATUS_MAX = 30   # GET /api/dispute/{match} per minute per address (L-09)
 # Audit 2026-10-13: how long a rate-limit document may live. The window is 60s;
 # an hour of slack means a TTL policy can never delete a row that is still being
 # counted, while keeping the collection bounded.
@@ -125,21 +140,26 @@ def _rl_check_ip(bucket: str, request: Request, limit: int) -> None:
     same Firestore-backed (cross-replica) window when Firestore mode is on,
     otherwise the in-process fallback.
 
-    Audit #10 (item 4): trusting X-Forwarded-For is now EXPLICIT, not inferred
-    from "the socket looks like a private IP". Private-socket inference still
-    trusts a proxy that rewrites XFF (Cloud Run / VPC L7 LB), but a deployment
-    behind a proxy that PASSES the header through unmodified (nginx default,
-    some edge workers) lets a client forge the first hop and shift its quota
-    onto a victim IP. Set TRUST_PROXY_HEADERS=1 for such a topology AND make
-    sure the proxy OVERWRITES X-Forwarded-For; leave it unset and the socket
-    address is used directly (spoof-proof, just coarser per-NAT).
+    Audit #10 (item 4) + M-09 (2026-10-22): X-Forwarded-For is honoured ONLY
+    when TRUST_PROXY_HEADERS=1. It is never inferred from a private-looking
+    socket address: every container network is private, including topologies
+    where the header passes through untouched and a client can therefore forge
+    the first hop. Set the flag only for a proxy that OVERWRITES the header;
+    leave it unset and the socket address is used (spoof-proof, coarser behind
+    NAT).
     """
     xff = request.headers.get("x-forwarded-for", "")
     hops = [h.strip() for h in xff.split(",") if h.strip()]
     socket_ip = request.client.host if request.client else "unknown"
     trust_xff = os.environ.get("TRUST_PROXY_HEADERS", "") in ("1", "true", "yes")
-    socket_is_private = socket_ip.startswith(("10.", "172.", "192.168.", "127."))
-    if hops and (trust_xff or (not trust_xff and socket_is_private)):
+    # Audit M-09 (2026-10-22): "the socket looks private" is NOT evidence of a
+    # trusted proxy. Any container network is private, including one where the
+    # client's X-Forwarded-For passes through untouched — and then the first hop
+    # is attacker-controlled, so a script rotates its quota across forged IPs
+    # (and pins the blame on a victim's address). The header is now honoured only
+    # when the operator says a proxy rewrites it; without that, the socket
+    # address is used (coarser behind NAT, and not forgeable).
+    if hops and trust_xff:
         # The proxy sits between us and the client; its REWRITTEN first hop is
         # the client. (A pass-through proxy makes this forgeable — that is why
         # the flag must only be set when the proxy overwrites the header.)
@@ -341,6 +361,15 @@ def sweep_health() -> dict[str, Any]:
         "lastRunAt": int(_last_sweep_at),
         "failures": dict(_sweep_failures),
         "lastError": dict(_sweep_last_error),
+        # Audit H-12: a steady `backlog: true` means more settled matches need a
+        # fresh signature than one page can serve — the prize-rescue sweep is
+        # falling behind, and the fix is a bigger page or more frequent sweeps,
+        # not a restart.
+        "backlog": bool(getattr(store, "sweep_backlog", False)),
+        # Audit H-10: a dispute report that could not be persisted is an
+        # operator problem (a payout disagreement with no evidence), so it is
+        # visible here rather than only in a log line.
+        "disputeWriteFailures": int(getattr(store, "_dispute_write_failures", 0)),
     }
 
 
@@ -580,7 +609,9 @@ REQUIRED_PRODUCTION_ENV = (
     "ESCROW_ADDRESS",
     "ESCROW_RPC_URL",
     "ORACLE_SIGNING_SECRET",
-    "ORACLE_PRIVATE_KEY",
+    # ORACLE_PRIVATE_KEY is NOT in this list any more (audit H-07): with a KMS
+    # backend it must be ABSENT. The signer check below decides which of the two
+    # configurations is acceptable.
     # Audit 2026-10-13: this was missing, and both `auth` and `oracle` default it
     # to 80002 (Amoy). A production deployment that forgot it would sign SIWE
     # statements and settlement digests for a TESTNET while the escrow is on
@@ -590,10 +621,31 @@ REQUIRED_PRODUCTION_ENV = (
 )
 
 
+def _looks_deployed(environ: Any) -> str | None:
+    """The platform marker that says this process is running for real (M-08).
+
+    The opt-out is `PULSAR_ENV=dev`, and it is right there in `.env.example` for
+    local work. So the one mistake that actually happens is somebody copying the
+    dev environment file onto a host and disabling every safeguard with a single
+    word. These markers are set by the platform, not by us, so a dev-labelled
+    deploy on Cloud Run / Render / Fly / Heroku is detectable.
+    """
+    for marker in _DEPLOY_MARKERS:
+        if environ.get(marker):
+            return marker
+    if str(environ.get("NODE_ENV", "")).strip().lower() == "production":
+        return "NODE_ENV"
+    return None
+
+
 def _is_prod_like(environ: Any) -> bool:
     """True when this process must not run with insecure defaults (audit H6)."""
     if str(environ.get("PULSAR_ENV", "")).strip().lower() in _LOCAL_ENV_VALUES:
-        return False
+        # M-08: a dev label on a real platform is not a local run. The escape
+        # hatch is deliberate and means "keep the dev defaults on a staging box".
+        if environ.get("PULSAR_ALLOW_DEV_ON_PLATFORM") == "1":
+            return False
+        return _looks_deployed(environ) is not None
     return True
 
 
@@ -603,6 +655,25 @@ def _missing_production_env(environ: Any) -> list[str]:
 
 
 _prod_like = _is_prod_like(os.environ)
+_deployed_marker = _looks_deployed(os.environ)
+if (
+    _deployed_marker
+    and str(os.environ.get("PULSAR_ENV", "")).strip().lower() in _LOCAL_ENV_VALUES
+    and os.environ.get("PULSAR_ALLOW_DEV_ON_PLATFORM") != "1"
+):
+    # M-08: refuse rather than silently upgrade a dev app to production rules —
+    # the dev run has no ALLOWED_DOMAIN, no CORS list and probably a test key, so
+    # booting it as production would fail on the first request anyway. Better a
+    # clear message now than a half-configured service taking real traffic.
+    raise RuntimeError(
+        f"Refusing to start: PULSAR_ENV={os.environ.get('PULSAR_ENV')!r} but this "
+        f"process is running on {_deployed_marker} (audit M-08). A dev label "
+        "disables the SIWE domain check, CORS allow-list, signer policy and the "
+        "required-env gate. Set PULSAR_ENV=production (or unset it) for a real "
+        "deployment, or set PULSAR_ALLOW_DEV_ON_PLATFORM=1 if this is a deliberate "
+        "staging box."
+    )
+
 if _prod_like:
     _missing = _missing_production_env(os.environ)
     if _missing:
@@ -612,6 +683,34 @@ if _prod_like:
             + ". Refusing to start with an insecure default. "
             "Set PULSAR_ENV=dev to explicitly opt out for local testing."
         )
+
+# Audit H-07 (2026-10-22): a production-like deployment must not run the oracle
+# with a hot key in the environment without SAYING SO. The alternative — quietly
+# booting with ORACLE_PRIVATE_KEY — is how the key stays in env forever.
+#   * ORACLE_SIGNER=aws-kms | gcp-kms  -> the key is in the KMS (preferred)
+#   * ORACLE_SIGNER=local + PULSAR_ALLOW_LOCAL_SIGNER=1 -> a deliberate, visible
+#     exception for a small rehearsal where KMS is not set up yet.
+# Anything else refuses to boot, and ORACLE_PRIVATE_KEY is no longer a required
+# variable when a KMS backend is chosen (checked below).
+if _prod_like:
+    _signer_mode = os.environ.get("ORACLE_SIGNER", "local").strip().lower() or "local"
+    if _signer_mode == "local" and os.environ.get("PULSAR_ALLOW_LOCAL_SIGNER", "") != "1":
+        raise RuntimeError(
+            "Refusing to start: ORACLE_SIGNER=local keeps the payout key in the "
+            "server's environment (audit H-07). Set ORACLE_SIGNER=aws-kms or "
+            "gcp-kms, or set PULSAR_ALLOW_LOCAL_SIGNER=1 to accept the risk "
+            "explicitly. PULSAR_ENV=dev disables this check."
+        )
+    if _signer_mode in ("aws-kms", "gcp-kms"):
+        # The private key must NOT be needed in KMS mode. If it is still
+        # present, say so: a leftover variable is a key that can be stolen.
+        if os.environ.get("ORACLE_PRIVATE_KEY"):
+            print(
+                "[config] WARNING: ORACLE_SIGNER is a KMS backend but "
+                "ORACLE_PRIVATE_KEY is still set. Remove it — the KMS mode "
+                "exists so the key is not in this process.",
+                file=sys.stderr,
+            )
 
 # Audit #10 (item 2): an INCOHERENT escrow config (one half set, the other
 # missing) silently disables the deposit gate (onchain.escrow_configured()
@@ -784,6 +883,120 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Admin credential required")
 
 
+@app.middleware("http")
+async def _correlation_middleware(request: Request, call_next: Any) -> Any:
+    """Give every request an id and echo it (audit M-13).
+
+    A player's "my settlement never arrived" report is only actionable if the
+    server can be asked what it did FOR THAT REQUEST. The id is accepted from
+    the caller only when it is short and alphanumeric — it is a log correlation,
+    never an authorisation, and an attacker must not be able to inject newlines
+    or arbitrary text into the log stream.
+    """
+    supplied = request.headers.get("x-request-id", "")
+    if supplied and len(supplied) <= 64 and supplied.replace("-", "").replace("_", "").isalnum():
+        corr = supplied
+    else:
+        corr = eventlog.new_correlation()
+    token = eventlog.set_correlation(corr)
+    try:
+        response = await call_next(request)
+    finally:
+        eventlog.reset_correlation(token)
+    response.headers["X-Request-Id"] = corr
+    return response
+
+
+@app.get("/api/admin/audit")
+def admin_audit_trail(request: Request, limit: int = 50) -> dict[str, Any]:
+    """Recent administrative decisions (audit M-10).
+
+    Read-only. The point of the log is that an operator can answer "who voided
+    this duel, when, and why" without grepping a rotated stderr stream.
+    """
+    _require_admin(request)
+    entries = auditlog.recent(limit)
+    return {"count": len(entries), "entries": entries}
+
+
+def _admin_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+@app.get("/api/admin/review")
+def admin_review_queue(request: Request) -> dict[str, Any]:
+    """Accounts the integrity scorer flagged (audit C-02a).
+
+    Advisory only: nothing here has changed a payout. A human decides, using the
+    evidence attached to the entry.
+    """
+    _require_admin(request)
+    entries = integrity.open_reviews()
+    return {"open": len(entries), "entries": entries}
+
+
+class ReviewDecision(BaseModel):
+    status: str = Field(pattern="^(resolved|dismissed)$")
+    note: str = Field(default="", max_length=500)
+
+
+@app.post("/api/admin/review/{review_id}")
+def admin_review_decide(review_id: str, body: ReviewDecision, request: Request) -> dict[str, Any]:
+    _require_admin(request)
+    if not integrity.resolve(review_id, body.status, body.note):
+        raise HTTPException(status_code=404, detail="Review entry not found")
+    auditlog.record(
+        "review.decide",
+        target=review_id,
+        detail=f"{body.status}: {body.note}",
+        source_ip=_admin_ip(request),
+    )
+    return {"ok": True, "id": review_id, "status": body.status}
+
+
+class DisputeResolution(BaseModel):
+    status: str = Field(pattern="^(resolved|dismissed)$")
+    note: str = Field(default="", max_length=500)
+
+
+@app.post("/api/admin/dispute/{match_id}/{dispute_id}")
+def admin_resolve_dispute(
+    match_id: str, dispute_id: str, body: DisputeResolution, request: Request
+) -> dict[str, Any]:
+    """Answer a player's dispute report (audit L-09).
+
+    A report with no way to be answered is a suggestion box, and the player who
+    filed it cannot tell a decision from silence. The decision is written to the
+    report (so `GET /api/dispute/{match}` shows it) AND to the admin audit trail
+    (audit M-10: who decided, when, why).
+
+    It still never touches match state or the money path — an operator can answer
+    a report without moving a token, which is what the original design promised.
+    """
+    _require_admin(request)
+    if not re.fullmatch(r"[0-9a-f]{32}", match_id):
+        raise HTTPException(status_code=422, detail="Invalid match id")
+    try:
+        found = store.resolve_dispute(
+            match_id, dispute_id, status=body.status, note=body.note, by="admin"
+        )
+    except store_mod.DisputeStoreUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The decision could not be stored; the report is still open.",
+            headers={"Retry-After": "10"},
+        ) from exc
+    if not found:
+        raise HTTPException(status_code=404, detail="Dispute not found for this match")
+    auditlog.record(
+        "dispute.resolve",
+        target=f"{match_id}/{dispute_id}",
+        detail=f"{body.status}: {body.note}",
+        source_ip=_admin_ip(request),
+    )
+    return {"ok": True, "matchId": match_id, "disputeId": dispute_id, "status": body.status}
+
+
 @app.get("/api/admin/match/{match_id}")
 def admin_inspect_match(match_id: str, request: Request) -> dict[str, Any]:
     """Full match state for an operator (phase 6.3)."""
@@ -794,6 +1007,9 @@ def admin_inspect_match(match_id: str, request: Request) -> dict[str, Any]:
     if m is None:
         raise HTTPException(status_code=404, detail="Match not found")
     return {
+        # Audit H-10: the reports an operator needs alongside the state they are
+        # about (durable first, in-memory cache as a fallback).
+        "disputes": store.disputes_for(match_id),
         "matchId": m.match_id,
         "status": m.status,
         "stake": m.stake,
@@ -870,9 +1086,8 @@ def admin_force_void(match_id: str, body: AdminActionRequest, request: Request) 
     outcome = store.update(match_id, _void)
     if outcome != "void":
         raise HTTPException(status_code=409, detail=f"Match is already {outcome}")
-    print(
-        f"[admin] force-void {match_id} reason={body.reason!r}",
-        file=sys.stderr,
+    auditlog.record(
+        "match.force_void", target=match_id, detail=body.reason, source_ip=_admin_ip(request)
     )
     return {"matchId": match_id, "status": "void", "reason": body.reason}
 
@@ -897,9 +1112,8 @@ def admin_force_settle(match_id: str, body: AdminActionRequest, request: Request
     except MatchError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     _ledger_settlement(match_id)
-    print(
-        f"[admin] force-settle {match_id} reason={body.reason!r}",
-        file=sys.stderr,
+    auditlog.record(
+        "match.force_settle", target=match_id, detail=body.reason, source_ip=_admin_ip(request)
     )
     return {"matchId": match_id, "reason": body.reason, "settlement": signed}
 
@@ -908,6 +1122,35 @@ class DisputeRequest(BaseModel):
     matchId: str = Field(pattern=r"^[0-9a-f]{32}$")
     # Bounded: an unbounded field is a way to fill the database.
     reason: str = Field(min_length=3, max_length=1000)
+
+
+@app.get("/api/leaderboard")
+def get_leaderboard(request: Request, limit: int = 20) -> dict[str, Any]:
+    """The public podium, served by the server (audit M-04).
+
+    No session: a leaderboard is shown to visitors deciding whether to sign up,
+    and it already contains nothing but a display row. Rate limited per IP so a
+    scraper cannot turn it into a cheap read amplifier.
+    """
+    _rl_check_ip("leaderboard", request, RL_LEADERBOARD_MAX)
+    from store import durable_db as _durable_db
+
+    db = _durable_db()
+    if db is None:
+        # Memory mode: the ledger lives only in the durable store, so there IS no
+        # podium. Saying so is better than an empty list that looks like "nobody
+        # has won yet".
+        return {"players": [], "reason": "leaderboard requires the durable store"}
+    try:
+        players = leaderboard.top(db, limit)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[leaderboard] read failed: {exc!r}", file=sys.stderr)
+        raise HTTPException(
+            status_code=503,
+            detail="The leaderboard is temporarily unavailable.",
+            headers={"Retry-After": "5"},
+        ) from exc
+    return {"players": players}
 
 
 @app.post("/api/dispute")
@@ -935,16 +1178,76 @@ def report_dispute(body: DisputeRequest, request: Request) -> dict[str, Any]:
         "reporter": address.lower(),
         "reason": body.reason,
         "at": int(timebase.now()),
-        "status": m.status,
+        # Audit L-09: this used to be `"status": m.status`, i.e. the MATCH's
+        # status under the key a dispute lifecycle needs. The report then read
+        # "settled" as its own state and there was nowhere to put "open" /
+        # "resolved". The match's state is context, so it is named as such.
+        "matchStatus": m.status,
+        "status": "open",
     }
     # Stored under the match so an operator inspecting it finds the report
     # alongside the state it is about.
-    store.record_dispute(body.matchId, report)
-    print(
-        f"[dispute] {body.matchId} from {address.lower()}: {body.reason[:120]!r}",
-        file=sys.stderr,
+    try:
+        dispute_id = store.record_dispute(body.matchId, report)
+    except store_mod.DisputeStoreUnavailable as exc:
+        # Audit L-09: "received" must mean received. A store failure used to be
+        # swallowed into a printed line while the player was told the report was
+        # filed, so the one artefact a payout dispute depends on could not exist.
+        raise HTTPException(
+            status_code=503,
+            detail="Your report could not be stored. Try again; if this persists, contact support.",
+            headers={"Retry-After": "10"},
+        ) from exc
+    eventlog.emit(
+        "dispute.filed",
+        matchId=body.matchId,
+        disputeId=dispute_id,
+        reporter=address.lower(),
+        reason=body.reason[:120],
     )
-    return {"ok": True, "matchId": body.matchId, "received": report["at"]}
+    return {
+        "ok": True,
+        "matchId": body.matchId,
+        "disputeId": dispute_id,
+        "status": "open",
+        "received": report["at"],
+    }
+
+
+@app.get("/api/dispute/{match_id}")
+def dispute_status(match_id: str, request: Request) -> dict[str, Any]:
+    """What a player can see about their own report (audit L-09).
+
+    Before this, `POST /api/dispute` returned `ok: true` and the story ended
+    there: a player could not find out whether anyone had read the report, and a
+    decision reached by an operator was invisible to the person who asked for it.
+
+    Only a participant sees the reports (404 otherwise, so a stranger cannot
+    learn that a match exists). The response is deliberately small — status,
+    when it was filed, and the operator's note — because the reporter already
+    knows what they wrote.
+    """
+    address = _auth(request)
+    _rl_check("dispute_status", address, RL_DISPUTE_STATUS_MAX)
+    if not re.fullmatch(r"[0-9a-f]{32}", match_id):
+        raise HTTPException(status_code=422, detail="Invalid match id")
+    m = _admin_get_match(match_id)
+    if m is None or address.lower() not in m.players:
+        raise HTTPException(status_code=404, detail="Match not found")
+    reports = store.disputes_for(match_id)
+    mine = [
+        {
+            "id": str(r.get("id", "")),
+            "reason": str(r.get("reason", ""))[:1000],
+            "filedAt": int(r.get("at") or 0),
+            "status": str(r.get("status") or "open"),
+            "resolution": r.get("resolution"),
+            "resolvedAt": r.get("resolvedAt"),
+        }
+        for r in reports
+        if str(r.get("reporter", "")).lower() == address.lower()
+    ]
+    return {"matchId": match_id, "count": len(mine), "disputes": mine}
 
 
 @app.get("/api/metrics")
@@ -981,9 +1284,99 @@ def _oracle_address_or_none() -> str | None:
         return None
 
 
+# --- Security headers (audit H-16, 2026-10-22) -------------------------------
+#
+# The session token lives in localStorage and the app moves money. Without a CSP
+# and the standard browser hardening headers, any injected script — a compromised
+# dependency, a rogue translation string rendered as HTML, a malicious wallet
+# extension — reads the token and can drive the escrow. These headers cost
+# nothing and are enforced by the browser even when the code is not.
+#
+# Deliberately NOT a nonce-based CSP: the SPA is a static build with inline
+# bootstrapping, so nonces would require server-side HTML rendering. The
+# allowlist below is still far tighter than none: no third-party script origins.
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob: https:; "
+        "font-src 'self' data:; "
+        "connect-src 'self' https: wss: http: ws:; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "object-src 'none'"
+    ),
+}
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next: Any):
+    response = await call_next(request)
+    for name, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    if _prod_like:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
+
+
+@app.get("/api/ping")
+def ping() -> dict[str, Any]:
+    """Zero-I/O round-trip probe (audit H-03, 2026-10-22).
+
+    The client measures its RTT here and sends it with `POST /api/queue`, where
+    the ping cap decides whether the connection is fair enough to stake on.
+
+    This exists because `/api/health` was doing double duty: it reports RPC
+    reachability, chain id and token decimals, all of which can perform chain
+    I/O. Measuring "network latency" against an endpoint that may wait on a
+    remote node conflates the player's connection with the operator's RPC — a
+    player on fibre could be refused for the server's problem, and the number
+    was unstable by design.
+
+    Nothing here touches the store, the chain, or the clock beyond one integer.
+    Deliberately unauthenticated: it reveals nothing, and requiring a session
+    would add an auth round trip to the measurement.
+    """
+    return {"ok": True, "t": timebase.now_ms()}
+
+
+# The deep probe is CACHED for a few seconds and RATE LIMITED per IP.
+#
+# Audit H-23 (2026-10-23, found while auditing my own H-17 fix): `?deep=1` is
+# unauthenticated and performs one BILLED Firestore read per request inside a
+# fresh daemon thread. Nothing stopped a loop from turning the health endpoint —
+# the one route an attacker is certain exists — into a cost amplifier and a
+# thread factory. Every other store-touching route is rate limited; this one was
+# added without one because it "only reads".
+#
+# The cache is not an optimisation: monitoring systems poll every 10–30 s, and a
+# probe that costs a read per poll is a bill with a graph attached. Five seconds
+# keeps an incident dashboard live while collapsing duplicate pollers.
+HEALTH_PROBE_CACHE_SECONDS = 5.0
+_deep_probe_cache: dict[str, Any] = {"at": -1e9, "payload": None}
+
+
 @app.get("/api/health")
-def health() -> dict[str, Any]:
-    return {
+def health(request: Request, deep: bool = False) -> dict[str, Any]:
+    # Audit H-17: `matchStore` is CONFIGURATION — it names the client we managed
+    # to construct. google-cloud-firestore does no I/O in its constructor, so a
+    # wrong project, revoked IAM or a blocked network still answered
+    # `matchStore: firestore` while the first real write would fail. `store`
+    # adds evidence (counters + tri-state `writable`), and `?deep=1` adds one
+    # bounded round-trip for the moments when an operator needs proof.
+    #
+    # `deep` is opt-in on purpose: a liveness probe that waits on a dead
+    # database turns a slow dependency into an unresponsive process.
+    payload: dict[str, Any] = {
         "ok": True,
         "service": "pulsar-game-server",
         "rounds": ROUNDS,
@@ -995,6 +1388,10 @@ def health() -> dict[str, Any]:
         # ORACLE_CHAIN_ID / VITE_CHAIN_ID bricks every settlement sig.
         "chainId": _CHAIN_ID,
         "escrowConfigured": onchain.escrow_configured(),
+        # Audit M-11: which escrow code is actually deployed. After a redeploy a
+        # stale ESCROW_ADDRESS used to look healthy; now it is visible here.
+        "escrowVersion": onchain.escrow_version(),
+        "escrowVersionProblem": onchain.escrow_version_problem(),
         "prodLike": _prod_like,
         # Audit C1: the distributed limiter silently degraded to a per-process
         # window for the life of the project. Expose which backend is actually
@@ -1003,6 +1400,13 @@ def health() -> dict[str, Any]:
         # Audit H9: a dead sweep (e.g. a missing composite index) must be
         # visible in monitoring, not discovered when a prize goes unclaimed.
         "sweep": sweep_health(),
+        # Audit C-02a: is the integrity scorer alive, and how many accounts are
+        # waiting for a human? (Advisory: it never changes a payout.)
+        "integrity": integrity.health(),
+        # Audit M-10: the admin trail is only useful if you can tell whether it
+        # is being written at all.
+        "adminAudit": auditlog.health(),
+        "events": eventlog.counts(),
         # Audit 6.2: the three questions an operator asks during an incident and
         # could not previously answer from the server. No secret and no URL:
         # this endpoint is unauthenticated, so anything here is public.
@@ -1028,7 +1432,24 @@ def health() -> dict[str, Any]:
             "fallbacks": _rl_fallback_count,
             "lastFallback": dict(_rl_fallback_last),
         },
+        "store": store.write_stats(),
     }
+    if deep:
+        _rl_check_ip("health_deep", request, RL_HEALTH_DEEP_MAX)
+        now = timebase.now()
+        cached = _deep_probe_cache["payload"]
+        if cached is not None and now - float(_deep_probe_cache["at"]) < HEALTH_PROBE_CACHE_SECONDS:
+            payload["store"]["probe"] = cached
+        else:
+            try:
+                timeout_ms = int(os.environ.get("PULSAR_HEALTH_PROBE_TIMEOUT_MS", "1500"))
+            except ValueError:
+                timeout_ms = 1500
+            probed = store.probe(timeout_ms)
+            payload["store"]["probe"] = probed
+            _deep_probe_cache["payload"] = probed
+            _deep_probe_cache["at"] = now
+    return payload
 
 
 def _request_domain(request: Request) -> str:
@@ -1117,7 +1538,14 @@ class QueueRequest(BaseModel):
     # Audit H1: the ping cap needs the round trip AT QUEUE TIME. It was only
     # sent with the round result, so the cap was unreachable from HTTP and the
     # gate existed only in the unit tests.
-    rttMs: float | None = Field(default=None, ge=0, le=10_000)
+    #
+    # Audit H-03 (2026-10-22): the field was OPTIONAL, so a client could omit it
+    # and skip the cap entirely — and the cap is the only place a laggy player is
+    # kept out of a fair match. A protocol field that can be left out is not a
+    # gate. It is required now, and the client measures it against the zero-I/O
+    # `/api/ping` (previously `/api/health`, which can perform RPC I/O and
+    # inflated the measurement it was supposed to bound).
+    rttMs: float = Field(ge=0, le=10_000)
     # Audit M27: a friend challenge names the address it is reserved for. The
     # match is not offered to anyone else, and it is satisfied when that
     # address queues (naming the challenger, or simply queueing).
@@ -1170,6 +1598,7 @@ def auth_nonce(body: NonceRequest, request: Request) -> dict[str, str]:
     _rl_check_ip("auth", request, RL_AUTH_MAX)
     domain = _request_domain(request)
     nonce = issue_nonce(body.address, domain)
+    analytics.note_person("arrived", body.address)
     return {"nonce": nonce, "message": _siwe_message(body.address, nonce, domain)}
 
 
@@ -1192,6 +1621,9 @@ def auth_verify(body: VerifyRequest, request: Request) -> dict[str, str]:
     expected = _siwe_message(recovered, _nonce_of(body.message), domain)
     if body.message != expected:
         raise HTTPException(status_code=401, detail="SIWE message does not match the issued challenge")
+    # Audit L-07: a PERSON, not a request. The address is only known after
+    # ecrecover, which is exactly why the request funnel overstated this step.
+    analytics.note_person("connected", recovered)
     return {"token": issue_session(recovered), "address": recovered}
 
 
@@ -1211,8 +1643,15 @@ def auth_logout(request: Request) -> dict[str, bool]:
     if not verify_session(token):
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     jti = _auth_module.session_jti(token)
-    if jti:
-        _auth_module.revoke_session(jti)
+    if not jti:
+        # A token we cannot attribute to a jti cannot be revoked; saying "ok"
+        # here would be a lie the client acts on.
+        raise HTTPException(status_code=500, detail="Session has no revocation id")
+    if not _auth_module.revoke_session(jti):
+        raise HTTPException(
+            status_code=503,
+            detail="Logout could not be recorded — the session is still valid. Retry.",
+        )
     return {"ok": True}
 
 
@@ -1246,16 +1685,25 @@ def admin_ban(body: BanRequest, request: Request) -> dict[str, Any]:
     """Ban an address. Operator action; requires the admin secret."""
     _require_admin(request)
     try:
-        return abuse.ban(body.address, body.seconds, body.reason)
+        out = abuse.ban(body.address, body.seconds, body.reason)
     except abuse.AbuseError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    auditlog.record(
+        "player.ban",
+        target=body.address,
+        detail=f"{body.seconds}s: {body.reason}",
+        source_ip=_admin_ip(request),
+    )
+    return out
 
 
 @app.post("/api/admin/unban")
 def admin_unban(body: BanRequest, request: Request) -> dict[str, Any]:
     """Lift a ban. Operator action; requires the admin secret."""
     _require_admin(request)
-    return abuse.unban(body.address)
+    out = abuse.unban(body.address)
+    auditlog.record("player.unban", target=body.address, source_ip=_admin_ip(request))
+    return out
 
 
 class DepositLimitRequest(BaseModel):
@@ -1278,6 +1726,8 @@ def limits_set_deposit(body: DepositLimitRequest, request: Request) -> dict[str,
     """Set a deposit ceiling. Lowering and clearing are immediate; raising waits."""
     try:
         return limits.set_deposit_limit(_auth(request), body.limit)
+    except limits.StoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except limits.LimitError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1287,6 +1737,8 @@ def limits_self_exclude(body: ExclusionRequest, request: Request) -> dict[str, A
     """Exclude yourself from staked play. Cannot be lifted early."""
     try:
         return limits.self_exclude(_auth(request), body.seconds)
+    except limits.StoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except limits.LimitError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1296,6 +1748,8 @@ def limits_cool_off(body: ExclusionRequest, request: Request) -> dict[str, Any]:
     """A short, immediate pause."""
     try:
         return limits.cool_off(_auth(request), body.seconds)
+    except limits.StoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except limits.LimitError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1343,6 +1797,21 @@ def settlements(limit: int = 50) -> dict[str, Any]:
                     "oracleAddress": env.get("oracleAddress", ""),
                     "signature": env.get("signature", ""),
                     "deadline": env.get("deadline"),
+                    # Audit H-04 (2026-10-22): the lobby feed was reading
+                    # `entryFee` from a collection the server never writes, so
+                    # "LIVE ARENA FEED" was permanently empty — and had it ever
+                    # rendered, every row would have said "win" because the
+                    # client defaulted the missing field. The public feed is
+                    # built from THIS log now, so it needs the per-duel facts:
+                    # both validated times and the prize the winner received.
+                    # These are already public on-chain (settleDuel's preimage
+                    # contains both times; MatchSettled carries the prize).
+                    "winnerTimeMs": env.get("winnerTimeMs"),
+                    "loserTimeMs": env.get("loserTimeMs"),
+                    # economy owns the fee constant (audit M20) — one definition, no drift.
+                    "prize": economy.prize_in_units(
+                        int(round(m.stake * 1_000_000)), 6
+                    ) / 1_000_000,
                     "settlementTx": (m.signed_settlement or {}).get("settlementTx", ""),
                 }
             )
@@ -1384,15 +1853,32 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
     # different answer from "not at this stake".
     try:
         limits.require(address, body.stake)
+    except limits.StoreUnavailable as exc:
+        # H-02: a store outage must refuse staked play, not silently lift limits.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except limits.LimitError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     # Plan item 11.3/G6: bans and velocity. Last, because it is the only check
     # that can be about the PERSON rather than the request.
     try:
         abuse.require(address)
+    except abuse.StoreUnavailable as exc:
+        # Audit M-03: "we cannot check your status" is a retryable 503, not a
+        # 403 that tells the player they are suspended.
+        raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "5"}) from exc
     except abuse.AbuseError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    abuse.note_start(address)
+    # Audit C-01 (2026-10-22): `note_start` used to run HERE, before the
+    # "already have a live match" early return below — so every QUEUE POLL of a
+    # waiting player counted as a new duel. With VELOCITY_MAX_MATCHES=20 per
+    # 10 minutes and the client polling every 2.5–10s, two searches (~11 polls
+    # each) locked an honest player out for 15 minutes. A velocity limit that
+    # fires on waiting is worse than none: it punishes exactly the behaviour it
+    # is supposed to encourage and cannot distinguish a poller from a bot.
+    #
+    # The counter now moves ONLY when this request actually starts something:
+    # a new waiting match or a join. Everything that returns an existing match
+    # (the poll path) is free.
     if body.stake not in ALLOWED_STAKES:
         raise HTTPException(status_code=400, detail="Invalid stake")
     # Audit M27: a friend challenge is a reservation for one address. Validate
@@ -1422,6 +1908,14 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
             _resign_stale_settlements()
         except Exception as exc:
             _note_sweep_failure("resign", exc)
+        # Audit H-14: retry settlements whose ledger write failed. Without this
+        # the outbox was a record of permanent divergence: the prize was paid
+        # on-chain and the player's wins/XP never advanced. Idempotent through
+        # the ledger's own settlement gate.
+        try:
+            economy.drain_outbox(store)
+        except Exception as exc:
+            _note_sweep_failure("ledger_outbox", exc)
     # Audit #8 F-13: durable idempotency — check Firestore for a live match
     # containing this address BEFORE enqueueing, so a re-poll that lands on a
     # different replica (or a recycled process) cannot mint an orphan match
@@ -1441,8 +1935,18 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
                 f"Finish or leave it before queueing at {body.stake:g}."
             ),
         )
+    # Audit C-01: this is the ONE point that can create or join a duel (the
+    # live-match path returned above without reaching here), so it is the only
+    # place a "start" is recorded.
+    analytics.note_person("queued", address)
     try:
         match = store.enqueue(address, body.stake, body.rttMs, challenge_target or None)
+    except MatchError as exc:
+        # L-10 (2026-10-22): the ping cap raises a DOMAIN error, and this handler
+        # did not catch it — an over-latency connection got an unhandled 500
+        # ("this is broken, do not retry") instead of the actionable 409 the
+        # message contains. The client shows the detail; 5xx hides it.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         # Audit 2026-10-14 (found by the 1000-poller load run, plan item 10.3):
         # under contention the Firestore transaction exhausts its retries and
@@ -1461,6 +1965,17 @@ def queue(body: QueueRequest, request: Request) -> dict[str, Any]:
                 headers={"Retry-After": "1"},
             ) from exc
         raise
+    # Audit M-03 (found while fixing the ban path): this used to run BEFORE the
+    # store call, so a duel that never started (ping too high, store contention)
+    # still consumed a start and could trip the 20-per-10-minutes cooldown. The
+    # limit exists to stop scripts OPENING duels; it must count duels that opened.
+    # The failure to record it must not fail a duel the player now holds, so it
+    # is logged rather than raised.
+    try:
+        abuse.note_start(address)
+    except Exception as exc:  # noqa: BLE001
+        eventlog.emit("abuse.note_failed", error=type(exc).__name__)
+        print(f"[abuse] note_start failed: {exc!r}", file=sys.stderr)
     return match.public_view(for_address=address)
 
 
@@ -1579,9 +2094,32 @@ def round_result(body: ResultRequest, request: Request) -> dict[str, Any]:
         res = store.update(body.matchId, _mutate)
         if res.pop("_ledger_pending", False):
             _ledger_settlement(body.matchId)
+        # Audit C-02a: score the SHAPE of this player's reaction times, after
+        # the transaction (the same lesson as H-4: advisory writes must not run
+        # inside the match transaction, where a failure would roll back money).
+        _integrity_observe(body.matchId, address, body.roundIndex)
     except MatchError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return res
+
+
+def _integrity_observe(match_id: str, address: str, round_index: int) -> None:
+    """Feed one server-observed reaction into the integrity scorer (C-02a).
+
+    The value comes from the COMMITTED match and is the server's own
+    measurement (`observed_ms`), not the client's claim — scoring the claim
+    would let a script report a plausible 240 ms while answering in 110 ms.
+    Never raises: a scoring problem must not fail a round the player won.
+    """
+    try:
+        match = store.get(match_id)
+        round_obj = (getattr(match, "rounds", {}) or {}).get(address.lower(), {}).get(round_index)
+        observed = getattr(round_obj, "observed_ms", None) if round_obj is not None else None
+        if not observed or observed <= 0:
+            return
+        integrity.observe(address, [float(observed)], match_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[integrity] observation skipped: {exc!r}", file=sys.stderr)
 
 
 def _ledger_settlement(match_id: str) -> None:
@@ -1598,7 +2136,16 @@ def _ledger_settlement(match_id: str) -> None:
     except MatchError:
         return
     if match.status == "settled":
-        economy.record_settlement(match)
+        # Audit M-13: whether the ledger row landed is a separate fact from the
+        # signature — a dispute needs both, and they can fail independently.
+        try:
+            economy.record_settlement(match)
+        except Exception as exc:
+            eventlog.emit(
+                "ledger.write_failed", matchId=match_id, error=type(exc).__name__
+            )
+            raise
+        eventlog.emit("ledger.written", matchId=match_id)
 
 
 def _attach_signed_envelope(m: Any, result: dict[str, Any]) -> dict[str, Any]:
@@ -1607,19 +2154,54 @@ def _attach_signed_envelope(m: Any, result: dict[str, Any]) -> dict[str, Any]:
     match behind. Firestore rolls the transaction back on its own, but the
     in-memory object mutates IN PLACE — without this snapshot the match would
     be permanently wedged as 'settled' with no signature (audit #4)."""
+    # A LOCAL SNAPSHOT, and an honest note about what it does and does not do
+    # (corrected 2026-10-24, after a test proved the old comment wrong).
+    #
+    # The comment here used to say that "without this snapshot the match would be
+    # permanently wedged as settled with no signature (audit #4)". That is not
+    # where the protection comes from: `store.update` deep-copies the match and
+    # restores it if the mutation raises (`store.py`, memory mode) or relies on
+    # the Firestore transaction (durable mode) — and both callers of this function
+    # run INSIDE `store.update`. Nothing between `saved = ...` and the raise below
+    # mutates `m` either: `eng.settle(m)` already ran, and `oracle.sign_settlement`
+    # does not touch `matchish`. So the restore is unreachable today.
+    #
+    # It is kept because it is three tuple assignments and it becomes the only
+    # protection the moment someone calls this function outside a transaction —
+    # but the REAL guarantee is `store.update`, and `tests/unit/test_settlement_rollback.py`
+    # pins it there rather than here.
     saved = (m.status, m.winner, m.settled_at, m.signed_settlement)
     try:
         # Audit #10 (item 5): pass the match so the signature deadline is
         # clamped to activation + contract MATCH_TIMEOUT.
         envelope = sign_settlement(result, matchish=m)
-    except Exception:
+    except Exception as exc:
         # Phase 6.1: a failing oracle means winners cannot claim, and from
-        # outside it looks identical to a quiet period. Count it.
+        # outside it looks identical to a quiet period. Count it — and say WHY
+        # in the event stream, because the metric alone cannot be debugged.
         metrics.note_signature(False)
+        eventlog.emit(
+            "match.sign_failed",
+            matchId=getattr(m, "match_id", ""),
+            error=type(exc).__name__,
+            detail=str(exc)[:200],
+        )
         m.status, m.winner, m.settled_at, m.signed_settlement = saved
         raise
     metrics.note_signature(True)
     metrics.note_match_settled()
+    # Audit M-13: the money decision, in one parseable line, tagged with the
+    # request that asked for it and the match it belongs to.
+    eventlog.emit(
+        "match.settled",
+        matchId=getattr(m, "match_id", ""),
+        winner=getattr(m, "winner", ""),
+        # The signer names it `serverNonce` (api/oracle.py); logging `nonce`
+        # would have written null for every settlement — useless in a dispute.
+        nonce=envelope.get("serverNonce"),
+        deadline=envelope.get("deadline"),
+        stake=getattr(m, "stake", None),
+    )
     envelope["roundWins"] = result.get("roundWins", {})
     # Audit 2026-10-13: the ledger reads `forfeits` off this envelope; without
     # the copy it recorded every duel as non-forfeit.
@@ -1734,7 +2316,7 @@ def _resign_stale_settlements() -> None:
             deadline = int(m.signed_settlement.get("deadline", 0) or 0)
             if not deadline or timebase.now() < deadline:
                 continue  # still spendable / never signed
-            if timebase.now() >= engine.settlement_deadline(m):
+            if _past_settlement_horizon(m):
                 continue  # past the on-chain horizon — only refund applies
             try:
                 store.update(mid, _settle_once)
@@ -1747,7 +2329,7 @@ def _resign_stale_settlements() -> None:
                 _note_sweep_failure("resign_memory", exc)
         for m in store.sweep_stale_settlements():
             deadline = int((m.signed_settlement or {}).get("deadline", 0) or 0)
-            if deadline and timebase.now() >= engine.settlement_deadline(m):
+            if deadline and _past_settlement_horizon(m):
                 continue  # past the on-chain horizon — only refund applies
             try:
                 store.update(m.match_id, _settle_once)
@@ -1761,6 +2343,22 @@ def _resign_stale_settlements() -> None:
         _note_sweep_failure("resign_sweep", exc)
 
 
+def _past_settlement_horizon(m: Any) -> bool:
+    """True only when the match HAS a horizon and the clock is past it.
+
+    Audit H-25: this used to be `timebase.now() >= engine.settlement_deadline(m)`,
+    and a match whose timestamps were missing produced a 1970 horizon — so every
+    such match was classified as "too late to settle" and the winner's prize
+    became unclaimable while the runbook said the sweep was healthy. "Unknown"
+    is not "past": when the horizon cannot be computed, attempt the re-sign and
+    let the chain be the judge.
+    """
+    horizon = engine.settlement_deadline_or_none(m)
+    if horizon is None:
+        return False
+    return timebase.now() >= horizon
+
+
 @app.post("/api/match/{match_id}/settle")
 def settle_match(match_id: str, request: Request) -> dict[str, Any]:
     address = _auth(request)
@@ -1770,6 +2368,9 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
     # DoS vector. 10 calls/min per address is far above any legitimate polling
     # cadence (the client settles once, then replays).
     _rl_check("settle", address, RL_SETTLE_MAX)
+    # Audit L-07: people who reached the money step (not settle CALLS — the
+    # client legitimately replays this).
+    analytics.note_person("settled", address)
     try:
         match = store.get(match_id)
         if address not in match.players:
@@ -1790,6 +2391,7 @@ def settle_match(match_id: str, request: Request) -> dict[str, Any]:
         # at the HTTP boundary, instead of inside the persistence layer.
         raise HTTPException(status_code=409, detail=str(e))
     _ledger_settlement(match_id)
+    eventlog.emit("settle.served", matchId=match_id, by=address)
     return envelope
 
 
@@ -1891,7 +2493,16 @@ def username_claim(body: UsernameRequest, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="Username registry requires the durable store (Firestore)")
 
     try:
-        from google.cloud.firestore_v1.base_transaction import transactional  # type: ignore
+        # Audit C-04 (2026-10-22), found while fixing H-18: the module pinned in
+        # api/requirements.txt (google-cloud-firestore==2.20.0) has NO
+        # `transactional` in `base_transaction` — it lives in `transaction.py`.
+        # The ImportError was swallowed by the broad `except` below and reported
+        # as 409 "Username claim failed", so EVERY username claim in production
+        # failed and looked like a conflict with another player.
+        try:
+            from google.cloud.firestore_v1.transaction import transactional  # type: ignore
+        except ImportError:  # pragma: no cover - older/newer library layout
+            from google.cloud.firestore_v1.base_transaction import transactional  # type: ignore
 
         @transactional
         def _claim(tx) -> dict[str, Any]:
@@ -1915,8 +2526,14 @@ def username_claim(body: UsernameRequest, request: Request) -> dict[str, Any]:
                 if old_snap.exists and (old_snap.to_dict() or {}).get("address", "").lower() == address:
                     tx.delete(old_ref)
 
-            doc_ref.create({"username": normalized, "tag": tag, "address": address})
-            users.document(address).set({"playerId": tag}, merge=True)
+            # Audit H-18 (2026-10-22): `doc_ref.create()` is NOT a transactional
+            # write — `DocumentReference.create` builds its own batch and commits
+            # it immediately, so it escaped this transaction: the registry row
+            # could land while the profile write rolled back, and the "already
+            # taken" check was not serialized with the insert. The transaction's
+            # own `create` is the one that participates (and fails on conflict).
+            tx.create(doc_ref, {"username": normalized, "tag": tag, "address": address})
+            tx.set(users.document(address), {"playerId": tag}, merge=True)
             return {"ok": True, "cleanTag": tag, "alreadyOwned": False}
 
         result = _claim(db.transaction())
@@ -1924,7 +2541,12 @@ def username_claim(body: UsernameRequest, request: Request) -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=409, detail=f"Username claim failed: {e}")
+        # Audit C-04: this used to be 409 — a SERVER failure reported as "that
+        # name is taken", which is both untrue and unactionable. A transaction
+        # conflict is already surfaced as 409 from the handler above; anything
+        # reaching here is our bug or an outage, and 503 says so.
+        print(f"[username] claim failed: {e!r}", file=sys.stderr)
+        raise HTTPException(status_code=503, detail="Username registry unavailable")
 
 
 @app.get("/api/username/{name}")
@@ -1957,6 +2579,155 @@ def username_lookup(name: str, request: Request) -> dict[str, Any]:
     if owner and owner == caller.lower():
         return {"available": True, "username": normalized, "alreadyOwned": True}
     return {"available": False, "username": normalized, "taken": True}
+
+
+class DeletionRequest(BaseModel):
+    # A short, explicit acknowledgement. A mistyped tap must not erase an
+    # account, and this endpoint is irreversible on the profile data.
+    confirm: str = Field(pattern="^DELETE$")
+
+
+@app.get("/api/players/search")
+def players_search(request: Request, q: str = "") -> dict[str, Any]:
+    """Find a player by tag or address (audit M-19).
+
+    This endpoint exists so the CLIENT no longer reads `users/*`. That collection
+    is the settlement ledger: it holds wallet-linked counters, reaction averages
+    and history, and it was world-readable purely so the friend search could
+    render a card. A public read of an economic record is a privacy leak (and a
+    cheap reconnaissance feed for a cheater).
+
+    Only the five fields a friend card needs are returned, the caller must hold a
+    session, and the query is exact-match — no prefix scan, which would be both
+    an enumeration oracle and a Firestore bill.
+    """
+    caller = _auth(request)
+    _rl_check("players_search", caller, RL_PLAYERS_SEARCH_MAX)
+    term = (q or "").strip()
+    if len(term) < 3:
+        return {"players": []}
+
+    db = None
+    try:
+        import store as _store_mod
+
+        db = _store_mod.durable_db()
+    except Exception:  # noqa: BLE001
+        db = None
+    if db is None:
+        return {"players": [], "reason": "search requires the durable store"}
+
+    found: list[dict[str, Any]] = []
+    try:
+        if re.fullmatch(r"0x[0-9a-fA-F]{40}", term):
+            snap = db.collection("users").document(term.lower()).get()
+            if snap.exists:
+                found.append({"address": term.lower(), **(snap.to_dict() or {})})
+        else:
+            for snap in db.collection("users").where("playerId", "==", term).limit(10).stream():
+                found.append(dict(snap.to_dict() or {}))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[players] search failed: {exc!r}", file=sys.stderr)
+        raise HTTPException(status_code=503, detail="Player search unavailable") from exc
+
+    players = []
+    for row in found:
+        addr = str(row.get("address", "")).lower()
+        if not addr:
+            continue
+        players.append(
+            {
+                "address": addr,
+                # A cleared tag after an erasure request must not reappear.
+                "playerId": str(row.get("playerId", "") or ""),
+                "level": int(row.get("level", 1) or 1),
+                "wins": int(row.get("wins", 0) or 0),
+                "totalMatches": int(row.get("totalMatches", 0) or 0),
+            }
+        )
+    return {"players": players}
+
+
+@app.get("/api/account/export")
+def account_export(request: Request) -> dict[str, Any]:
+    """Everything the server holds about me (audit M-21).
+
+    Data portability is a legal requirement in the EU/UK and California, and it
+    is also the honest answer to "what do you actually store about me".
+    """
+    address = _auth(request)
+    _rl_check("export", address, RL_EXPORT_MAX)
+    return privacy.export(address)
+
+
+@app.post("/api/account/delete")
+def account_delete(body: DeletionRequest, request: Request) -> dict[str, Any]:
+    """Erase the caller's profile data (audit M-21).
+
+    `confirm` must be the literal DELETE: this cannot be undone, and a wallet
+    signature is one tap away from a mistaken request. The response says what
+    was removed AND what is retained, so the player is not promised more than
+    the system does.
+    """
+    address = _auth(request)
+    _rl_check("delete", address, RL_DELETE_MAX)
+    result = privacy.erase(address)
+    auditlog.record(
+        "account.erase",
+        target=address,
+        detail=",".join(result["removed"]),
+        actor="player",
+        source_ip=_admin_ip(request),
+    )
+    return result
+
+
+class ProfileUpdate(BaseModel):
+    # None = leave unchanged; "" = clear the display tag.
+    playerId: str | None = Field(default=None, max_length=20)
+    savedFriends: list[str] | None = None
+
+
+@app.get("/api/profile")
+def get_profile(request: Request) -> dict[str, Any]:
+    """The caller's own profile (audit H-05, 2026-10-22).
+
+    The client used to write `users/{address}` directly, which `firestore.rules`
+    denies — so tags and saved friends were never stored, and the first
+    settlement (which writes that document) made the next load replace the local
+    friend list with nothing. Profile data lives here now, in its own collection,
+    written by the server for the authenticated caller.
+    """
+    address = _auth(request)
+    try:
+        return profiles.get(address)
+    except Exception as exc:  # noqa: BLE001
+        # A read failure must not be rendered as "no friends".
+        raise HTTPException(
+            status_code=503, detail=f"Profile is temporarily unreadable: {type(exc).__name__}"
+        ) from exc
+
+
+@app.put("/api/profile")
+def put_profile(body: ProfileUpdate, request: Request) -> dict[str, Any]:
+    """Update the caller's tag and/or saved friends. Omitted fields are kept."""
+    address = _auth(request)
+    _rl_check("profile", address, RL_PROFILE_MAX)
+    if body.playerId is not None:
+        try:
+            _clean_username(body.playerId)
+        except HTTPException:
+            raise
+    try:
+        return profiles.update(
+            address, player_id=body.playerId, saved_friends=body.savedFriends
+        )
+    except profiles.ProfileError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503, detail=f"Profile could not be saved: {type(exc).__name__}"
+        ) from exc
 
 
 @app.get("/api/player/{address}/stats")

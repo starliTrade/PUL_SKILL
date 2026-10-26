@@ -29,7 +29,13 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        from google.cloud import firestore  # noqa: F401
+        # `import google.cloud.firestore` rather than
+        # `from google.cloud import firestore`: `google.cloud` is a namespace
+        # package, so the attribute form is a mypy error (`Module "google.cloud"
+        # has no attribute "firestore"`) that says nothing about the code. The
+        # import still raises ImportError when the package is absent, which is
+        # the only thing this block cares about.
+        import google.cloud.firestore  # noqa: F401
     except Exception as exc:  # noqa: BLE001
         print(f"google-cloud-firestore is not installed: {exc}", file=sys.stderr)
         return 2

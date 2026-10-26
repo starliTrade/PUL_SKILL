@@ -32,6 +32,7 @@ os.environ.setdefault("PULSAR_ENV", "dev")
 import main as server  # noqa: E402
 from eth_account import Account  # noqa: E402
 from eth_account.messages import encode_defunct  # noqa: E402
+from eth_account.signers.local import LocalAccount  # noqa: E402
 from fastapi import HTTPException as _HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -72,7 +73,7 @@ check("CORSMiddleware is installed", "CORSMiddleware" in _mw_names)
 DOMAIN = "pulsar.test"
 
 
-def make_session(account: Account, domain: str = DOMAIN) -> tuple[str, dict]:
+def make_session(account: LocalAccount, domain: str = DOMAIN) -> tuple[str, str]:
     """Full SIWE handshake over HTTP; returns (bearer token, address).
     Audit-#4: the wallet signs the SERVER's returned message VERBATIM — the
     previous version rebuilt its own message, which masked the server-side
@@ -93,7 +94,7 @@ def make_session(account: Account, domain: str = DOMAIN) -> tuple[str, dict]:
         headers={"host": domain},
     )
     assert r.status_code == 200, r.text
-    token = r.json()["token"]
+    token = str(r.json()["token"])
     # Plan item 11.3/G2: the queue requires a SERVER-RECORDED eligibility
     # attestation. The gate is on `/api/queue` — the entry — not on the
     # round/settle/claim endpoints, so money already committed is never trapped.
@@ -127,31 +128,31 @@ r = client.post(
 check("SIWE rejects tampered message (401)", r.status_code == 401)
 
 # Unauthenticated privileged route must fail
-r = client.post("/api/queue", json={"stake": 1.0})
+r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40})
 check("Queue requires a bearer token (401)", r.status_code == 401)
 
 # --- 2. Stake gate (the old ALLOWED_STAKES NameError crash site) ---------------
-r = client.post("/api/queue", json={"stake": 999.0}, headers=auth_headers(token_a))
+r = client.post("/api/queue", json={"stake": 999.0, "rttMs": 40}, headers=auth_headers(token_a))
 check("Invalid stake rejected (400, no 500)", r.status_code == 400)
 
 # --- 3. Idempotent matchmaking over HTTP ---------------------------------------
-r1 = client.post("/api/queue", json={"stake": 2.0}, headers=auth_headers(token_a))
+r1 = client.post("/api/queue", json={"stake": 2.0, "rttMs": 40}, headers=auth_headers(token_a))
 check("Queue accepts a valid stake", r1.status_code == 200)
 m1 = r1.json()
 check("Creator sees waiting + youAreCreator=true", m1["status"] == "waiting" and m1["youAreCreator"] is True)
 
-r1b = client.post("/api/queue", json={"stake": 2.0}, headers=auth_headers(token_a))
+r1b = client.post("/api/queue", json={"stake": 2.0, "rttMs": 40}, headers=auth_headers(token_a))
 m1b = r1b.json()
 check("Creator re-poll returns the SAME waiting match (idempotent over HTTP)", m1b["matchId"] == m1["matchId"])
 
-r2 = client.post("/api/queue", json={"stake": 2.0}, headers=auth_headers(token_b))
+r2 = client.post("/api/queue", json={"stake": 2.0, "rttMs": 40}, headers=auth_headers(token_b))
 m2 = r2.json()
 check("Joiner pairs into the SAME match (active)", m2["matchId"] == m1["matchId"] and m2["status"] == "active")
 check("Joiner sees youAreCreator=false", m2["youAreCreator"] is False)
 check("Joiner sees the opponent address", (m2.get("opponent") or "").lower() == addr_a)
 
 # Creator must now learn the match went active — the old deadlock.
-r1c = client.post("/api/queue", json={"stake": 2.0}, headers=auth_headers(token_a))
+r1c = client.post("/api/queue", json={"stake": 2.0, "rttMs": 40}, headers=auth_headers(token_a))
 m1c = r1c.json()
 check("Creator re-poll sees the match ACTIVE (deadlock fixed)", m1c["status"] == "active")
 
@@ -389,7 +390,10 @@ try:
         check("RL: over-limit raises 429", False)
     except _HTTPException as e:
         check("RL: over-limit raises 429", e.status_code == 429)
-        check("RL: 429 carries Retry-After header", bool(e.headers) and "Retry-After" in e.headers)
+        # `e.headers` is `Mapping[str, str] | None`; mypy (once `scripts/` was
+        # added to the gate) is what made that explicit.
+        headers = dict(e.headers or {})
+        check("RL: 429 carries Retry-After header", "Retry-After" in headers)
 finally:
     server._rl_window.clear()
 

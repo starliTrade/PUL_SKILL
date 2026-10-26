@@ -28,7 +28,7 @@ const read = (rel: string) => fs.readFileSync(path.resolve(process.cwd(), rel), 
  */
 const code = (rel: string) =>
   read(rel)
-    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\*[\s\S]*?\*\/[ \t]*$/gm, '')
     .split('\n')
     .filter((line) => !line.trim().startsWith('//'))
     .join('\n');
@@ -48,8 +48,11 @@ describe('no fabricated measurements on money surfaces (audit 2026-10-13)', () =
     expect(src).not.toMatch(/\|\|\s*185\b/);
     // A random address for a row that has none.
     expect(src).not.toMatch(/Math\.random\(\)\.toString\(16\)/);
-    // ...and it reads the field the server actually writes.
-    expect(src).toMatch(/val\.earnedUSDT/);
+    // ...and it reads the field the server actually writes. Since audit M-04 the
+    // podium comes from /api/leaderboard, so the field is `row.earnedUSDT` — the
+    // server's own `leaderboard.py` maps the stored `earnedUSDT` into that shape.
+    expect(src).toMatch(/row\.earnedUSDT/);
+    expect(src).not.toMatch(/val\.totalEarnedUSDT\s*\?\?/);
   });
 
   it('the dashboard does not invent a reaction time', () => {

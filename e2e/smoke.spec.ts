@@ -5,6 +5,7 @@
  * E2E failure is a harness failure and not a bug.
  */
 import { test, expect } from '@playwright/test';
+import { API_ORIGIN } from './helpers';
 
 test.describe('the E2E harness', () => {
   test('the app boots and renders the landing surface', async ({ page }) => {
@@ -15,7 +16,7 @@ test.describe('the E2E harness', () => {
   });
 
   test('the API the app talks to is the real one', async ({ request }) => {
-    const res = await request.get('http://127.0.0.1:8000/api/health');
+    const res = await request.get(`${API_ORIGIN}/api/health`);
     expect(res.ok()).toBeTruthy();
     const body = await res.json();
     // The point of the harness: production-like, not a dev bypass.

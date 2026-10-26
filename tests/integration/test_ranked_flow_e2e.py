@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +29,9 @@ import urllib.request
 import pytest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from foundry_bin import cast_path  # noqa: E402
+
 MANIFEST = os.path.join(ROOT, "contracts", "deployments", "local.json")
 API = os.environ.get("PULSAR_E2E_API", "http://127.0.0.1:8000")
 STAKE = 1.0
@@ -66,10 +70,29 @@ def _api(path: str, body: dict | None = None, token: str | None = None, method: 
         with urllib.request.urlopen(req, timeout=30) as res:
             return res.status, json.loads(res.read() or b"{}")
     except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            from tests.fixtures.live_api import wait_and_retry  # noqa: PLC0415
+
+            def _again():
+                with urllib.request.urlopen(req, timeout=30) as res:
+                    return res.status, json.loads(res.read() or b"{}")
+
+            try:
+                return wait_and_retry(exc, _again)
+            except urllib.error.HTTPError as exc2:
+                return exc2.code, json.loads(exc2.read() or b"{}")
         return exc.code, json.loads(exc.read() or b"{}")
 
 
 def _sign_in(private_key: str | None = None) -> tuple[str, str]:
+    """A live session, minted once per identity per run (H-24)."""
+    from tests.fixtures.live_api import mint_once  # noqa: PLC0415
+
+    cache_key = f"ranked:{private_key or 'random'}"
+    return mint_once(cache_key, lambda: _mint_session(private_key))
+
+
+def _mint_session(private_key: str | None = None) -> tuple[str, str]:
     """A real SIWE session. Returns (address, token).
 
     Pass the anvil player's key when the session must be the SAME identity that
@@ -119,7 +142,7 @@ def _selector(signature: str) -> str:
     import subprocess
 
     return subprocess.run(
-        ["/root/workspace/.foundry/bin/cast", "sig", signature],
+        [cast_path(), "sig", signature],
         capture_output=True,
         text=True,
         check=True,

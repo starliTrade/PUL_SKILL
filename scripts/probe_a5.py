@@ -265,7 +265,16 @@ class _FakeWrongChain(_FakeCreated):
             result = "0x1"
         else:
             result = _rpc_status_payload(2)
-        return '{"jsonrpc":"2.0","id":1,"result":"' + result + b'"}'
+        # BUG FOUND 2026-10-24: this line was
+        #     return '{"jsonrpc":...' + result + b'"}'
+        # i.e. str + bytes, which raises TypeError on EVERY call — both branches.
+        # The two checks below therefore passed for the wrong reason: `duel_status`
+        # and `_verify_deposits_or_void` swallow read failures and fail closed, so
+        # "fails closed" was satisfied by a broken stub, not by the chain-binding
+        # cross-check this scenario exists to prove. Found by `mypy scripts/`,
+        # which was never run: the type gate only covered `api/`.
+        body = '{"jsonrpc":"2.0","id":1,"result":"' + result + '"}'
+        return body.encode()
 
 
 onchain._chain_id_checked = False
@@ -273,6 +282,17 @@ onchain._chain_id_mismatch = False
 onchain.urllib.request.urlopen = _FakeWrongChain
 try:
     check("chain mismatch → duel_status fails closed (None)", onchain.duel_status(raw_prod_id) is None)
+    # THE CHECK THAT MAKES THE ONE ABOVE MEAN SOMETHING.
+    #
+    # Until 2026-10-24 the stub above raised TypeError on every read, so
+    # `duel_status` returned None because the RPC was unreadable — not because the
+    # chain-binding cross-check caught a wrong chain. Both look identical from
+    # outside: "fails closed". Asserting the LATCH is what distinguishes them, and
+    # this assertion would have failed against the broken stub.
+    check(
+        "the mismatch LATCH tripped (the cross-check fired, not a dead RPC)",
+        onchain._chain_id_mismatch is True,
+    )
     try:
         server._verify_deposits_or_void(m_prod)
         check("gate on mismatched chain → 409, never a crash", False)
@@ -328,12 +348,12 @@ def session(acct) -> tuple[str, str]:
 
 
 t1, a1 = session(acct)
-r = client.post("/api/queue", json={"stake": 1.0}, headers={"host": "t.test", "Authorization": f"Bearer {t1}"})
+r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers={"host": "t.test", "Authorization": f"Bearer {t1}"})
 check(f"queue works (gate inactive) — {r.status_code}", r.status_code == 200)
 check("youAreCreator on first enqueue", r.json().get("youAreCreator") is True)
 
 t2, a2 = session(token_acct)
-r2 = client.post("/api/queue", json={"stake": 1.0}, headers={"host": "t.test", "Authorization": f"Bearer {t2}"})
+r2 = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers={"host": "t.test", "Authorization": f"Bearer {t2}"})
 check(f"second player matched — {r2.status_code}", r2.status_code == 200)
 check("joiner role exposed", r2.json().get("youAreJoiner") is True and r2.json().get("youAreCreator") is False)
 

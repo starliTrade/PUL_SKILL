@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import backendmode
 import timebase
 
 COLLECTION = "pulsar_abuse"
@@ -41,6 +42,15 @@ def _firestore_client() -> Any:
     global _CLIENT, _CLIENT_RESOLVED
     if _CLIENT_RESOLVED:
         return _CLIENT
+    # Audit H-18: `PULSAR_MATCH_STORE=memory` means this process must not depend
+    # on Firestore. Obeying it here — AFTER the resolved-client cache, so an
+    # intentionally injected client still wins — is what stops the launcher from
+    # leaving a client pointed at an emulator that was never started (60 s of
+    # blocked requests per call, reported as a dead test rather than a missing
+    # dependency).
+    if not backendmode.firestore_may_be_used():
+        _CLIENT_RESOLVED = True
+        return None
     _CLIENT_RESOLVED = True
     try:
         from google.cloud import firestore as _firestore  # type: ignore[attr-defined]
@@ -63,7 +73,30 @@ class AbuseError(RuntimeError):
     """The address may not start a duel right now."""
 
 
+class StoreUnavailable(AbuseError):
+    """The abuse record could not be read (audit M-03).
+
+    A SUBCLASS of AbuseError so an existing caller that only knows the old
+    exception still refuses the duel — but the HTTP layer maps it to 503, not
+    403, because "we cannot check" is not "you are banned" and the client should
+    retry rather than show the player a suspension message.
+    """
+
+
 def _load(address: str) -> dict[str, Any]:
+    """Read an abuse record, refusing to guess when the store cannot answer.
+
+    Audit M-03 (2026-10-22): this used to fall through to the in-process map on
+    a store error. An address that is not in that map resolves to "not banned",
+    so a Firestore blip silently UNBANNED every player whose record lived on
+    another replica or an earlier process — the one direction a ban must never
+    fail. `api/limits.py` had the same bug and was fixed under H-02; this is the
+    same fix, and the same reasoning: a control that opens when the database is
+    unavailable is not a control.
+
+    Memory mode (no client configured) still uses the local map, because there
+    the map IS the source of truth.
+    """
     addr = address.lower()
     client = _firestore_client()
     if client is not None:
@@ -71,11 +104,13 @@ def _load(address: str) -> dict[str, Any]:
             snap = client.collection(COLLECTION).document(addr).get()
             if snap.exists:
                 return dict(snap.to_dict() or {})
-        except Exception:  # noqa: BLE001
-            # A store outage must not LIFT a ban. Fall through to the local
-            # record; an unknown address is not banned, which is the documented
-            # default rather than a guess.
-            pass
+            return {}
+        except Exception as exc:  # noqa: BLE001
+            raise StoreUnavailable(
+                "Your account status could not be checked. Staked play is paused "
+                "until the store is reachable — a suspension must never lift "
+                "because a database is unavailable."
+            ) from exc
     return dict(_memory.get(addr, {}))
 
 
@@ -83,6 +118,9 @@ def _save(address: str, data: dict[str, Any]) -> None:
     addr = address.lower()
     client = _firestore_client()
     if client is not None:
+        # A failed write here is NOT swallowed: an unrecorded ban would look
+        # like a ban that was applied (the admin sees 200) while the offender
+        # is free (audit M-03). The exception reaches the admin endpoint.
         client.collection(COLLECTION).document(addr).set(data)
     _memory[addr] = dict(data)
 

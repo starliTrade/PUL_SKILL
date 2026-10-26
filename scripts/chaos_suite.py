@@ -32,13 +32,37 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from foundry_bin import cast_path, foundry_path_env  # noqa: E402
+
 API = "http://127.0.0.1:8000"
 ANVIL = "http://127.0.0.1:8545"
 EMULATOR = "http://127.0.0.1:8081"
 
-PASS, FAIL = [], []
+PASS: list[str] = []
+FAIL: list[str] = []
+# Scenarios whose PRECONDITION is missing: the emulator (no JRE), a second port,
+# and so on. Kept apart from FAIL on purpose.
+#
+# Audit 2026-10-24: this file used to fold "the Firestore emulator never started"
+# into the failure list. On a machine without a JRE that produced four red lines
+# whose only meaning was "Java is not installed", and the honest-looking summary
+# "20 passed, 4 failed" invited the reader to conclude the product was broken.
+# A verification tool that cannot tell "not exercised" from "wrong" teaches people
+# to ignore it, which is worse than not having it. A skipped scenario is now
+# visibly skipped, named with its reason, and printed as a machine-readable line
+# so `scripts/verify.sh` can report the gate as SKIP instead of PASS.
+SKIP: list[str] = []
+
+
+def skip(name: str, reason: str) -> None:
+    entry = f"{name} — {reason}"
+    SKIP.append(entry)
+    print(f"  SKIP  {entry}")
 
 
 def note(message: str) -> None:
@@ -126,7 +150,7 @@ def pair_two_players() -> tuple[str | None, str | None]:
     b = sign_in(m["players"][1]["privateKey"])
     if not a or not b:
         return None, None
-    _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=a)
+    _, body = http(f"{API}/api/queue", "POST", {"stake": 1, "rttMs": 40}, timeout=25, token=a)
     try:
         first = json.loads(body)
     except Exception:  # noqa: BLE001
@@ -137,7 +161,7 @@ def pair_two_players() -> tuple[str | None, str | None]:
         # — "Match not found" on the next call, which looks like a gate failure
         # and is a fixture failure. Say so instead.
         return None, a
-    _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=b)
+    _, body = http(f"{API}/api/queue", "POST", {"stake": 1, "rttMs": 40}, timeout=25, token=b)
     try:
         second = json.loads(body)
     except Exception:  # noqa: BLE001
@@ -153,14 +177,14 @@ def pair_two_players_with(keys: list[str]) -> tuple[str | None, str | None]:
     b = sign_in(keys[1])
     if not a or not b:
         return None, None
-    _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=a)
+    _, body = http(f"{API}/api/queue", "POST", {"stake": 1, "rttMs": 40}, timeout=25, token=a)
     try:
         first = json.loads(body)
     except Exception:  # noqa: BLE001
         return None, a
     if first.get("status") != "waiting":
         return None, a
-    _, body = http(f"{API}/api/queue", "POST", {"stake": 1}, timeout=25, token=b)
+    _, body = http(f"{API}/api/queue", "POST", {"stake": 1, "rttMs": 40}, timeout=25, token=b)
     try:
         second = json.loads(body)
     except Exception:  # noqa: BLE001
@@ -175,7 +199,7 @@ def _manifest() -> dict:
 
 def _selector(signature: str) -> str:
     out = subprocess.run(
-        ["/root/workspace/.foundry/bin/cast", "sig", signature],
+        [cast_path(), "sig", signature],
         capture_output=True,
         text=True,
         check=True,
@@ -258,7 +282,7 @@ def api_up() -> bool:
 
 
 def start_anvil() -> None:
-    env = dict(os.environ, PATH=os.environ.get("PATH", "") + ":/root/workspace/.foundry/bin")
+    env = dict(os.environ, PATH=foundry_path_env())
     subprocess.run(["bash", f"{ROOT}/scripts/start_anvil.sh", "--bg"], env=env,
                    capture_output=True, timeout=180)
     for _ in range(40):
@@ -283,15 +307,67 @@ def start_emulator() -> None:
         time.sleep(0.5)
 
 
+_EMULATOR_START_ATTEMPTED = False
+_ANVIL_START_ATTEMPTED = False
+
+
+def require_emulator(scenario: str) -> bool:
+    """The emulator, or an explicit skip that says why.
+
+    `start_emulator.sh` needs a JRE; on a machine without one it exits with an
+    error and nothing is exercised. That is not a behavioural failure of the
+    server, so it must not be recorded as one.
+    """
+    global _EMULATOR_START_ATTEMPTED
+    if emulator_up():
+        return True
+    # `start_emulator()` polls for 20 s. Two scenarios need it, and a machine
+    # without a JRE will never pass that poll — so try ONCE per run and remember
+    # the answer instead of charging 20 s per scenario for the same "no".
+    if not _EMULATOR_START_ATTEMPTED:
+        _EMULATOR_START_ATTEMPTED = True
+        start_emulator()
+        if emulator_up():
+            return True
+    skip(
+        scenario,
+        "needs the Firestore emulator and it did not start — "
+        "bash scripts/start_emulator.sh --bg (needs a JRE: java -version)",
+    )
+    return False
+
+
+def require_anvil(scenario: str) -> bool:
+    """The local chain, or an explicit skip.
+
+    Same reasoning as `require_emulator`: without foundry there is nothing to
+    exercise, and a red `the RPC is up before the scenario` line is a statement
+    about the machine, not about the server.
+    """
+    global _ANVIL_START_ATTEMPTED
+    if anvil_up():
+        return True
+    if not _ANVIL_START_ATTEMPTED:
+        _ANVIL_START_ATTEMPTED = True
+        start_anvil()
+        if anvil_up():
+            return True
+    skip(
+        scenario,
+        "needs a local anvil and it did not start — "
+        "bash scripts/start_anvil.sh --bg (needs foundry: forge --version)",
+    )
+    return False
+
+
 # --- scenarios ---------------------------------------------------------------
 
 
 def scenario_rpc_kill() -> None:
     """The RPC dies: the deposit gate must fail CLOSED."""
     print("\n[rpc_kill] the RPC dies mid-flight")
-    if not anvil_up():
-        start_anvil()
-    check("the RPC is up before the scenario", anvil_up())
+    if not require_anvil("rpc_kill"):
+        return
 
     # THE CONTROL, and it is the whole point.
     #
@@ -414,9 +490,8 @@ def scenario_rpc_kill() -> None:
 def scenario_firestore_kill() -> None:
     """Firestore dies: the request fails loudly, the process survives."""
     print("\n[firestore_kill] Firestore dies mid-flight")
-    if not emulator_up():
-        start_emulator()
-    check("the emulator is up before the scenario", emulator_up())
+    if not require_emulator("firestore_kill"):
+        return
 
     subprocess.run(["bash", f"{ROOT}/scripts/start_emulator.sh", "--stop"],
                    capture_output=True, timeout=60)
@@ -451,8 +526,8 @@ def scenario_firestore_kill() -> None:
 def scenario_rpc_delay() -> None:
     """A 5s RPC delay: the gate must still decide, not hang forever."""
     print("\n[rpc_delay] a 5s RPC delay (H10)")
-    if not anvil_up():
-        start_anvil()
+    if not require_anvil("rpc_delay"):
+        return
 
     # A TCP proxy in front of anvil that delays every response by 5s.
     proxy = subprocess.Popen(
@@ -475,6 +550,12 @@ def scenario_rpc_delay() -> None:
 def scenario_replica_split() -> None:
     """Two API instances, one store: the divergence must be explicit."""
     print("\n[replica_split] two instances")
+    # A second replica only means anything when both read the SAME store. On a
+    # machine without the emulator the two processes would each keep their own
+    # in-memory state, and "the replicas disagree" would be an artefact of the
+    # harness. Precondition first, then the scenario.
+    if not require_emulator("replica_split"):
+        return
     env = dict(os.environ)
     env.update({
         "PULSAR_MATCH_STORE": "firestore",
@@ -486,11 +567,23 @@ def scenario_replica_split() -> None:
         "ORACLE_SIGNING_SECRET": "0x" + "11" * 32,
         "PULSAR_ENV": "dev",
     })
+    # stderr is KEPT. The first version discarded it, so when the second replica
+    # did not answer the report said only `b=0` and the reason — a refusal to
+    # start, printed by the app itself — was thrown away.
+    log = open(os.path.join("/tmp", "pulsar-replica-b.log"), "w+", encoding="utf-8")
     proc = subprocess.Popen(
         [f"{ROOT}/.venv/bin/python", "-m", "uvicorn", "main:app", "--port", "8002", "--log-level", "warning"],
         cwd=f"{ROOT}/api", env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=log, stderr=subprocess.STDOUT,
     )
+
+    def replica_reason() -> str:
+        """Why the second replica is not answering — from its own output."""
+        log.flush()
+        log.seek(0)
+        tail = [ln for ln in log.read().splitlines() if ln.strip()][-3:]
+        return " | ".join(tail) or f"no output (exit={proc.poll()})"
+
     try:
         for _ in range(40):
             code, _ = http("http://127.0.0.1:8002/api/health", timeout=3)
@@ -499,7 +592,13 @@ def scenario_replica_split() -> None:
             time.sleep(0.5)
         code_a, _ = http(f"{API}/api/health", timeout=10)
         code_b, _ = http("http://127.0.0.1:8002/api/health", timeout=10)
-        check("both instances answer", code_a == 200 and code_b == 200, f"a={code_a} b={code_b}")
+        check(
+            "both instances answer",
+            code_a == 200 and code_b == 200,
+            f"a={code_a} b={code_b} — replica B: {replica_reason()}"
+            if code_b != 200
+            else f"a={code_a} b={code_b}",
+        )
 
         # The same read from both: the shared store must agree.
         # NOTE: this needs a REAL session — two 401s are equal to each other and
@@ -527,8 +626,21 @@ def scenario_replica_split() -> None:
         print("  NOTE  ratings are process-local (README 'Known limitations'): the")
         print("        pairing band holds within a replica, not across them.")
     finally:
+        # Audit 2026-10-24: this was `proc.wait(timeout=15)` and nothing else, so
+        # a replica that refused to start (and therefore ignored SIGTERM while
+        # uvicorn shut down) turned the whole scenario into
+        # `TimeoutExpired: ... timed out after 15 seconds` — a harness time-out
+        # reported as if the server had misbehaved. Terminate, then insist.
         proc.send_signal(signal.SIGTERM)
-        proc.wait(timeout=15)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:  # pragma: no cover - unkillable
+                check("the second replica stopped", False, f"pid={proc.pid} survived SIGKILL")
+        log.close()
 
 
 def scenario_soak(seconds: int = 45) -> None:
@@ -539,12 +651,21 @@ def scenario_soak(seconds: int = 45) -> None:
     method is in place and a leak shows up as a trend rather than a surprise.
     """
     print(f"\n[soak] {seconds}s memory-growth probe")
-    pid = subprocess.run(["pgrep", "-f", "uvicorn main:app --port 8000"],
-                         capture_output=True, text=True).stdout.split()
-    if not pid:
-        check("the API process is findable", False, "no uvicorn on 8000")
+    pids = subprocess.run(["pgrep", "-f", "uvicorn main:app --port 8000"],
+                          capture_output=True, text=True).stdout.split()
+    if not pids:
+        # The API answered `/api/health` a moment ago (main() refuses to run
+        # otherwise), so it IS up; all this proves is that its command line does
+        # not match the pattern — a different launch method, not a defect. Calling
+        # that a FAIL is the same mistake as calling a missing JRE one.
+        skip(
+            "soak",
+            "the API is up but its process could not be identified from the command "
+            "line (pgrep 'uvicorn main:app --port 8000') — start it with "
+            "scripts/start_e2e_stack.sh to measure RSS",
+        )
         return
-    pid = pid[0]
+    pid = pids[0]
 
     def rss_kb() -> int:
         with open(f"/proc/{pid}/status") as fh:
@@ -613,7 +734,7 @@ while True:
 '''
 
 
-SCENARIOS = {
+SCENARIOS: dict[str, Callable[[], None]] = {
     "rpc_kill": scenario_rpc_kill,
     "firestore_kill": scenario_firestore_kill,
     "rpc_delay": scenario_rpc_delay,
@@ -622,13 +743,26 @@ SCENARIOS = {
 }
 
 
-def main() -> int:
-    wanted = sys.argv[1:] or list(SCENARIOS)
+def main(argv: list[str] | None = None) -> int:
+    # `argv` instead of reading `sys.argv` directly: `main()` is the only entry
+    # point a test can drive, and under pytest `sys.argv` holds pytest's own
+    # arguments ("unknown scenario: tests/unit/..."). Every other script in
+    # scripts/ takes its arguments as a parameter for the same reason.
+    wanted = (sys.argv[1:] if argv is None else argv) or list(SCENARIOS)
     print("PULSAR chaos suite (plan item 10.4)")
     print("=" * 60)
     if not api_up():
-        print("the API is not up — run scripts/start_e2e_stack.sh first")
-        return 2
+        # A missing PREREQUISITE is not a failed scenario (audit 2026-10-25, found
+        # while building the audit package: its evidence run showed four red
+        # lines whose only meaning was "no services on this machine"). Return 0
+        # with the machine-readable line `scripts/verify.sh` turns into SKIP; the
+        # gate then reads "not exercised" instead of "broken". `--strict` still
+        # fails the run, so a CI that expects the stack cannot pass by accident.
+        skip("all scenarios", "the API is not up (run scripts/start_e2e_stack.sh first)")
+        print(f"\nSKIPPED (environment): {len(SKIP)} scenario(s)")
+        for entry in SKIP:
+            print(f"  - {entry}")
+        return 0
     for name in wanted:
         fn = SCENARIOS.get(name)
         if not fn:
@@ -640,9 +774,16 @@ def main() -> int:
             check(f"{name} completed", False, f"{type(exc).__name__}: {exc}")
 
     print("\n" + "=" * 60)
-    print(f"chaos summary: {len(PASS)} passed, {len(FAIL)} failed")
+    print(f"chaos summary: {len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} skipped (environment)")
     for name in FAIL:
         print(f"  FAILED: {name}")
+    if SKIP:
+        # One machine-readable line, so `scripts/verify.sh` can report this gate as
+        # SKIP-with-reason instead of passing it silently. A suite that did not
+        # exercise its scenarios must not look like one that did.
+        print(f"SKIPPED (environment): {len(SKIP)} scenario(s)")
+        for entry in SKIP:
+            print(f"  - {entry}")
     return 1 if FAIL else 0
 
 

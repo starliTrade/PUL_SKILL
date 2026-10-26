@@ -6,6 +6,7 @@ import hashlib
 import os
 import sys
 import time
+from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
 
@@ -164,8 +165,13 @@ check("Opponent round counter tracks submissions", view["opponentSubmitted"] == 
 m3 = store.enqueue(Account.create().address.lower(), 2.0)
 w_addr = Account.create().address.lower()
 m3b = store.enqueue(w_addr, 2.0)
+# `m3.players and list(m3.players)[0]` was shorthand for "the first player, or
+# the falsy players value" — mypy reads it as `dict | str | Any`, because it is.
+# The explicit extraction says what is meant and removes the guard that could
+# never fire (enqueue guarantees two players).
+p3 = list(m3.players)[0]
 for idx in range(me.ROUNDS):
-    for addr, base in ((m3.players and list(m3.players)[0], 220.0), (w_addr, 280.0)):
+    for addr, base in ((p3, 220.0), (w_addr, 280.0)):
         me.commit_intent(m3, addr, idx, "0x" + hashlib.sha256(f"{addr}{idx}".encode()).hexdigest())
         t3 = me.reveal_target(m3, addr, idx)
         wait_out_target(m3, addr, idx, base + idx * 3)
@@ -256,7 +262,11 @@ def _keccak_independent(data: bytes) -> bytes:
 _parity_match_id = "0x" + "cd" * 32
 _parity_winner = "0x" + "ab" * 20
 _parity_escrow = "0x" + "ef" * 20
-_parity_record = {
+# `dict[str, Any]`, not a bare literal: the values are heterogeneous (str, int,
+# dict) so mypy infers `dict[str, object]`, and `_parity_record["deadline"]
+# .to_bytes(...)` is then "object has no attribute to_bytes". The annotation is
+# the honest description of a JSON-shaped record.
+_parity_record: "dict[str, Any]" = {
     "status": "settled",
     "matchId": _parity_match_id,
     "winner": _parity_winner,

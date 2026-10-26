@@ -15,8 +15,9 @@ import { installMockWallet, ANVIL_ACCOUNTS } from './wallet';
 import { clearEligibilityGate } from './helpers';
 import { mintTestUSDT } from './chain';
 import { readManifest } from './chain';
+import { API_ORIGIN } from './helpers';
 
-const API = 'http://127.0.0.1:8000';
+const API = API_ORIGIN;
 const SESSION_KEY = 'pulsar.server.session.v1';
 const ACTIVE_MATCH_KEY = 'pulsar_active_ranked_match';
 const STAKE = 1;

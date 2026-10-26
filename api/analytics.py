@@ -36,6 +36,63 @@ from typing import Any
 # they are the signal that something is stopping people mid-duel.
 TERMINAL = ("settled", "void")
 
+# --- unique-person tracking (audit L-07) --------------------------------------
+# The request funnel was honest but blunt: a player who polled the queue 40 times
+# counted as 40 "queued", so the step ratios measured polling, not people. The
+# server knows the address on every authenticated step, so the fix needs no new
+# tracking — just a set instead of a counter.
+#
+# The set is CAPPED. An unbounded set of addresses is a memory leak an attacker
+# can drive by minting wallets, and `truncated: true` is the honest label for
+# "this is a lower bound, not a count". 5,000 distinct addresses per step is far
+# above any real cohort and far below anything that threatens the process.
+_MAX_PEOPLE_PER_STEP = 5_000
+_people: dict[str, set[str]] = {}
+_people_truncated: set[str] = set()
+# Per-process, like every other counter here: with N replicas each sees a slice
+# of the traffic. Stated in the output rather than left for the reader to guess.
+_people_since = 0.0
+
+
+def note_person(step: str, address: str) -> None:
+    """Record that `address` reached `step`. Never raises, never grows unbounded."""
+    global _people_since
+    try:
+        key = (address or "").strip().lower()
+        if not key:
+            return
+        if not _people_since:
+            import timebase
+
+            _people_since = timebase.now()
+        bucket = _people.setdefault(step, set())
+        if key in bucket:
+            return
+        if len(bucket) >= _MAX_PEOPLE_PER_STEP:
+            _people_truncated.add(step)
+            return
+        bucket.add(key)
+    except Exception:  # noqa: BLE001 — analytics must never break a request
+        pass
+
+
+def people_counts() -> dict[str, Any]:
+    """Distinct addresses per step, with the truncation caveat made explicit."""
+    return {
+        "scope": "this process only — N replicas each report their own slice",
+        "sinceResetAt": int(_people_since),
+        "capPerStep": _MAX_PEOPLE_PER_STEP,
+        "truncated": sorted(_people_truncated),
+        "steps": {step: len(bucket) for step, bucket in sorted(_people.items())},
+    }
+
+
+def reset_people() -> None:
+    global _people_since
+    _people.clear()
+    _people_truncated.clear()
+    _people_since = 0.0
+
 
 def _percentile(sorted_values: list[float], fraction: float) -> float:
     if not sorted_values:
@@ -166,6 +223,11 @@ def snapshot(store: Any, endpoint_counts: dict[str, int]) -> dict[str, Any]:
             "clientTracking": False,
             "storesPii": False,
             "note": "computed from the server's own match records; nothing leaves this server",
+            # Audit L-07, stated rather than implied: counting PEOPLE needs a
+            # per-person key, and the key is a public wallet address. It lives in
+            # a capped in-process set, is never written to disk and never leaves
+            # the server — but a reader deserves to know it exists.
+            "inMemoryKeys": "a capped set of wallet ids per step, this process only, never persisted",
         }
     }
     try:
@@ -173,8 +235,13 @@ def snapshot(store: Any, endpoint_counts: dict[str, int]) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         out["available"] = False
         out["reason"] = type(exc).__name__
+        # Audit L-07: the people counters live in this process, not in the
+        # store, so a store outage is not a reason to blank them.
+        out["people"] = people_counts()
         return out
     out["available"] = True
     out.update(_from_matches(matches))
     out["funnel"] = _funnel(endpoint_counts)
+    # Audit L-07: the answer to "how many PEOPLE", next to the request funnel.
+    out["people"] = people_counts()
     return out

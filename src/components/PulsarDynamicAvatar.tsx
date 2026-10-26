@@ -346,7 +346,7 @@ export const PulsarDynamicAvatar: React.FC<PulsarAvatarProps> = ({
       {showBadge && (
         <div
           className={cn(
-            'absolute -bottom-1 -right-1 px-1.5 py-0.2 rounded-full text-[8.5px] font-mono font-bold border leading-tight shadow-md flex items-center justify-center',
+            'absolute -bottom-1 -end-1 px-1.5 py-0.2 rounded-full text-[8.5px] font-mono font-bold border leading-tight shadow-md flex items-center justify-center',
             tier.theme.badgeBg,
             tier.theme.badgeText
           )}

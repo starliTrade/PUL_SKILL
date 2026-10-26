@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import backendmode
 import timebase
 
 COLLECTION = "pulsar_eligibility"
@@ -46,6 +47,15 @@ def _firestore_client() -> Any:
     global _CLIENT, _CLIENT_RESOLVED
     if _CLIENT_RESOLVED:
         return _CLIENT
+    # Audit H-18: `PULSAR_MATCH_STORE=memory` means this process must not depend
+    # on Firestore. Obeying it here — AFTER the resolved-client cache, so an
+    # intentionally injected client still wins — is what stops the launcher from
+    # leaving a client pointed at an emulator that was never started (60 s of
+    # blocked requests per call, reported as a dead test rather than a missing
+    # dependency).
+    if not backendmode.firestore_may_be_used():
+        _CLIENT_RESOLVED = True
+        return None
     _CLIENT_RESOLVED = True
     try:
         from google.cloud import firestore as _firestore  # type: ignore[attr-defined]

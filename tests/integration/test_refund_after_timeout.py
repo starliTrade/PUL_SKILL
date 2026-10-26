@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 import urllib.request
 
@@ -21,7 +22,9 @@ import pytest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 MANIFEST = os.path.join(ROOT, "contracts", "deployments", "local.json")
-CAST = "/root/workspace/.foundry/bin/cast"
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from foundry_bin import cast_path  # noqa: E402
+
 STAKE_UNITS = 1_000_000
 
 
@@ -44,7 +47,7 @@ def _rpc(url: str, method: str, params: list) -> dict:
 
 def _sig(signature: str) -> str:
     return subprocess.run(
-        [CAST, "sig", signature], capture_output=True, text=True, check=True
+        [cast_path(), "sig", signature], capture_output=True, text=True, check=True
     ).stdout.strip()
 
 

@@ -11,3 +11,6 @@ respx==0.22.0
 httpx==0.28.1
 ruff==0.9.4
 mypy==1.14.1
+# tests/unit/test_ci_workflow.py parses ci.yml; without PyYAML the whole
+# module `importorskip`s and 18 assertions about the workflow never run.
+PyYAML==6.0.2
