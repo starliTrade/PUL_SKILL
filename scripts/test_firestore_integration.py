@@ -28,6 +28,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
 
 os.environ.setdefault("ORACLE_SIGNING_SECRET", "fs-itest-secret")
 os.environ.setdefault("ORACLE_PRIVATE_KEY", "0x" + "11" * 32)
+# A NAMESPACE OF ITS OWN. Without a project id, `_firestore.Client(project=None)`
+# lands in the emulator's `default` namespace — the same one the server suite
+# uses — so by the time this script ran in CI the queue already held players
+# from the tests above it. `enqueue(a, 1.0)` then PAIRS with a stranger instead
+# of creating a waiting match, and every assertion after it is about a match the
+# script never made ("Not a participant of this match"). The emulator isolates
+# data per project, so naming one makes this suite start from an empty queue
+# whether it runs first, last, or twice.
+os.environ.setdefault("FIRESTORE_PROJECT_ID", "pulsar-itest")
 
 from store import DurableMatchStore  # noqa: E402
 

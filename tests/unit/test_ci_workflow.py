@@ -161,6 +161,28 @@ def test_game_server_install_step_cannot_fail_before_any_test(workflow: dict):
     )
 
 
+def test_the_firestore_suite_runs_in_its_own_namespace(workflow: dict) -> None:
+    """The suite asserts on an EMPTY queue; the tests above it fill one.
+
+    In CI the script and the server suite both landed in the emulator's
+    `default` project (no project id configured), so by the time the script
+    enqueued its first player the queue held someone else's waiter. `enqueue`
+    paired them, the "waiting match" assert failed, and every later check was
+    about a match the script never created — ending in "Not a participant of
+    this match". The emulator keeps data per project, so a named project makes
+    the suite start empty however often it runs.
+    """
+    steps = _steps(workflow["jobs"]["game-server"])
+    step = next(s for s in steps if "Firestore integration suite" in s.get("name", ""))
+    assert step.get("env", {}).get("FIRESTORE_PROJECT_ID"), (
+        "the suite shares the default namespace with the server tests"
+    )
+    script = (WORKFLOW.parents[2] / "scripts" / "test_firestore_integration.py").read_text()
+    assert 'os.environ.setdefault("FIRESTORE_PROJECT_ID"' in script, (
+        "running the script by hand must land in the same private namespace"
+    )
+
+
 def test_the_verify_gates_job_installs_dependencies_that_exist(workflow: dict) -> None:
     """This job exists to prove "CI runs the same gates a human runs".
 

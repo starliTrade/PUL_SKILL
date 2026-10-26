@@ -198,6 +198,9 @@ jobs:
         env:
           FIRESTORE_EMULATOR_HOST: 127.0.0.1:8081
           GCLOUD_PROJECT: demo-pulsar
+          # Its own namespace: this suite asserts on an EMPTY queue, and the
+          # server tests above leave players in the default one.
+          FIRESTORE_PROJECT_ID: pulsar-itest
         run: python3 scripts/test_firestore_integration.py 2>&1 | tee /tmp/firestore-integration.log; exit "${PIPESTATUS[0]}"
       - name: TEMPORARY — commit the log so it can be read (debug only)
         if: failure()
