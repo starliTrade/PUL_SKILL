@@ -198,7 +198,19 @@ jobs:
         env:
           FIRESTORE_EMULATOR_HOST: 127.0.0.1:8081
           GCLOUD_PROJECT: demo-pulsar
-        run: python3 scripts/test_firestore_integration.py
+        run: python3 scripts/test_firestore_integration.py 2>&1 | tee /tmp/firestore-integration.log; exit "${PIPESTATUS[0]}"
+      - name: TEMPORARY — commit the log so it can be read (debug only)
+        if: failure()
+        run: |
+          set +e
+          git config user.email "ci@pulsar.invalid"
+          git config user.name "pulsar-ci"
+          mkdir -p .ci-evidence
+          { echo "run ${GITHUB_RUN_ID} game-server (final)"; tail -n 2000 /tmp/firestore-integration.log 2>/dev/null || echo "(no firestore log)"; } > .ci-evidence/game-server-final.txt
+          git checkout -B ci-evidence-${GITHUB_RUN_ID}-final
+          git add -f .ci-evidence/game-server-final.txt
+          git commit -m "ci evidence: final (${GITHUB_RUN_ID})"
+          git push --force origin HEAD:ci-evidence-${GITHUB_RUN_ID}-final
 
   contracts:
     runs-on: ubuntu-latest
