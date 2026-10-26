@@ -74,7 +74,14 @@ def memory_backends(monkeypatch):
     # was built from the environment; the attribute is what the limiter and the
     # health probe actually read.
     monkeypatch.setattr(store_module, "durable_db", lambda: None)
+    # The store INSTANCE was constructed from the environment at import time. Its
+    # three backends are read through different attributes — the limiter reads
+    # `_fs_store`, the deep probe reads `_firestore` and `durable` (a property over
+    # `backend_name`). Pinning one and not the others is the half-pinned bug this
+    # fixture exists to end.
     monkeypatch.setattr(server.store, "_fs_store", None, raising=False)
+    monkeypatch.setattr(server.store, "_firestore", None, raising=False)
+    monkeypatch.setattr(server.store, "backend_name", "memory", raising=False)
     yield
 
 

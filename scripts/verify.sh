@@ -346,8 +346,21 @@ if [[ -f "$ROOT/playwright.config.ts" ]]; then
 # could pass while executing nothing — the same false-green class the server
 # pytest job already guards against with a minimum-count check. Capture the
 # output and require that tests actually ran.
+# `start_e2e_stack.sh` defaults to the FIRESTORE store and REFUSES to start
+# when nothing answers on 8081 — correctly, because a silent fallback to memory
+# is how the durability path stopped being tested. But this script already knows
+# whether an emulator exists (the coverage gate above asked), and when it does
+# not, failing the browser gate with "only 0 E2E tests ran" reports an
+# environment decision as a product failure. Ask for memory mode explicitly, and
+# say so, which is the outcome the stack's own banner describes.
+if curl -sf -o /dev/null "http://127.0.0.1:8081/" 2>/dev/null; then
+  E2E_ENV=""
+else
+  E2E_ENV="PULSAR_E2E_STORE=memory"
+  echo "note: no Firestore emulator — the E2E stack runs in memory mode (durability NOT exercised)"
+fi
 run_gate "browser E2E (playwright, min 20 tests)" bash -c \
-  "cd '$ROOT' && $RUN test:e2e 2>&1 | tee /tmp/pulsar-e2e.log; \
+  "cd '$ROOT' && $E2E_ENV $RUN test:e2e 2>&1 | tee /tmp/pulsar-e2e.log; \
    passed=\$(grep -oE '[0-9]+ passed' /tmp/pulsar-e2e.log | tail -1 | grep -oE '[0-9]+' || echo 0); \
    if [ \"\$passed\" -lt 20 ]; then \
      echo \"only \$passed E2E tests ran (expected >= 20) — skips are not coverage\"; \

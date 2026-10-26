@@ -18,7 +18,21 @@ HOST="${FIRESTORE_EMULATOR_HOST:-127.0.0.1:8081}"
 PORT="${HOST##*:}"
 BIND="${HOST%%:*}"
 EMULATOR_VERSION="1.19.8"
-JAR="${PULSAR_EMULATOR_JAR:-/root/workspace/.tools/firestore/firestore-emulator.jar}"
+# H-19, second form: the jar used to default to `/root/workspace/.tools/...`,
+# a directory that exists in the audit sandbox and nowhere else. In CI the
+# `mkdir -p` below failed, `set -e` exited 1, and `verify.sh` — which starts this
+# with `|| true` — carried on. The emulator gate then SKIPPED, the Playwright
+# stack refused to start in firestore mode, and the E2E gate failed with zero
+# tests run: three symptoms, one unwritable path. A cache directory is writable
+# on every machine and is the right place for a downloaded artifact.
+CACHE_DIR="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}"
+JAR="${PULSAR_EMULATOR_JAR:-$CACHE_DIR/pulsar/firestore-emulator-v${EMULATOR_VERSION}.jar}"
+# Keep the sandbox's pre-downloaded copy when it is there (it costs nothing and
+# saves a 60 MB download); it is a fallback now, not the default.
+if [[ ! -f "$JAR" && -z "${PULSAR_EMULATOR_JAR:-}" \
+      && -f /root/workspace/.tools/firestore/firestore-emulator.jar ]]; then
+  JAR=/root/workspace/.tools/firestore/firestore-emulator.jar
+fi
 PIDFILE="/tmp/pulsar-firestore-emulator.pid"
 URL="https://storage.googleapis.com/firebase-preview-drop/emulator/cloud-firestore-emulator-v${EMULATOR_VERSION}.jar"
 

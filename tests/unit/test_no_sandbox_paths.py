@@ -79,6 +79,49 @@ def test_no_absolute_sandbox_paths_in_executable_code() -> None:
     )
 
 
+def test_the_emulator_jar_lands_somewhere_writable() -> None:
+    """H-19 again, in the one place the allowlist does not cover.
+
+    `scripts/start_emulator.sh` may name the sandbox's JRE — it has an env
+    override and a PATH-based primary. Its JAR default was different in kind:
+    `/root/workspace/.tools/firestore/...` was the ONLY location, its `mkdir -p`
+    fails on a CI runner, and `set -e` turned that into exit 1. `verify.sh` starts
+    the emulator with `|| true`, so the run continued: the emulator gate skipped,
+    the Playwright stack refused to start (it defaults to the firestore store),
+    and the browser gate failed with "only 0 E2E tests ran". One unwritable path,
+    three symptoms, none of which named the path.
+    """
+    lines = (ROOT / "scripts" / "start_emulator.sh").read_text(encoding="utf-8").splitlines()
+    jar_lines = [ln for ln in lines if ln.startswith("JAR=") and "PULSAR_EMULATOR_JAR" in ln]
+    cache_lines = [ln for ln in lines if ln.startswith("CACHE_DIR=")]
+    assert jar_lines and cache_lines, "the JAR/CACHE_DIR lines moved; update this test with them"
+    default = jar_lines[0]
+    assert "/root/workspace" not in default, (
+        f"the jar default is a sandbox path that does not exist elsewhere: {default}"
+    )
+    assert "$CACHE_DIR" in default, f"the jar default must come from CACHE_DIR: {default}"
+    assert "XDG_CACHE_HOME" in cache_lines[0] and "HOME" in cache_lines[0], (
+        f"the cache directory must be per-user: {cache_lines[0]}"
+    )
+
+
+def test_the_browser_gate_asks_for_memory_mode_when_there_is_no_emulator() -> None:
+    """A missing emulator must not be reported as a failing product.
+
+    The E2E stack defaults to the firestore store and refuses to start without
+    one — correct, because a silent fallback is how durability stopped being
+    tested. But `verify.sh` knows the answer already, so it states the mode
+    explicitly instead of letting Playwright fail with zero tests run.
+    """
+    source = (ROOT / "scripts" / "verify.sh").read_text(encoding="utf-8")
+    assert "PULSAR_E2E_STORE=memory" in source, (
+        "verify.sh lets the E2E stack fail when no emulator is running"
+    )
+    assert "durability NOT exercised" in source, (
+        "the memory-mode run must say what it is not testing"
+    )
+
+
 def test_the_legacy_path_is_only_a_last_resort() -> None:
     source = (ROOT / "scripts" / "foundry_bin.py").read_text(encoding="utf-8")
     assert "shutil.which" in source, "PATH must be tried before any fixed directory"
