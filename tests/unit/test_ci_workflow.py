@@ -181,6 +181,25 @@ def test_the_verify_gates_job_installs_dependencies_that_exist(workflow: dict) -
     )
 
 
+def test_the_verify_gates_job_installs_the_solidity_libraries(workflow: dict) -> None:
+    """`start_anvil.sh` compiles PulsarEscrow, which imports OpenZeppelin.
+
+    The repo does not vendor `lib/` (deliberately), so a clean runner must clone
+    it. verify-gates did not, and the run stopped at "Deploy the escrow to a
+    local anvil" — one step before the gate it exists to run.
+    """
+    steps = _steps(workflow["jobs"]["verify-gates"])
+    names = [step.get("name", "") for step in steps]
+    lib_at = next(i for i, n in enumerate(names) if "Solidity test dependencies" in n)
+    anvil_at = next(i for i, n in enumerate(names) if n == "Deploy the escrow to a local anvil")
+    assert lib_at < anvil_at, "the libraries are installed after the deploy that needs them"
+    install = steps[lib_at]["run"]
+    assert "openzeppelin-contracts" in install and "forge-std" in install
+    assert "test -f lib/forge-std/src/Test.sol" in install, (
+        "a clone that silently produced nothing must fail here, not three steps later"
+    )
+
+
 def test_a_failing_test_step_reports_the_failing_ids(workflow: dict) -> None:
     """A red X with "exit code 1" cannot be attributed.
 
