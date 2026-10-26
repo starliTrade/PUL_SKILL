@@ -131,6 +131,22 @@ jobs:
             fi
           fi
           exit "$status"
+      - name: The failing test names, in the job summary (the log is not readable)
+        # 2026-10-26: annotations emitted with `::error::` from the step above do
+        # NOT reach the check-run API here (verified: the only failure annotation
+        # is GitHub's generic "Process completed with exit code 1"). The job
+        # summary DOES — `output.summary` on the check run — so the evidence goes
+        # there instead. This exists because the plain log is served from a blob
+        # host that returns EOF to anything that is not a browser session, which
+        # makes a red build impossible to diagnose.
+        if: failure()
+        run: |
+          {
+            echo "### pytest — failure evidence"
+            echo '```'
+            tail -n 60 /tmp/pytest.log 2>/dev/null || echo "(no /tmp/pytest.log written)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Protocol smoke tests (SIWE, commit-reveal, settlement, oracle, store roundtrip)
         # No emulator env here: `scripts/verify.sh` runs the legacy suites in
         # MEMORY mode (only the pytest gate gets FIRESTORE_EMULATOR_HOST), and
@@ -389,12 +405,25 @@ jobs:
           set -o pipefail
           bash scripts/verify.sh 2>&1 | tee /tmp/verify-run.log
           status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            sed -n '/^failed gates:/,/^$/p' /tmp/verify-run.log | head -n 12 | while IFS= read -r line; do
-              [ -n "$line" ] && echo "::error::${line:0:900}"
-            done
-          fi
           exit "$status"
+      - name: Which gate failed, in the job summary (the log is not readable)
+        # verify.sh prints its own "failed gates:" list, and it is the only place
+        # the answer lives. The log blob is not fetchable outside a browser
+        # session, so the list goes into the job summary, which the check-run API
+        # returns as `output.summary`.
+        if: failure()
+        run: |
+          {
+            echo "### verify.sh — failure evidence"
+            echo '```'
+            sed -n '/VERIFY SUMMARY/,$p' /tmp/verify-run.log 2>/dev/null | head -n 40 \
+              || echo "(verify.sh produced no summary)"
+            echo '```'
+            echo "### last 40 lines"
+            echo '```'
+            tail -n 40 /tmp/verify-run.log 2>/dev/null || echo "(no /tmp/verify-run.log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the verify log on failure
         if: failure()
         uses: actions/upload-artifact@v4

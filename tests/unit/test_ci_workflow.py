@@ -217,12 +217,26 @@ def test_a_failing_test_step_reports_the_failing_ids(workflow: dict) -> None:
 
 
 def test_a_failing_gate_lists_the_gate_that_failed(workflow: dict) -> None:
-    scripts = _job_scripts(workflow, "verify-gates")
-    assert "failed gates:" in scripts, (
-        "verify.sh prints which gates failed; the job must re-emit that list, or "
-        "the answer is buried in a log nobody can page through"
-    )
-    assert "::error::" in scripts
+    """A red build must say WHICH of the 22 gates failed.
+
+    `::error::` annotations were tried first and do not survive: the check-run
+    API returns only GitHub's generic "Process completed with exit code 1" for a
+    failing step. The job summary does survive — it comes back as
+    `output.summary` — so that is the channel, and this test pins it.
+    """
+    steps = _steps(workflow["jobs"]["verify-gates"])
+    summaries = [s for s in steps if s.get("if") == "failure()" and "$GITHUB_STEP_SUMMARY" in s.get("run", "")]
+    assert summaries, "a failing gate run leaves no evidence outside the unreadable log"
+    dump = "\n".join(s["run"] for s in summaries)
+    assert "/tmp/verify-run.log" in dump, "the summary does not contain verify.sh's own output"
+    assert "VERIFY SUMMARY" in dump, "the summary does not include which gates failed"
+
+
+def test_a_failing_server_suite_leaves_its_evidence_in_the_summary(workflow: dict) -> None:
+    steps = _steps(workflow["jobs"]["game-server"])
+    summaries = [s for s in steps if s.get("if") == "failure()" and "$GITHUB_STEP_SUMMARY" in s.get("run", "")]
+    assert summaries, "a failing server suite leaves no evidence outside the unreadable log"
+    assert any("/tmp/pytest.log" in s["run"] for s in summaries)
 
 
 # --- audit 2026-10-13: the gates must be the SAME gates -----------------------
