@@ -101,10 +101,24 @@ jobs:
         env:
           FIRESTORE_EMULATOR_HOST: 127.0.0.1:8081
           GCLOUD_PROJECT: demo-pulsar
+        # Why the output is teed and the failures are echoed as annotations
+        # (2026-10-25): a failing pytest run here produces a log of several
+        # thousand lines, and the log is the ONLY place the failing test names
+        # appear — GitHub shows a red X with "exit code 1" and nothing else. This
+        # step now re-emits the failing ids as check annotations, which the API
+        # returns as structured data, so a failure can be attributed without
+        # downloading a 10 000-line blob (which is also rate-limited).
         run: |
-          set -euo pipefail
+          set -uo pipefail
           python3 -m coverage erase
-          python3 -m coverage run --source=api -m pytest -q
+          python3 -m coverage run --source=api -m pytest -q 2>&1 | tee /tmp/pytest.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E '^(FAILED|ERROR) ' /tmp/pytest.log | head -n 10 | while IFS= read -r line; do
+              echo "::error::${line:0:900}"
+            done
+          fi
+          exit "$status"
       - name: Protocol smoke tests (SIWE, commit-reveal, settlement, oracle, store roundtrip)
         # No emulator env here: `scripts/verify.sh` runs the legacy suites in
         # MEMORY mode (only the pytest gate gets FIRESTORE_EMULATOR_HOST), and
@@ -313,10 +327,19 @@ jobs:
           python-version: '3.12'
       - uses: oven-sh/setup-bun@v2
       - name: Install server deps
+        # 2026-10-25: this step read `requirements.txt` from the repository ROOT,
+        # which does not exist — the requirements live in `api/`. It failed in
+        # eight seconds on every run, and because the step is not `|| true` the
+        # whole job died there: the frontend deps, Foundry, Playwright, anvil and
+        # `bash scripts/verify.sh` NEVER RAN. That is the same defect this job
+        # was created to fix ("CI runs the same gates a human runs"), one layer
+        # up: a job that never reaches its gate still shows a red X, and a red X
+        # that nobody can attribute is exactly as useless as a green one.
         run: |
+          set -euo pipefail
           python3 -m venv .venv
-          .venv/bin/pip install --quiet -r requirements.txt
-          .venv/bin/pip install --quiet -r requirements-dev.txt || true
+          .venv/bin/pip install --quiet -r api/requirements-dev.txt
+          python3 -c "import sqlite3; print('sqlite3', sqlite3.sqlite_version)"
       - name: Install frontend deps
         run: bun install --frozen-lockfile
       - name: Install Foundry (anvil + forge)
@@ -329,7 +352,21 @@ jobs:
         # verify.sh starts the emulator, the API and the frontend itself. It is
         # the same script a human runs, deliberately: a separate CI-only path is
         # how the two drifted apart in the first place.
-        run: bash scripts/verify.sh
+        #
+        # The output is teed so the summary — in particular verify.sh's own
+        # "failed gates:" list — can be re-emitted as annotations below. Without
+        # that, a red verify-gates check says only "exit code 1", and the answer
+        # ("which of the 22 gates?") is in a log nobody can page through.
+        run: |
+          set -o pipefail
+          bash scripts/verify.sh 2>&1 | tee /tmp/verify-run.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            sed -n '/^failed gates:/,/^$/p' /tmp/verify-run.log | head -n 12 | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::${line:0:900}"
+            done
+          fi
+          exit "$status"
       - name: Upload the verify log on failure
         if: failure()
         uses: actions/upload-artifact@v4

@@ -161,6 +161,51 @@ def test_game_server_install_step_cannot_fail_before_any_test(workflow: dict):
     )
 
 
+def test_the_verify_gates_job_installs_dependencies_that_exist(workflow: dict) -> None:
+    """This job exists to prove "CI runs the same gates a human runs".
+
+    It read `requirements.txt` from the repository ROOT. The requirements live in
+    `api/`, so the step failed in eight seconds and — because it is not
+    `|| true` — every later step was skipped: frontend deps, Foundry, Playwright,
+    anvil, and `bash scripts/verify.sh`. A job that never reaches its gate shows
+    the same red X as a gate that failed, which is how "verify-gates is red" was
+    true for the whole life of the job while the gate itself had never run.
+    """
+    scripts = _job_scripts(workflow, "verify-gates")
+    assert "-r api/requirements-dev.txt" in scripts, (
+        "the verify-gates job must install the server deps from api/"
+    )
+    assert "-r requirements.txt" not in scripts, (
+        "there is no requirements.txt at the repository root; this step fails "
+        "before verify.sh is ever reached"
+    )
+
+
+def test_a_failing_test_step_reports_the_failing_ids(workflow: dict) -> None:
+    """A red X with "exit code 1" cannot be attributed.
+
+    The server-test step produces thousands of lines of output; the failing test
+    ids are in there and nowhere else. The step now re-emits them as check
+    annotations, which the API returns as structured data — that is the
+    difference between "CI is red" and "these four tests failed".
+    """
+    scripts = _job_scripts(workflow, "game-server")
+    assert "::error::" in scripts, "the test step does not surface failures as annotations"
+    assert "PIPESTATUS" in scripts, (
+        "the step must exit with pytest's status, not tee's — otherwise a failing "
+        "suite reports success"
+    )
+
+
+def test_a_failing_gate_lists_the_gate_that_failed(workflow: dict) -> None:
+    scripts = _job_scripts(workflow, "verify-gates")
+    assert "failed gates:" in scripts, (
+        "verify.sh prints which gates failed; the job must re-emit that list, or "
+        "the answer is buried in a log nobody can page through"
+    )
+    assert "::error::" in scripts
+
+
 # --- audit 2026-10-13: the gates must be the SAME gates -----------------------
 
 
