@@ -43,9 +43,6 @@ jobs:
 
   game-server:
     runs-on: ubuntu-latest
-    # TEMPORARY (debug): lets the evidence step below push its log to a branch.
-    permissions:
-      contents: write
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -141,18 +138,6 @@ jobs:
             fi
           fi
           exit "$status"
-      - name: TEMPORARY — commit the log so it can be read (debug only)
-        if: failure()
-        run: |
-          set +e
-          git config user.email "ci@pulsar.invalid"
-          git config user.name "pulsar-ci"
-          mkdir -p .ci-evidence
-          { echo "run ${GITHUB_RUN_ID} job game-server"; tail -n 4000 /tmp/pytest.log 2>/dev/null || echo "(no log)"; } > .ci-evidence/game-server.txt
-          git checkout -B ci-evidence-${GITHUB_RUN_ID}-game-server
-          git add -f .ci-evidence/game-server.txt
-          git commit -m "ci evidence: game-server (${GITHUB_RUN_ID})"
-          git push --force origin HEAD:ci-evidence-${GITHUB_RUN_ID}-game-server
       - name: The failing test names, in the job summary (the log is not readable)
         # 2026-10-26: annotations emitted with `::error::` from the step above do
         # NOT reach the check-run API here (verified: the only failure annotation
@@ -202,18 +187,6 @@ jobs:
           # server tests above leave players in the default one.
           FIRESTORE_PROJECT_ID: pulsar-itest
         run: python3 scripts/test_firestore_integration.py 2>&1 | tee /tmp/firestore-integration.log; exit "${PIPESTATUS[0]}"
-      - name: TEMPORARY — commit the log so it can be read (debug only)
-        if: failure()
-        run: |
-          set +e
-          git config user.email "ci@pulsar.invalid"
-          git config user.name "pulsar-ci"
-          mkdir -p .ci-evidence
-          { echo "run ${GITHUB_RUN_ID} game-server (final)"; tail -n 2000 /tmp/firestore-integration.log 2>/dev/null || echo "(no firestore log)"; } > .ci-evidence/game-server-final.txt
-          git checkout -B ci-evidence-${GITHUB_RUN_ID}-final
-          git add -f .ci-evidence/game-server-final.txt
-          git commit -m "ci evidence: final (${GITHUB_RUN_ID})"
-          git push --force origin HEAD:ci-evidence-${GITHUB_RUN_ID}-final
 
   contracts:
     runs-on: ubuntu-latest
@@ -384,9 +357,6 @@ jobs:
   # CI" and "green locally" finally mean the same thing.
   verify-gates:
     runs-on: ubuntu-latest
-    # TEMPORARY (debug): lets the evidence step below push its log to a branch.
-    permissions:
-      contents: write
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -464,18 +434,6 @@ jobs:
             tail -n 40 /tmp/verify-run.log 2>/dev/null || echo "(no /tmp/verify-run.log)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: TEMPORARY — commit the log so it can be read (debug only)
-        if: failure()
-        run: |
-          set +e
-          git config user.email "ci@pulsar.invalid"
-          git config user.name "pulsar-ci"
-          mkdir -p .ci-evidence
-          { echo "run ${GITHUB_RUN_ID} job verify-gates"; tail -n 4000 /tmp/verify-run.log 2>/dev/null || echo "(no log)"; } > .ci-evidence/verify-gates.txt
-          git checkout -B ci-evidence-${GITHUB_RUN_ID}-verify-gates
-          git add -f .ci-evidence/verify-gates.txt
-          git commit -m "ci evidence: verify-gates (${GITHUB_RUN_ID})"
-          git push --force origin HEAD:ci-evidence-${GITHUB_RUN_ID}-verify-gates
       - name: Upload the verify log on failure
         if: failure()
         uses: actions/upload-artifact@v4
