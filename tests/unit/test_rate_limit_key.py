@@ -34,6 +34,17 @@ import timebase
 from starlette.requests import Request
 
 
+@pytest.fixture(autouse=True)
+def _in_process_window(memory_backends):
+    """Every test here is about `_rl_window`, the memory-mode limiter.
+
+    With the emulator up, `_rl_check` takes the Firestore branch and returns
+    before touching the map at all — the CI run for this branch failed exactly
+    there, with the map untouched and the assertion reading like a limiter bug.
+    """
+    yield
+
+
 def _request(headers: dict[str, str] | None = None, client: str | None = "10.0.0.9") -> Request:
     return Request(
         {

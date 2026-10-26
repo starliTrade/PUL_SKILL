@@ -18,6 +18,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 DOC = (ROOT / "docs/audit/REMEDIATION-TODO-2026-10-22.md").read_text(encoding="utf-8")
 
@@ -30,6 +32,12 @@ def _git(*args: str) -> str:
 
 def test_every_cited_commit_exists() -> None:
     """A citation you cannot `git show` is a rumour."""
+    if _git("rev-parse", "--is-shallow-repository").strip() == "true":
+        # A depth-1 checkout of the pull-request head has one commit in it, so
+        # every citation "does not exist" — a true statement about the clone and
+        # useless about the repository. CI was doing exactly that, and this test
+        # failed on the first run with 41 hashes that were all present upstream.
+        pytest.skip("shallow clone — fetch the full history (actions/checkout fetch-depth: 0)")
     known = set(re.findall(r"\b([0-9a-f]{7})\b", _git("log", "--format=%h", "-n", "400")))
     cited = set(re.findall(r"`([0-9a-f]{7})`", DOC))
     assert cited, "the report cites no commits at all"

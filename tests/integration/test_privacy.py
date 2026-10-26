@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "api"))
 
 import integrity  # noqa: E402
 import main as server  # noqa: E402
-import privacy  # noqa: E402
 import profiles  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -31,12 +30,21 @@ FRIEND = "0x" + "22" * 20
 
 
 @pytest.fixture(autouse=True)
-def _auth(monkeypatch):
+def _auth(monkeypatch, memory_backends):
+    """Authenticate as ADDR, on the in-memory backends.
+
+    The fixture used to pin `privacy._client` to None (so erase takes the memory
+    path) while leaving `profiles._client` alone — which, with the emulator up,
+    meant the write went to Firestore and the erase did not: `erase` reported
+    "profile" removed and `profiles.get()` still returned the tag. CI caught it
+    the first time these tests ran with a backend; the other five tests in this
+    module passed because they either read the memory mirror directly or never
+    looked after the erase.
+    """
     monkeypatch.setattr(server, "_auth", lambda _r: ADDR)
     monkeypatch.setattr(server, "_rl_check", lambda *a, **k: None)
     monkeypatch.setattr(profiles, "_memory", {})
     monkeypatch.setattr(integrity, "_memory", {})
-    monkeypatch.setattr(privacy, "_client", lambda: None)
     yield
 
 

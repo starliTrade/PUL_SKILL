@@ -249,7 +249,10 @@ def test_health_carries_the_store_block_but_not_the_probe(client: TestClient) ->
     assert "probe" not in body["store"]
 
 
-def test_deep_health_adds_the_probe(client: TestClient) -> None:
+def test_deep_health_adds_the_probe(client: TestClient, memory_backends) -> None:
+    # The probe cache is process-wide and another test may have filled it, so the
+    # assertion below would be reading that test's answer rather than this one's.
+    server._deep_probe_cache["payload"] = None
     body = client.get("/api/health?deep=1").json()
     probe = body["store"]["probe"]
     assert probe["checked"] is False  # memory backend in tests

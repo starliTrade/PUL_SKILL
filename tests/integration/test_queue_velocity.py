@@ -32,7 +32,14 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def _clean_abuse():
+def _clean_abuse(memory_backends):
+    """A counter per test, in the map this module asserts against.
+
+    `abuse._save` writes Firestore AND `_memory` while `_load` prefers
+    Firestore, so under the emulator the counter leaked from the previous test
+    (same address) and `recentStarts == 0` read as 1 — the L-11 regression this
+    test exists to prevent, reported against code that was correct.
+    """
     abuse._memory.clear()
     yield
     abuse._memory.clear()

@@ -49,6 +49,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          # `tests/unit/test_remediation_todo_consistency.py` checks that every
+          # commit hash cited in the audit document exists. The default depth-1
+          # checkout holds exactly one commit, so all 41 citations "did not
+          # exist" and the job failed on a documentation test inside a server
+          # job. History is part of this job's fixture.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -142,10 +149,10 @@ jobs:
           git config user.name "pulsar-ci"
           mkdir -p .ci-evidence
           { echo "run ${GITHUB_RUN_ID} job game-server"; tail -n 4000 /tmp/pytest.log 2>/dev/null || echo "(no log)"; } > .ci-evidence/game-server.txt
-          git checkout -B ci-evidence-${GITHUB_RUN_ID}
+          git checkout -B ci-evidence-${GITHUB_RUN_ID}-game-server
           git add -f .ci-evidence/game-server.txt
           git commit -m "ci evidence: game-server (${GITHUB_RUN_ID})"
-          git push --force origin HEAD:ci-evidence-${GITHUB_RUN_ID}
+          git push --force origin HEAD:ci-evidence-${GITHUB_RUN_ID}-game-server
       - name: The failing test names, in the job summary (the log is not readable)
         # 2026-10-26: annotations emitted with `::error::` from the step above do
         # NOT reach the check-run API here (verified: the only failure annotation
@@ -450,10 +457,10 @@ jobs:
           git config user.name "pulsar-ci"
           mkdir -p .ci-evidence
           { echo "run ${GITHUB_RUN_ID} job verify-gates"; tail -n 4000 /tmp/verify-run.log 2>/dev/null || echo "(no log)"; } > .ci-evidence/verify-gates.txt
-          git checkout -B ci-evidence-${GITHUB_RUN_ID}
+          git checkout -B ci-evidence-${GITHUB_RUN_ID}-verify-gates
           git add -f .ci-evidence/verify-gates.txt
           git commit -m "ci evidence: verify-gates (${GITHUB_RUN_ID})"
-          git push --force origin HEAD:ci-evidence-${GITHUB_RUN_ID}
+          git push --force origin HEAD:ci-evidence-${GITHUB_RUN_ID}-verify-gates
       - name: Upload the verify log on failure
         if: failure()
         uses: actions/upload-artifact@v4
