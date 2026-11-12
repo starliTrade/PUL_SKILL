@@ -117,10 +117,10 @@ def test_ledger_is_written_after_the_match_transaction_commits(client, monkeypat
     token_a, headers_a = _session(client, alice)
     token_b, headers_b = _session(client, bob)
 
-    r = client.post("/api/queue", json={"stake": 1.0}, headers=headers_a)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers=headers_a)
     assert r.status_code == 200, r.text
     match_id = r.json()["matchId"]
-    r = client.post("/api/queue", json={"stake": 1.0}, headers=headers_b)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers=headers_b)
     assert r.json()["matchId"] == match_id
 
     # Record the interleaving of the two effects. The buggy version writes the

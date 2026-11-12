@@ -154,16 +154,39 @@ def test_settlement_with_a_real_oracle_signature_pays_the_winner(
     winner_before = chain.balance_of(p1["address"])
     treasury_before = chain.balance_of(chain.treasury)
 
-    chain.settle_duel(
-        p1["privateKey"],
-        mid,
-        envelope["winner"],
-        envelope["winnerTimeMs"],
-        envelope["loserTimeMs"],
-        envelope["serverNonce"],
-        envelope["deadline"],
-        bytes.fromhex(envelope["signature"].removeprefix("0x")),
-    )
+    # Diagnostics wrapper (2026-10-23): this test has failed three times in full
+    # suite runs and never in ~30 standalone ones, and each time the traceback
+    # said only "execution reverted". A revert here has one plausible cause — the
+    # proof arrived expired (the oracle anchors the deadline to CHAIN time, so the
+    # only way to get an expired-yet-well-formed proof is for the chain clock and
+    # the signing path to disagree) — but "plausible" is not evidence. So on
+    # failure the test now prints the numbers that would settle it, instead of
+    # leaving the next reader with the same shrug.
+    try:
+        chain.settle_duel(
+            p1["privateKey"],
+            mid,
+            envelope["winner"],
+            envelope["winnerTimeMs"],
+            envelope["loserTimeMs"],
+            envelope["serverNonce"],
+            envelope["deadline"],
+            bytes.fromhex(envelope["signature"].removeprefix("0x")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        latest = chain.rpc("eth_getBlockByNumber", ["latest", False]) or {}
+        block_ts = int(latest.get("timestamp", "0x0"), 16)
+        pytest.fail(
+            "settleDuel reverted. "
+            f"deadline={envelope['deadline']} "
+            f"chain_now={onchain.chain_now()} "
+            f"latest_block_ts={block_ts} "
+            f"expired_by={block_ts - int(envelope['deadline'])}s "
+            f"nonce={envelope['serverNonce']} "
+            f"chain_id={chain.chain_id} escrow={chain.escrow} "
+            f"error={exc}",
+            pytrace=True,
+        )
 
     state = chain.duel_state(mid)
     assert state.status_name == "Settled"

@@ -239,6 +239,51 @@ const fetchServerProgression = async (address: string): Promise<PlayerStats | nu
   }
 };
 
+/**
+ * Audit M-14: re-ask the ledger for this player's progression.
+ *
+ * Used by the profile screen when it is showing "—" because the numbers are
+ * unverified. Returns the provenance after the attempt so the caller can say
+ * what happened instead of guessing.
+ */
+const refreshProgression = async (): Promise<'server' | 'local' | 'unknown'> => {
+  const userAddress = account.connected && account.address ? account.address : 'guest_local_player';
+  if (userAddress === 'guest_local_player') {
+    return 'local'; // no wallet means no ledger rows: local is the truth
+  }
+  const serverStats = await fetchServerProgression(userAddress);
+  const data = await realWeb3Manager.loadUserDataAsync(userAddress);
+  if (!serverStats) {
+    // A profile that was verified once keeps its 'server' numbers (and the
+    // timestamp that says when) — a transient failure must not hide data that
+    // WAS confirmed. Anything else is 'unknown' if a ranked duel exists in the
+    // history, because then the local counters are an estimate of ranked play.
+    const hasRankedHistory = data.history.some((m) => m && (m as { ranked?: boolean }).ranked);
+    data.progressionSource =
+      data.progressionSource === 'server' ? 'server' : hasRankedHistory ? 'unknown' : 'local';
+    await realWeb3Manager.saveUserDataAsync(data);
+    setUserData({ ...data });
+    return data.progressionSource;
+  }
+  const merged: typeof data = {
+    ...data,
+    wins: serverStats.wins,
+    losses: serverStats.losses,
+    voids: serverStats.voids,
+    totalMatches: serverStats.totalMatches,
+    xp: serverStats.xp,
+    level: serverStats.level,
+    winStreak: serverStats.winStreak,
+    bestReactionMs: serverStats.bestReactionMs || data.bestReactionMs,
+    avgReactionMs: serverStats.avgReactionMs || data.avgReactionMs,
+    progressionSource: 'server',
+    progressionCheckedAt: Date.now(),
+  };
+  await realWeb3Manager.saveUserDataAsync(merged);
+  setUserData({ ...merged });
+  return 'server';
+};
+
 const recordMatch = async (match: MatchHistoryItem): Promise<XPSummary> => {
   const userAddress = account.connected && account.address ? account.address : 'guest_local_player';
 
@@ -299,6 +344,15 @@ const recordMatch = async (match: MatchHistoryItem): Promise<XPSummary> => {
   // locally earned) with the ranked-only numbers — resetting a player's
   // progression to 0 after every training round.
   const serverStats = match.ranked ? await fetchServerProgression(userAddress) : null;
+  // Audit M-14: say where these numbers come from. A ranked duel that the
+  // ledger could not confirm leaves the local estimate in place, but marks the
+  // whole progression 'unknown' so the UI shows "—" instead of a number the
+  // payout ledger does not agree with. Nothing is marked for a PRACTICE duel:
+  // practice XP is local by design and the ledger never has it.
+  if (match.ranked) {
+    data.progressionSource = serverStats ? 'server' : 'unknown';
+    if (serverStats) data.progressionCheckedAt = Date.now();
+  }
   if (serverStats) {
     data.wins = serverStats.wins;
     data.losses = serverStats.losses;
@@ -471,6 +525,10 @@ export function usePulsarStore() {
       (state.account.address ? RealWeb3Manager.getPlayerTagForAddress(state.account.address) : undefined),
     bestReactionMs: state.userData.bestReactionMs,
     avgReactionMs: state.userData.avgReactionMs,
+    // Audit M-14: the profile must be able to tell a verified stat from a local
+    // estimate instead of rendering both the same way.
+    progressionSource: state.userData.progressionSource,
+    progressionCheckedAt: state.userData.progressionCheckedAt,
   };
 
   return {
@@ -492,6 +550,7 @@ export function usePulsarStore() {
     disconnectWallet,
     refreshBalance,
     recordMatch,
+    refreshProgression,
     depositFunds,
     withdrawFunds,
     updatePlayerTag,

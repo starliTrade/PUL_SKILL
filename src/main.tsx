@@ -1,4 +1,5 @@
 import {StrictMode} from 'react';
+import { watchRegistration } from './lib/swUpdate';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import { LanguageProvider } from './i18n/LanguageContext';
@@ -56,10 +57,26 @@ if (typeof window !== 'undefined') {
 const _env = (import.meta as unknown as { env?: { PROD?: boolean } }).env ?? {};
 if (_env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {
-      // A failed registration must never break the app; it only costs
-      // installability.
-    });
+    navigator.serviceWorker
+      .register('/sw.js')
+      .then((registration) => {
+        // Audit M-18: a new build WAITS. The banner asks the player, the worker
+        // swaps on request, and this listener performs exactly one reload.
+        let reloading = false;
+        watchRegistration(
+          registration as unknown as Parameters<typeof watchRegistration>[0],
+          Boolean(navigator.serviceWorker.controller),
+          () => {
+            if (reloading) return;
+            reloading = true;
+            window.location.reload();
+          },
+        );
+      })
+      .catch(() => {
+        // A failed registration must never break the app; it only costs
+        // installability.
+      });
   });
 }
 

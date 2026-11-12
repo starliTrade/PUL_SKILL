@@ -3,8 +3,13 @@
  *
  * `GET /api/username/{name}` existed, was tested, and had no caller: the client
  * read the public `usernames` collection directly, so the authoritative,
- * rate-limited path protected nothing. The client now asks the server first and
- * keeps the direct read only as the offline fallback.
+ * rate-limited path protected nothing.
+ *
+ * Audit M-04 (2026-10-22): there is no longer a Firestore fallback. `usernames/*`
+ * and `users/*` are closed to clients (M-19), so the old fallback threw and its
+ * `catch` returned `available: true` — the app called a taken name free and the
+ * claim only failed on submit. A fact about other people's data has no offline
+ * answer, so an unreachable server now says "could not check".
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -66,12 +71,13 @@ describe('username availability goes through the server (audit M12)', () => {
     expect(h.getDoc).not.toHaveBeenCalled();
   });
 
-  it('falls back to the direct read when there is no session', async () => {
+  it('does NOT claim a name is free when the server cannot be reached', async () => {
     h.ensureSession.mockRejectedValue(new Error('no wallet'));
-    h.getDoc.mockResolvedValue({ exists: () => false });
     const res = await realWeb3Manager.checkUsernameAvailability('offlinename', ME);
-    expect(res.available).toBe(true);
-    expect(h.getDoc).toHaveBeenCalled();
+    expect(res.available).toBe(false);
+    expect(res.error).toMatch(/could not check/i);
+    // And it certainly does not read the (now closed) collection.
+    expect(h.getDoc).not.toHaveBeenCalled();
   });
 
   it('still rejects a malformed name without asking anyone', async () => {

@@ -70,12 +70,30 @@ def test_the_contract_uses_one_anchor_for_both_clocks():
 
 
 def test_the_server_settlement_deadline_follows_the_same_anchor():
-    """`settlement_deadline` must use max(created, activated), like the chain."""
-    src = pathlib.Path(engine.__file__).read_text(encoding="utf-8")
-    body = src[src.index("def settlement_deadline(") : src.index("def settlement_deadline(") + 900]
-    assert "max(created, activated)" in body, (
-        "the server's settlement deadline no longer follows the contract's anchor"
-    )
+    """`settlement_deadline` must use max(created, activated), like the chain.
+
+    Audit H-25 made this BEHAVIOURAL instead of a grep of the source. The old
+    check passed as long as the words "max(created, activated)" appeared
+    anywhere in the function — including in a comment — and it could not see
+    that a match without timestamps silently became 1970 (H-25). Numbers are
+    harder to fake than text.
+    """
+
+    class _M:
+        def __init__(self, created: float, activated: float) -> None:
+            self.created_at = created
+            self.activated_at = activated
+
+    created, activated = 1_700_000_000.0, 1_700_000_500.0
+    # The contract uses max(createdAt, activatedAt), and joinDuel always sets
+    # activation later — so a late-joined duel must be measured from activation.
+    for c, a in ((created, activated), (activated, created), (created, 0.0)):
+        expected = int(max(c, a) + engine.MATCH_TIMEOUT_SECONDS)
+        assert engine.settlement_deadline(_M(c, a)) == expected, (c, a)
+
+    # And an object that carries neither timestamp has NO horizon — it must not
+    # be reported as 1970 (which every caller read as "expired").
+    assert engine.settlement_deadline_or_none(_M(0.0, 0.0)) is None
 
 
 # --- the prize the ledger records must be the prize the chain pays -------------

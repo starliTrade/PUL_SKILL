@@ -64,7 +64,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
     if (navigator.share) {
       try {
         await navigator.share({
-          title: 'PULSAR Duel Certificate',
+          title: t('certTitle'),
           text: shareText,
           url: window.location.origin,
         });
@@ -101,7 +101,7 @@ export const DuelCertificateModal: React.FC<DuelCertificateModalProps> = ({
             }}
             // Audit 8.5: an icon-only button needs an accessible name.
             aria-label={t('closeModal')}
-            className="absolute top-3.5 right-3.5 p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+            className="absolute top-3.5 end-3.5 p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>

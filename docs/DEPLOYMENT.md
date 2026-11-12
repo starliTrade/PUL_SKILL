@@ -29,7 +29,8 @@ First scaffold forge-std (one time) and run the test suite on your machine:
 
 ```bash
 cd contracts && forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-commit
-forge test        # the full suite (~81 tests): replay, forged sig, high-s, deadlines, refunds, tokens, invariants
+forge test        # 107 tests / 10 suites: replay, forged sig, high-s, deadlines,
+                  # refunds, tokens, invariants, versioning + migration window
 ```
 
 Then deploy with the provided script (Amoy shown; mainnet = add `--chain 137`):
@@ -50,6 +51,19 @@ Fund the two test wallets on Amoy:
 cast send $MOCK_USDT "faucet(address,uint256)" $PLAYER1 5000000000 --rpc-url ... --private-key $DEPLOYER_PRIVATE_KEY
 ```
 
+Confirm the deployed code is the version this server expects (audit M-11):
+
+```bash
+cast call $ESCROW_ADDRESS "VERSION()(string)" --rpc-url ...
+cast call $ESCROW_ADDRESS "VERSION_CODE()(uint256)" --rpc-url ...     # must equal onchain.EXPECTED_ESCROW_VERSION
+curl -s $SERVER/api/health | jq '.escrowVersion, .escrowVersionProblem'
+```
+
+Replacing a live escrow is **not** a redeploy-and-repoint: follow
+[`docs/UPGRADE-PATH.md`](UPGRADE-PATH.md) (freeze the old contract, drain it
+through normal settlement/refund/withdraw, keep it reachable forever). Fees and
+the treasury model are in [`docs/ECONOMICS.md`](ECONOMICS.md).
+
 Verify on the explorer:
 
 ```bash
@@ -61,9 +75,39 @@ forge verify-contract <ESCROW_ADDRESS> contracts/PulsarEscrow.sol:PulsarEscrow \
 When moving to mainnet (137): set `PAYMENT_TOKEN_ADDRESS=0xc2132D05D31c914a87C6611C10748AEb04B58e8F`
 (canonical USDT), verify against `polygonscan.com`, and re-derive every address.
 
-⚠️ The oracle key signs real payouts. Use a dedicated key holding no funds;
-give it only signing authority. Consider moving production signing to AWS KMS
-or GCP KMS (the signing surface in `api/oracle.py` is designed for it).
+⚠️ The oracle key signs real payouts. Use a dedicated key holding no funds; give
+it only signing authority.
+
+**Since audit H-07 the signer is pluggable (`api/signer.py`), and a production-
+like deployment refuses to start with the key in the environment unless you say
+so explicitly.** Choose one:
+
+| Mode | Env | What holds the key |
+|---|---|---|
+| `local` (dev only) | `ORACLE_SIGNER=local`, `ORACLE_PRIVATE_KEY=0x…` | this process |
+| AWS KMS | `ORACLE_SIGNER=aws-kms`, `ORACLE_KMS_KEY_ID=<key-id>`, `ORACLE_PUBLIC_KEY=0x04…`, `AWS_REGION=…` | KMS (ECC_SECG_P256K1, `ECDSA_SHA_256`, digest type) |
+| GCP KMS | `ORACLE_SIGNER=gcp-kms`, `ORACLE_KMS_KEY_VERSION=projects/…/cryptoKeyVersions/1`, `ORACLE_PUBLIC_KEY=0x04…` | KMS (EC_SIGN_SECP256K1_SHA256) |
+
+Create the AWS key with `aws kms create-key --key-spec ECC_SECG_P256K1
+--key-usage SIGN_VERIFY`, then read the public key with `aws kms get-public-key
+--key-id <id> --query PublicKey --output text | base64 -d | xxd -p | tail -c 130`
+(that trailing 65 bytes, `04||X||Y`, is `ORACLE_PUBLIC_KEY`). The escrow must
+trust the address derived from that public key — verify it with
+`GET /api/health` → `oracleAddress` before opening the doors.
+
+`ORACLE_PUBLIC_KEY` is not optional bureaucracy: the server recovers the
+signature's signer from the digest and refuses to emit one that does not match.
+A KMS key that is not the one the escrow trusts fails at signing time, not as an
+on-chain revert after a payout was announced.
+
+Set `PULSAR_ALLOW_LOCAL_SIGNER=1` only for a short-lived rehearsal where KMS is
+not configured yet. It is a deliberate, visible exception: the server logs
+nothing about it because the boot check already made you type it.
+
+**What KMS does NOT fix (still open, see the audit):** whoever can call the
+signer still chooses the winner. Dual approval for large payouts, a payout
+delay, and a public transparency log are policy controls, tracked as C-02c/H-07
+follow-ups in `docs/audit/REMEDIATION-TODO-2026-10-22.md`.
 
 ⚠️ **Rotating the oracle or the treasury is a two-step, timelocked operation**
 (audit M24). `setOracleSigner` / `setTreasuryWallet` only SCHEDULE the change;
@@ -108,7 +152,7 @@ Server environment (all **secrets** — set on the host, never in git):
 | `ORACLE_CHAIN_ID` | **Must equal `VITE_CHAIN_ID`** (default 80002). The escrow hashes `block.chainid` — a mismatch invalidates every settlement signature |
 | `ESCROW_ADDRESS` | Deployed contract address (binds settlement signatures) |
 | `ESCROW_RPC_URL` | JSON-RPC endpoint for the deposit gate (e.g. an Alchemy/Infura Amoy URL). **Required in production**: with `ESCROW_ADDRESS` + `ESCROW_RPC_URL` set, the server independently verifies BOTH stakes are locked on-chain (read-only `eth_call`) before every round — fail-closed if the RPC is down. Unset = gate inactive (practice mode only) |
-| `PULSAR_MATCH_STORE` | `firestore` (or unset for in-memory dev fallback) |
+| `PULSAR_MATCH_STORE` | `firestore`. Unset/`auto` still means Firestore, but since audit H-06 the server **refuses to start** if it cannot be reached, instead of falling back to per-replica memory. `PULSAR_REQUIRE_DURABLE_STORE=0` is the explicit opt-out for a single-process demo |
 | `FIRESTORE_PROJECT_ID` | Your Firebase project ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Service-account JSON path (or use ambient Cloud Run credentials) |
 | `CORS_ALLOW_ORIGINS` | **Required in production.** Comma-separated origin allowlist. Audit 2026-10-13: this row said "optional — leave unset (`*`)", but the H6 fail-closed gate (`REQUIRED_PRODUCTION_ENV`) refuses to start without it, so following this doc produced a server that would not boot. An unset value is refused rather than defaulting to `*` |
@@ -117,7 +161,26 @@ Server environment (all **secrets** — set on the host, never in git):
 | `SENTRY_DSN` (optional) | Server error monitoring |
 
 Smoke-test the deployment: `GET https://<server>/api/health` must return
-`{"ok": true, "matchStore": "firestore"}` in production.
+`{"ok": true, "matchStore": "firestore"}` — **plus `"store": {"durable": true}`**.
+
+> **Audit H-17 (2026-10-23):** `matchStore` is *configuration*, not proof. It
+> names the client that was constructed, and the Firestore client does no I/O in
+> its constructor — a wrong project id, revoked IAM or a blocked egress still
+> answered `matchStore: "firestore"`. Verified against a dead endpoint: health
+> said `firestore` and the first read hung for 60 s.
+>
+> Evidence lives in `store.writable`: `null` = no durable write attempted yet
+> (**not** "fine"), `true` = the last one succeeded, `false` = it failed (read
+> `store.lastError`). For proof on demand, `GET /api/health?deep=1` performs one
+> bounded round-trip (`timeoutMs` = 1500 by default, `PULSAR_HEALTH_PROBE_TIMEOUT_MS`
+> to change) and adds `store.probe`. It is opt-in because a liveness probe that
+> waits on a dead database turns a slow dependency into an unresponsive process.
+>
+> The deep probe is **cached for 5 s and limited to 12 requests/minute per IP**:
+> it is unauthenticated and each miss costs one billed Firestore read. `probe.ok`
+> is `null` when nothing was checked (memory backend) — never `true`.
+> The plain `/api/health` is unlimited on purpose: an orchestrator that receives
+> 429 on its liveness check restarts a healthy container.
 
 ---
 
@@ -138,9 +201,18 @@ Every query the server issues, and whether it needs a composite index:
 | `pulsar_matches.where(status == 'active')` | the sweep's expiry pass | single-field, automatic |
 | `pulsar_matches.where(players.<addr>.address == addr).limit(5)` | `player_live_match` (idempotent queueing) | single-field on a map subfield, automatic |
 | `pulsar_queue` documents (streamed) | matchmaking + pending challenges | collection scan, bounded by the number of stakes |
-| `matches.orderBy(timestamp desc).limit(15)` | the live arena feed (client) | single-field, automatic |
-| `leaderboard.orderBy(wins desc).limit(20)` | the podium (client) | single-field, automatic |
-| `users.where(playerId == tag).limit(10)` | friend search by tag (client) | single-field, automatic |
+| `pulsar_integrity/{address}` / `pulsar_review.where(status == 'open')` | the integrity scorer and the operator queue (audit C-02a) | keyed / single-field equality, automatic |
+| `pulsar_disputes.where(matchId == id)` | `/api/admin/match/{id}` and `disputes_for()` (audit H-10) | single-field, automatic |
+| `pulsar_profiles/{address}` (document get/set) | `GET`/`PUT /api/profile` (audit H-05) | keyed by address, no query |
+| `firebase_auth_sessions` / `used_nonces` (document get/set) | session revocation and SIWE replay protection (audit H-09) | keyed, no query |
+| `usernames/{normalized}` (document get/create) | the username registry, inside a transaction (audit H-18) | keyed by name, no query |
+| `leaderboard.orderBy(wins desc).limit(20)` | the podium (client read) | single-field, automatic |
+| `users.where(playerId == tag).limit(10)` | friend search by tag (client read) | single-field, automatic |
+
+The live-arena feed is **not** a Firestore query any more: `matches.orderBy(...)`
+was listed here but no client code issues it (audit H-04 moved the feed to the
+server's public settlement log). A documented query that does not exist is how a
+reader comes to trust an index table that is half fiction.
 
 `firestore.indexes.json` sets `fieldOverrides: []`, so nothing is excluded from
 the automatic single-field indexes — the map-subfield query above depends on
@@ -152,6 +224,30 @@ query. The sweep is the F-12 prize rescue: it re-signs a settled duel whose
 be swallowed by a bare `except Exception: pass`, so the sweep silently no-opped
 in production while still paying for the query (audit H9). It is now counted and
 surfaced on `/api/health` under `sweep` — check that field after deploying.
+
+## 3b-bis. Ledger health: outbox and reconciliation (audit H-14)
+
+The economy ledger is a shadow of what happened on-chain, written *after* the
+settlement is final. Two operational facts follow:
+
+- If a ledger write fails, the settlement is already irreversible. The server
+  queues it in `pulsar_ledger_outbox` and retries on the next sweep (any
+  authenticated queue poll). `GET /api/health` reports
+  `ledger.outbox.pending` and `ledger.outbox.oldestAgeSeconds`.
+  **Alert when `pending > 0` for more than a few minutes** — that is a player
+  whose wins/XP are visibly wrong while their money is already paid.
+- To measure drift that predates the outbox, run the read-only reconciler:
+
+```
+python scripts/reconcile_ledger.py          # exit 1 if counters disagree
+python scripts/reconcile_ledger.py --json   # for a cron job or dashboard
+```
+
+It recomputes wins/losses/totalMatches from the recorded `matches` documents and
+compares them with `users/*`. It never writes: applying a settlement again is
+the outbox's job (idempotent through the `settlements/{id}` gate).
+
+---
 
 ## 3c. Firestore TTL policies (audit 2026-10-13)
 
@@ -197,6 +293,7 @@ Set in Freebuff **Settings → Environment** (dev) **and** in
 | `VITE_GAME_SERVER_URL` | e.g. `https://api.yourdomain.com` (no trailing slash) |
 | `VITE_WALLETCONNECT_PROJECT_ID` | From cloud.reown.com — needed for mobile wallets |
 | `VITE_SENTRY_DSN` (optional) | Client error monitoring |
+| `VITE_SITE_URL` | Public origin, e.g. `https://app.yourdomain.com` (no trailing slash). Audit M-20: `og:url` / `og:image` / `twitter:image` must be absolute or link previews lose their image; `vite build` warns when it is unset and ships relative URLs |
 
 **Reown works without a domain.** The Project ID is a public client value (not a
 secret), so you can register at cloud.reown.com and create the project today —
@@ -207,6 +304,71 @@ it under Project → Domains in the Reown dashboard — the same Project ID keep
 working, with zero code or env changes. WalletConnect is optional anyway: on
 desktop, users connect via injected providers (MetaMask/Rabby) without it; it
 only adds mobile-wallet support.
+
+---
+
+## 3d. Admin operations (audit M-10)
+
+`/api/admin/*` is gated by `PULSAR_ADMIN_SECRET` in the `X-Admin-Secret` header
+and **fails closed**: with the variable unset every admin route answers 404
+(refusing is indistinguishable from "no such route", which is deliberate).
+
+Since 2026-10-22 every administrative decision — force-void, force-settle, ban,
+unban, integrity review — appends an entry to `pulsar_admin_audit` with the
+action, target, reason, source IP and a unique id, and the same line is printed
+as JSON on stderr (`component":"admin_audit"`). Read it back with:
+
+```
+curl -H "X-Admin-Secret: $PULSAR_ADMIN_SECRET" https://<api>/api/admin/audit
+```
+
+Set `TRUST_PROXY_HEADERS=1` only when a proxy **overwrites** `X-Forwarded-For`;
+otherwise the source IP recorded is the socket's (correct, just coarser behind
+NAT). Without the flag a forged header cannot move the audited IP or a rate
+limit.
+
+What is still open on this surface (audit M-10): the secret is shared, not
+per-operator, and there is no 2FA/mTLS or IP allowlist. Treat it as a break-glass
+credential: rotate it after any use, keep it out of the web client, and put the
+admin routes behind a network policy that only your office/VPN can reach.
+
+---
+
+## 4b. Security headers for the static client (audit H-16)
+
+The API sets `X-Content-Type-Options`, `X-Frame-Options: DENY`,
+`Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`,
+`Content-Security-Policy` and (in production) `Strict-Transport-Security` on
+every response — see `_SECURITY_HEADERS` in `api/main.py`.
+
+That is **not enough**: the SPA's HTML is served by the static host, and the API
+cannot set headers for another origin. The host must send the same policy, or
+the page that holds the session token in `localStorage` has no CSP at all.
+Whatever host you use, configure these response headers for `/*`:
+
+```
+Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: strict-origin-when-cross-origin
+Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+```
+
+Notes that matter when you deploy this:
+
+- `connect-src` must include the game-server origin and the RPC/Firebase
+  endpoints you actually use. The list above allows any `https:` origin, which is
+  the loosest part of the policy: tighten it to your own hosts once the domain
+  exists, and re-test a wallet connect + a duel + a settlement.
+- `'unsafe-inline'` in `script-src` is required by the Vite build's inline
+  bootstrap. A nonce/hash-based policy needs server-side HTML rendering.
+- WalletConnect opens a modal that loads resources from WalletConnect's relay
+  (`wss://relay.walletconnect.com`) and, for some wallets, an iframe. Test the
+  connect flow after changing `connect-src`/`frame-src`, or mobile wallets stop
+  working — which is precisely the flow an Amoy rehearsal exists to check.
+- `frame-ancestors 'none'` must ALSO be present on the game server (it is), so a
+  framed copy of the API cannot be used to phish signatures.
 
 ---
 
@@ -229,7 +391,8 @@ template. Before enabling real-money mode:
 - [ ] Contract deployed, verified on Polygonscan, constructor args correct
 - [ ] `ESCROW_RPC_URL` set on the server (activates the on-chain deposit gate — commit/target/result refuse to run unless the escrow holds both stakes)
 - [ ] Oracle key generated, stored as server secret, public address set in contract
-- [ ] Game server live, `/api/health` shows `matchStore: "firestore"`
+- [ ] Game server live, `/api/health` shows `matchStore: "firestore"` **and** `store.durable: true`
+- [ ] `curl '/api/health?deep=1'` shows `store.probe.ok: true` (one real round-trip)
 - [ ] `ESCROW_ADDRESS` on server **matches** `VITE_ESCROW_ADDRESS` on client
 - [ ] All `VITE_*` env vars set in production deploy env
 - [ ] Legal docs reviewed + placeholders replaced; geo-blocking at edge active

@@ -147,3 +147,87 @@ def test_a_cool_off_cannot_be_used_as_a_long_exclusion(player: str) -> None:
 def test_a_zero_or_negative_limit_is_refused(player: str) -> None:
     with pytest.raises(limits.LimitError, match="greater than zero"):
         limits.set_deposit_limit(player, 0)
+
+
+# --- Audit H-01 (2026-10-22): an exclusion can only get LONGER ---------------
+def test_re_excluding_with_a_shorter_period_does_not_shorten_it(
+    player: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The UI promises "cannot be lifted early"; overwriting the end date broke it.
+
+    A player who excluded for a year could call the endpoint again with one day
+    and cut their own exclusion by 364 days. The control must be monotonic.
+    """
+    year = limits.MAX_EXCLUSION_SECONDS
+    limits.self_exclude(player, year)
+    until = limits.state(player)["excludedUntil"]
+
+    state = limits.self_exclude(player, limits.MIN_EXCLUSION_SECONDS)
+
+    assert state["excludedUntil"] == until, (
+        "a second self-exclude call shortened the exclusion (audit H-01)"
+    )
+    with pytest.raises(limits.LimitError, match="self-excluded"):
+        limits.require(player, 1.0)
+    _travel(monkeypatch, limits.MIN_EXCLUSION_SECONDS + 1)
+    assert limits.state(player)["selfExcluded"] is True
+
+
+def test_re_excluding_with_a_longer_period_extends_it(player: str) -> None:
+    limits.self_exclude(player, limits.MIN_EXCLUSION_SECONDS)
+    first = limits.state(player)["excludedUntil"]
+    state = limits.self_exclude(player, limits.MIN_EXCLUSION_SECONDS * 2)
+    assert state["excludedUntil"] >= first + limits.MIN_EXCLUSION_SECONDS
+
+
+def test_a_cool_off_cannot_be_shortened_either(player: str) -> None:
+    limits.cool_off(player, 3600)
+    until = limits.state(player)["cooloffUntil"]
+    state = limits.cool_off(player, 60)
+    assert state["cooloffUntil"] == until, "a shorter cool-off replaced a longer one"
+
+
+# --- Audit H-02 (2026-10-22): a store outage fails CLOSED -------------------
+def test_an_unreadable_store_refuses_staked_play_instead_of_lifting_limits(
+    player: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The old fallback resolved an unknown address to "unlimited".
+
+    That means a Firestore hiccup silently removed every self-exclusion and
+    deposit ceiling — the failure mode a responsible-gaming control exists to
+    prevent.
+    """
+
+    class _Broken:
+        def collection(self, *_a, **_k):
+            raise RuntimeError("firestore unavailable")
+
+    monkeypatch.setattr(limits, "_firestore_client", lambda: _Broken())
+
+    with pytest.raises(limits.StoreUnavailable):
+        limits.state(player)
+    with pytest.raises(limits.StoreUnavailable):
+        limits.require(player, 1.0)
+    with pytest.raises(limits.StoreUnavailable):
+        limits.self_exclude(player, limits.MIN_EXCLUSION_SECONDS)
+
+
+# --- Audit M-01 (2026-10-22): reading the controls must not write -----------
+def test_reading_state_does_not_persist_a_matured_pending_limit(
+    player: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`state()` used to write the matured raise back on a GET."""
+    limits.set_deposit_limit(player, 1.0)
+    limits.set_deposit_limit(player, 5.0)  # schedules a raise 24h out
+
+    writes: list[str] = []
+    real_save = limits._save
+    monkeypatch.setattr(limits, "_save", lambda a, d: (writes.append(a), real_save(a, d))[1])
+
+    _travel(monkeypatch, limits.RAISE_DELAY_SECONDS + 1)
+    state = limits.state(player)
+
+    assert state["depositLimit"] == 5.0, "the matured raise must be effective"
+    assert state["pendingLimit"] is None
+    assert writes == [], "a GET persisted state (audit M-01)"
+    limits.require(player, 5.0)  # effective without a write

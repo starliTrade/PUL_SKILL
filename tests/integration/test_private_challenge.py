@@ -64,20 +64,20 @@ def test_a_challenge_reserves_the_match_for_its_target(client):
     a_addr, b_addr = alice.address.lower(), bob.address.lower()
 
     # Alice challenges Bob.
-    r = client.post("/api/queue", json={"stake": 1.0, "opponent": b_addr}, headers=ha)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40, "opponent": b_addr}, headers=ha)
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "waiting"
     reserved = r.json()["matchId"]
 
     # Carol queues openly at the same stake. The reserved match is NOT hers.
-    r = client.post("/api/queue", json={"stake": 1.0}, headers=hc)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers=hc)
     assert r.status_code == 200, r.text
     assert r.json()["matchId"] != reserved, (
         "a random player was paired into a match reserved for someone else (audit M27)"
     )
 
     # Bob accepts — he names Alice, and lands in HER match.
-    r = client.post("/api/queue", json={"stake": 1.0, "opponent": a_addr}, headers=hb)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40, "opponent": a_addr}, headers=hb)
     assert r.status_code == 200, r.text
     assert r.json()["matchId"] == reserved
     assert r.json()["status"] == "active"
@@ -89,11 +89,11 @@ def test_the_target_accepts_by_simply_queueing(client):
     ha, hb = _session(client, alice), _session(client, bob)
     b_addr = bob.address.lower()
 
-    r = client.post("/api/queue", json={"stake": 2.0, "opponent": b_addr}, headers=ha)
+    r = client.post("/api/queue", json={"stake": 2.0, "rttMs": 40, "opponent": b_addr}, headers=ha)
     reserved = r.json()["matchId"]
     assert r.json()["status"] == "waiting"
 
-    r = client.post("/api/queue", json={"stake": 2.0}, headers=hb)
+    r = client.post("/api/queue", json={"stake": 2.0, "rttMs": 40}, headers=hb)
     assert r.json()["matchId"] == reserved
     assert r.json()["status"] == "active"
 
@@ -103,11 +103,11 @@ def test_open_queueing_still_pairs_two_strangers(client):
     alice, bob = Account.create(), Account.create()
     ha, hb = _session(client, alice), _session(client, bob)
 
-    r = client.post("/api/queue", json={"stake": 5.0}, headers=ha)
+    r = client.post("/api/queue", json={"stake": 5.0, "rttMs": 40}, headers=ha)
     match_id = r.json()["matchId"]
     assert r.json()["status"] == "waiting"
 
-    r = client.post("/api/queue", json={"stake": 5.0}, headers=hb)
+    r = client.post("/api/queue", json={"stake": 5.0, "rttMs": 40}, headers=hb)
     assert r.json()["matchId"] == match_id
     assert r.json()["status"] == "active"
 
@@ -118,10 +118,10 @@ def test_a_challenge_to_a_different_stake_does_not_pair(client):
     ha, hb = _session(client, alice), _session(client, bob)
     b_addr = bob.address.lower()
 
-    r = client.post("/api/queue", json={"stake": 1.0, "opponent": b_addr}, headers=ha)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40, "opponent": b_addr}, headers=ha)
     reserved = r.json()["matchId"]
 
-    r = client.post("/api/queue", json={"stake": 10.0}, headers=hb)
+    r = client.post("/api/queue", json={"stake": 10.0, "rttMs": 40}, headers=hb)
     assert r.json()["matchId"] != reserved
 
 
@@ -136,10 +136,10 @@ def test_naming_the_challenger_is_not_enough_when_they_reserved_someone_else(cli
     ha, hc = _session(client, alice), _session(client, carol)
     a_addr, b_addr = alice.address.lower(), bob.address.lower()
 
-    r = client.post("/api/queue", json={"stake": 1.0, "opponent": b_addr}, headers=ha)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40, "opponent": b_addr}, headers=ha)
     reserved = r.json()["matchId"]
 
-    r = client.post("/api/queue", json={"stake": 1.0, "opponent": a_addr}, headers=hc)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40, "opponent": a_addr}, headers=hc)
     assert r.json()["matchId"] != reserved
 
 
@@ -148,7 +148,7 @@ def test_a_player_cannot_challenge_themselves(client):
     ha = _session(client, alice)
     r = client.post(
         "/api/queue",
-        json={"stake": 1.0, "opponent": alice.address.lower()},
+        json={"stake": 1.0, "rttMs": 40, "opponent": alice.address.lower()},
         headers=ha,
     )
     assert r.status_code == 400, r.text
@@ -166,7 +166,7 @@ def test_the_target_can_see_the_challenge_waiting_for_them(client):
     ha, hb, hc = _session(client, alice), _session(client, bob), _session(client, carol)
     a_addr, b_addr = alice.address.lower(), bob.address.lower()
 
-    r = client.post("/api/queue", json={"stake": 1.0, "opponent": b_addr}, headers=ha)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40, "opponent": b_addr}, headers=ha)
     assert r.status_code == 200, r.text
     reserved = r.json()["matchId"]
 
@@ -184,7 +184,7 @@ def test_the_target_can_see_the_challenge_waiting_for_them(client):
     assert r.json()["challenges"] == []
 
     # Once Bob accepts, it is no longer pending.
-    client.post("/api/queue", json={"stake": 1.0, "opponent": a_addr}, headers=hb)
+    client.post("/api/queue", json={"stake": 1.0, "rttMs": 40, "opponent": a_addr}, headers=hb)
     r = client.get("/api/challenges", headers=hb)
     assert r.json()["challenges"] == []
 

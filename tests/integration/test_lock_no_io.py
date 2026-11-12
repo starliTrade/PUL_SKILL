@@ -72,9 +72,9 @@ def _paired_match(client: TestClient) -> tuple[str, str, dict[str, str]]:
     alice, bob = Account.create(), Account.create()
     addr_a, headers_a = _session(client, alice)
     _, headers_b = _session(client, bob)
-    r = client.post("/api/queue", json={"stake": 1.0}, headers=headers_a)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers=headers_a)
     match_id = r.json()["matchId"]
-    r = client.post("/api/queue", json={"stake": 1.0}, headers=headers_b)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers=headers_b)
     assert r.json()["matchId"] == match_id, "the two players did not pair"
     return match_id, addr_a, headers_a
 

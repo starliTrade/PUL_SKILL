@@ -20,6 +20,7 @@ SIWE domain.
 from __future__ import annotations
 
 import os
+import pathlib
 
 import pytest
 
@@ -71,11 +72,19 @@ def test_a_production_deployment_must_configure_itself():
         "ESCROW_ADDRESS",
         "ESCROW_RPC_URL",
         "ORACLE_SIGNING_SECRET",
-        "ORACLE_PRIVATE_KEY",
         # Audit 2026-10-13: without this the server silently signs for Amoy.
         "ORACLE_CHAIN_ID",
     ):
         assert name in missing, f"{name} is not enforced in production"
+
+    # Audit H-07: ORACLE_PRIVATE_KEY left this list on purpose. A KMS backend
+    # must NOT need it — requiring it forced every deployment to keep the payout
+    # key in an environment variable. The replacement gate is explicit:
+    # ORACLE_SIGNER=local needs PULSAR_ALLOW_LOCAL_SIGNER=1 in production.
+    assert "ORACLE_PRIVATE_KEY" not in missing
+    assert "PULSAR_ALLOW_LOCAL_SIGNER" in pathlib.Path(server.__file__).read_text(
+        encoding="utf-8"
+    )
 
 
 def test_a_fully_configured_deployment_has_nothing_missing():

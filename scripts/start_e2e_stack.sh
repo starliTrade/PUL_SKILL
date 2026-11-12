@@ -13,12 +13,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MANIFEST="$ROOT/contracts/deployments/local.json"
+# Overridable so a test can point at a throwaway manifest without touching
+# the real deployment record (the guard below is tested in
+# tests/unit/test_e2e_stack_script.py).
+MANIFEST="${PULSAR_E2E_MANIFEST:-$ROOT/contracts/deployments/local.json}"
 PIDFILE="/tmp/pulsar-e2e-api.pid"
 API_PORT="${PULSAR_API_PORT:-8000}"
 LOGFILE="/tmp/pulsar-e2e-api.log"
 PORT="${PULSAR_E2E_API_PORT:-8000}"
 FRONTEND_PORT="${PULSAR_E2E_FRONTEND_PORT:-3000}"
+EMULATOR_HOST="${FIRESTORE_EMULATOR_HOST:-127.0.0.1:8081}"
 
 if [[ "${1:-}" == "--stop" ]]; then
   # Kill by PORT, not only by the recorded pid.
@@ -43,6 +47,35 @@ if [[ "${1:-}" == "--stop" ]]; then
   exit 0
 fi
 
+# --- the store must actually be reachable ------------------------------------
+#
+# Audit H-17 (2026-10-23). Without the emulator this script still reported
+# success: the Firestore client does no I/O in its constructor, so the API came
+# up, /api/health answered `matchStore: "firestore"`, and the FIRST request that
+# touched the store hung for ~60 s (the client's retry policy outlives the
+# per-call timeout). Every gate built on this script then failed with a bare
+# `TimeoutError`, which reads like a broken test rather than a missing service.
+#
+# Default stays firestore: this suite exists to exercise the production config.
+# PULSAR_E2E_STORE=memory is the explicit way to run on a machine without Java,
+# and it ANNOUNCES that durability is not being tested — the failure mode above
+# exists precisely because "configured" was mistaken for "working".
+STORE_MODE="${PULSAR_E2E_STORE:-firestore}"
+case "$STORE_MODE" in
+  firestore|memory) ;;
+  *)
+    echo "PULSAR_E2E_STORE must be 'firestore' or 'memory' (got '$STORE_MODE')" >&2
+    exit 1
+    ;;
+esac
+if [[ "$STORE_MODE" == "firestore" ]] && ! curl -sf -o /dev/null --max-time 2 "http://${EMULATOR_HOST}/" 2>/dev/null; then
+  echo "REFUSING TO START: PULSAR_E2E_STORE=firestore but nothing answers at ${EMULATOR_HOST}." >&2
+  echo "  * start it:  bash scripts/start_emulator.sh --bg   (needs a JRE)" >&2
+  echo "  * or run:    PULSAR_E2E_STORE=memory bash scripts/start_e2e_stack.sh" >&2
+  echo "    (API-only run: durability is NOT exercised, and the banner will say so)" >&2
+  exit 1
+fi
+
 if [[ ! -f "$MANIFEST" ]]; then
   echo "no deployment manifest at $MANIFEST — run scripts/start_anvil.sh --bg" >&2
   exit 1
@@ -65,12 +98,42 @@ SIGNING_SECRET="0x$(printf '11%.0s' {1..32})"
 # longer exist — and `/api/queue` then hands those out, which is exactly the
 # `409 {"detail":"Match not found"}` this suite kept hitting. Resetting the
 # store and starting the server must be one ordered step, not two.
-EMULATOR_HOST="${FIRESTORE_EMULATOR_HOST:-127.0.0.1:8081}"
 PROJECT="${FIRESTORE_PROJECT_ID:-${GCLOUD_PROJECT:-demo-pulsar}}"
 if curl -sf -o /dev/null "http://${EMULATOR_HOST}/" 2>/dev/null; then
   curl -sf -o /dev/null -X DELETE \
     "http://${EMULATOR_HOST}/emulator/v1/projects/${PROJECT}/databases/(default)/documents" \
     && echo "reset the Firestore emulator (${PROJECT})"
+fi
+
+# --- the manifest and the CHAIN must agree -----------------------------------
+#
+# Audit 2026-10-16: `start_anvil.sh` USED TO redeploy on every run, so the escrow
+# address changed each time; an API started before that pointed at an address with
+# no code on it. It now keeps the on-chain deployment when the manifest's escrow
+# still has code, and a fresh anvil reproduces the SAME addresses (CREATE from the
+# same deployer), so the address no longer moves. The check below is still the
+# right one to keep — it catches a manifest from another chain, a wiped anvil
+# whose redeploy failed, and a hand-edited local.json. Those all report
+# `escrowConfigured: true` and `rpc.reachable: true` while every duel fails with
+# "On-chain duel state cannot be verified right now", which reads like a server
+# bug. A stale CACHE after an anvil restart is not visible from the address at
+# all; see docs/GO-LIVE-RUNBOOK.md §3 for the rest of that trap.
+#
+# This check used to sit AFTER the start-up path, glued to an `exit 1` by a
+# missing newline — so it was dead code that had never run once, and a stale
+# manifest still produced the exact confusing failures it was written to prevent.
+# It now runs before the server is launched, where the comment always said it did.
+_manifest_code="$(
+  curl -s -X POST -H 'Content-Type: application/json' \
+    --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"${ESCROW}\",\"latest\"]}" \
+    "${PULSAR_ANVIL_URL:-http://127.0.0.1:8545}" 2>/dev/null \
+    | python3 -c "import json,sys;print(json.load(sys.stdin).get('result','0x'))" 2>/dev/null || echo 0x
+)"
+if [[ -z "$_manifest_code" || "$_manifest_code" == "0x" ]]; then
+  echo "REFUSING TO START: the manifest names escrow ${ESCROW} but there is no" >&2
+  echo "contract at that address on the chain. Run scripts/start_anvil.sh --bg" >&2
+  echo "FIRST (it redeploys, which changes the address), then start this stack." >&2
+  exit 1
 fi
 
 cd "$ROOT/api"
@@ -86,7 +149,14 @@ cd "$ROOT/api"
 # after it becomes a separate command — the server then starts with
 # `PULSAR_MATCH_STORE` unset and silently serves from memory. This has now
 # happened twice in this file; that is why the warning is here.
-PULSAR_MATCH_STORE=firestore \
+# This stack is local-only: anvil, a throwaway key from the manifest, no real
+# money. H-07 refuses ORACLE_SIGNER=local unless the risk is accepted EXPLICITLY,
+# so it is accepted here — with PULSAR_ALLOW_LOCAL_SIGNER, not with PULSAR_ENV=dev.
+# Disabling the production checks wholesale would defeat the point of a suite
+# whose job is to exercise those checks.
+PULSAR_ALLOW_LOCAL_SIGNER=1 \
+PULSAR_MATCH_STORE="$STORE_MODE" \
+PULSAR_REQUIRE_DURABLE_STORE=0 \
 FIRESTORE_EMULATOR_HOST="${FIRESTORE_EMULATOR_HOST:-127.0.0.1:8081}" \
 GCLOUD_PROJECT="${GCLOUD_PROJECT:-demo-pulsar}" \
 CORS_ALLOW_ORIGINS="${CORS_ALLOW_ORIGINS:-http://127.0.0.1:${FRONTEND_PORT},http://localhost:${FRONTEND_PORT}}" \
@@ -113,8 +183,16 @@ if command -v ss >/dev/null 2>&1; then
 fi
 
 for _ in $(seq 1 40); do
-  if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/health"; then
+  # --max-time: an unbounded curl here hangs the whole launcher when the server
+  # is up but a dependency makes /api/health slow. A poll must be allowed to
+  # fail and try again, not to wait forever.
+  if curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:${PORT}/api/health"; then
     echo "E2E API up on 127.0.0.1:${PORT} (escrow ${ESCROW:0:10}…, chain ${CHAIN_ID})"
+    if [[ "$STORE_MODE" == "memory" ]]; then
+      echo "WARNING: PULSAR_E2E_STORE=memory — matches live in this process only." >&2
+      echo "         Durability, the durable read paths and the Firestore index" >&2
+      echo "         assumptions are NOT being exercised by this run." >&2
+    fi
     exit 0
   fi
   sleep 0.5
@@ -122,31 +200,4 @@ done
 
 echo "the E2E API did not become healthy — see $LOGFILE" >&2
 tail -20 "$LOGFILE" >&2 || true
-exit 1# --- 0. the manifest and the CHAIN must agree ---------------------------------
-#
-# Audit 2026-10-16: `start_anvil.sh` REDEPLOYS on every run, so the escrow address
-# changes each time. An API started before that points at an address with no code
-# on it — and it reports `escrowConfigured: true` and `rpc.reachable: true` while
-# every duel fails with "On-chain duel state cannot be verified right now". That
-# reads like a server bug and is a stale manifest.
-#
-# This cost a confusing chaos-suite failure and nearly a false "fail-open deposit
-# gate" finding. Check it here, loudly, before the API is started.
-_manifest="${ROOT}/contracts/deployments/local.json"
-if [[ -f "$_manifest" ]]; then
-  _escrow="$(python3 -c "import json;print(json.load(open('$_manifest'))['escrow'])" 2>/dev/null || true)"
-  if [[ -n "$_escrow" ]]; then
-    _code="$(curl -s -X POST -H 'Content-Type: application/json' \
-      --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"$_escrow\",\"latest\"]}" \
-      "${PULSAR_ANVIL_URL:-http://127.0.0.1:8545}" 2>/dev/null \
-      | python3 -c "import json,sys;print(json.load(sys.stdin).get('result','0x'))" 2>/dev/null || echo 0x)"
-    if [[ "$_code" == "0x" || -z "$_code" ]]; then
-      echo "REFUSING TO START: the manifest names escrow $_escrow but there is no"
-      echo "contract at that address on the chain. Run scripts/start_anvil.sh --bg"
-      echo "FIRST (it redeploys, which changes the address), then start this stack."
-      exit 1
-    fi
-  fi
-fi
-
-
+exit 1

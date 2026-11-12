@@ -75,6 +75,11 @@ export default tseslint.config(
         caches: 'readonly',
         clients: 'readonly',
         fetch: 'readonly',
+        // `new Response(...)` in the offline fallback. The M-20 commit added the
+        // service worker but not this global, so the repo's own lint command
+        // (`eslint .`) failed while `eslint src` — which is what CI happened to
+        // run — stayed green. The gate is only as good as its scope.
+        Response: 'readonly',
         URL: 'readonly',
       },
     },

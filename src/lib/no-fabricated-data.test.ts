@@ -40,6 +40,8 @@ const ALLOWED: Record<string, string> = {
     'starfield rendering and the reflex test\'s random wait (a reaction test must not be predictable)',
   'src/pages/ReactionGamePage.tsx':
     'the calibration target position and the practice-mode target delay',
+  'src/lib/depositLock.ts':
+    'a lease token for the cross-tab deposit lock (audit M-07) — identifiers for mutual exclusion, never a number the player reads as money or a measurement',
 };
 
 /** A name that reads like a measurement or money must never come from random. */

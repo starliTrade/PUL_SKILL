@@ -12,6 +12,8 @@ import { sounds } from '../lib/sound';
 import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
 import { clickableDivProps } from '../lib/a11y';
+import { formatClock, formatNumber, formatUsd } from '../lib/localeFormat';
+import { matchLabel } from '../lib/matchLabel';
 
 interface DashboardPageProps {
   onNavigate: (path: string) => void;
@@ -243,7 +245,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
               <div className="mt-3 pt-2.5 border-t border-white/[0.03] flex items-center justify-between text-[10.5px]">
                 <div className="text-zinc-400 font-mono flex items-center gap-1.5">
                   <Award className="w-3 h-3 text-purple-400" />
-                  <span>XP: <strong className="text-zinc-200">{stats.xp.toLocaleString()}</strong></span>
+                  <span>XP: <strong className="text-zinc-200">{formatNumber(stats.xp)}</strong></span>
                   <span className="text-zinc-600">·</span>
                   <span>Lv {stats.level} ({progressPercent}%)</span>
                 </div>
@@ -448,7 +450,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                             <div>
                               <div className="flex items-center gap-1.5">
                                 <span className="text-xs font-semibold text-white">
-                                  {m.game || t('reflexCalibration')}
+                                  {matchLabel(m.game, t)}
                                 </span>
                                 <span className="text-[9.5px] text-zinc-500 font-mono">
                                   ${m.entryFee} {t('pool')}
@@ -462,7 +464,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                             </div>
                           </div>
 
-                          <div className="text-right">
+                          <div className="text-end">
                             <div
                               className={cn(
                                 'text-xs font-extrabold font-mono',
@@ -480,10 +482,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                                 : `-$${m.entryFee.toFixed(2)}`}
                             </div>
                             <div className="text-[9px] text-zinc-500 font-mono mt-0.5">
-                              {new Date(m.timestamp).toLocaleTimeString([], {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
+                              {formatClock(m.timestamp)}
                             </div>
                           </div>
                         </div>
@@ -616,8 +615,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                               figure (`wins * 1.96`) so this always looked exact.
                               A row with no recorded earnings now says so. */}
                           {(player.totalWinnings ?? player.totalEarnedUSDT) != null
-                            ? `$${(player.totalWinnings ?? player.totalEarnedUSDT ?? 0).toLocaleString()}`
-                            : `~$${prizeForStake(player.wins ?? 0).toLocaleString()} (est.)`}
+                            ? formatUsd(player.totalWinnings ?? player.totalEarnedUSDT ?? 0)
+                            : t('payoutEstimate', {
+                                amount: formatUsd(prizeForStake(player.wins ?? 0)),
+                              })}
                         </div>
                       </div>
                     );
@@ -672,7 +673,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                         </div>
                       </div>
 
-                      <div className="text-right font-mono">
+                      <div className="text-end font-mono">
                         <div className="font-bold text-sky-400 text-xs">
                           {p.bestReactionMs || p.reactionTime
                             ? `${p.bestReactionMs || p.reactionTime}ms`
@@ -680,8 +681,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                         </div>
                         <div className="text-[9.5px] text-emerald-400">
                           {(p.totalWinnings ?? p.totalEarnedUSDT) != null
-                            ? `$${(p.totalWinnings ?? p.totalEarnedUSDT ?? 0).toLocaleString()}`
-                            : `~$${prizeForStake(p.wins ?? 0).toLocaleString()} (est.)`}
+                            ? formatUsd(p.totalWinnings ?? p.totalEarnedUSDT ?? 0)
+                            : t('payoutEstimate', {
+                                amount: formatUsd(prizeForStake(p.wins ?? 0)),
+                              })}
                         </div>
                       </div>
                     </div>

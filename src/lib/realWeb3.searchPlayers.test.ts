@@ -1,28 +1,27 @@
 /**
- * M26 — player search must work by playerId, not only by hex address.
+ * M26 + M-19 — player search: by tag, through the server.
  *
- * `searchPlayers` only queried `users/{address}` for inputs starting with
- * `0x`. A player who wanted to add a friend by the tag they actually see
- * ("SwiftBlade#42") got an empty list — the feature only worked for someone
- * who already knew the friend's 42-character address.
+ * M26: `searchPlayers` only queried `users/{address}` for inputs starting with
+ * `0x`, so a player who wanted to add a friend by the tag they actually see
+ * ("SwiftBlade#42") got an empty list.
+ *
+ * M-19 (2026-10-22): the search used to read `users/*` from the BROWSER. That
+ * collection is the settlement ledger — wallet, wins, XP, reaction averages,
+ * history — and was world-readable only so a friend card could render. The
+ * search now goes through GET /api/players/search, which returns five display
+ * fields. These tests pin that the client no longer touches Firestore for it and
+ * never invents a player who does not exist.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-const firestore = vi.hoisted(() => ({
-  getDocs: vi.fn(),
-  where: vi.fn((field: string, op: string, value: unknown) => ({ __where: [field, op, value] })),
-  collection: vi.fn((_db: unknown, name: string) => ({ __collection: name })),
-  query: vi.fn((...args: unknown[]) => ({ __query: args })),
-  limit: vi.fn((n: number) => ({ __limit: n })),
-  doc: vi.fn((_db: unknown, col: string, id: string) => ({ __doc: [col, id] })),
-  getDoc: vi.fn(),
-  setDoc: vi.fn(),
-  deleteDoc: vi.fn(),
-  orderBy: vi.fn(),
-  onSnapshot: vi.fn(),
+const server = vi.hoisted(() => ({
+  searchPlayers: vi.fn(),
 }));
 
-vi.mock('firebase/firestore', () => firestore);
+vi.mock('./gameServerClient', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./gameServerClient')>();
+  return { ...actual, searchPlayers: server.searchPlayers };
+});
 
 vi.mock('./firebase', () => ({
   getDb: () => ({ __db: true }),
@@ -31,61 +30,68 @@ vi.mock('./firebase', () => ({
 
 import { realWeb3Manager } from './realWeb3';
 
-function snapshotOf(rows: Array<{ id: string; data: Record<string, unknown> }>) {
-  return {
-    forEach: (cb: (docSnap: { id: string; data: () => Record<string, unknown> }) => void) => {
-      rows.forEach((r) => cb({ id: r.id, data: () => r.data }));
-    },
-  };
-}
+const ADDRESS = '0x' + 'aa'.repeat(20);
+const SESSION = { address: ADDRESS, token: 't', issuedAt: Date.now() };
 
-describe('player search (audit M26)', () => {
+describe('player search', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
+    localStorage.setItem('pulsar.server.session.v1', JSON.stringify(SESSION));
   });
 
   it('finds a player by their playerId tag', async () => {
-    firestore.getDocs.mockResolvedValue(
-      snapshotOf([
+    server.searchPlayers.mockResolvedValue({
+      players: [
         {
-          id: '0x' + 'aa'.repeat(20),
-          data: {
-            address: '0x' + 'aa'.repeat(20),
-            playerId: 'SwiftBlade#42',
-            level: 3,
-            xp: 120,
-            wins: 5,
-            totalMatches: 10,
-            bestReactionMs: 210,
-          },
+          address: ADDRESS,
+          playerId: 'SwiftBlade#42',
+          level: 3,
+          wins: 5,
+          totalMatches: 10,
         },
-      ]),
-    );
-
-    const results = await realWeb3Manager.searchPlayers('SwiftBlade#42');
-
-    expect(results).toHaveLength(1);
-    expect(results[0].playerId).toBe('SwiftBlade#42');
-    expect(results[0].address).toBe('0x' + 'aa'.repeat(20));
-    // The query must have targeted the playerId field.
-    expect(firestore.where).toHaveBeenCalledWith('playerId', '==', 'SwiftBlade#42');
-  });
-
-  it('still finds a player by their address', async () => {
-    const addr = '0x' + 'bb'.repeat(20);
-    firestore.getDoc.mockResolvedValue({
-      exists: () => true,
-      data: () => ({ address: addr, playerId: 'IronFalcon#7', level: 2, xp: 40, wins: 1, totalMatches: 2 }),
+      ],
     });
 
-    const results = await realWeb3Manager.searchPlayers(addr);
+    const found = await realWeb3Manager.searchPlayers('SwiftBlade#42');
 
-    expect(results).toHaveLength(1);
-    expect(results[0].playerId).toBe('IronFalcon#7');
+    expect(server.searchPlayers).toHaveBeenCalledWith(expect.anything(), 'SwiftBlade#42');
+    expect(found.map((p) => p.playerId)).toEqual(['SwiftBlade#42']);
   });
 
-  it('returns nothing for an empty query', async () => {
-    expect(await realWeb3Manager.searchPlayers('   ')).toEqual([]);
-    expect(firestore.getDocs).not.toHaveBeenCalled();
+  it('finds a player by their address', async () => {
+    server.searchPlayers.mockResolvedValue({
+      players: [
+        { address: ADDRESS, playerId: '', level: 1, wins: 0, totalMatches: 0 },
+      ],
+    });
+
+    const found = await realWeb3Manager.searchPlayers(ADDRESS);
+
+    expect(found[0].address).toBe(ADDRESS);
+    // No tag: the display falls back to a generated name, as everywhere else.
+    expect(found[0].playerId).toMatch(/^Player#/);
+  });
+
+  it('never fabricates a player for an unknown address', async () => {
+    // The old code invented a "new challenger" profile for any 42-char hex
+    // string. That is how a UI ends up showing a person who does not exist.
+    server.searchPlayers.mockResolvedValue({ players: [] });
+
+    const found = await realWeb3Manager.searchPlayers('0x' + 'bb'.repeat(20));
+
+    expect(found).toEqual([]);
+  });
+
+  it('returns nothing without a server session instead of reading Firestore', async () => {
+    localStorage.clear();
+    const found = await realWeb3Manager.searchPlayers('SwiftBlade#42');
+    expect(found).toEqual([]);
+    expect(server.searchPlayers).not.toHaveBeenCalled();
+  });
+
+  it('swallows a server failure into an empty list (the form must not crash)', async () => {
+    server.searchPlayers.mockRejectedValue(new Error('503'));
+    await expect(realWeb3Manager.searchPlayers('x')).resolves.toEqual([]);
   });
 });

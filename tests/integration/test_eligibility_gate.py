@@ -40,10 +40,36 @@ def _api(path: str, body: dict | None = None, token: str | None = None):
         with urllib.request.urlopen(req, timeout=25) as res:
             return res.status, json.loads(res.read() or b"{}")
     except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            # Audit H-22: the server names the wait; honour it once. Without
+            # this, running the suite twice inside a minute failed with
+            # "assert token is not None" — a rate limit that read as a broken
+            # eligibility gate.
+            from tests.fixtures.live_api import wait_and_retry  # noqa: PLC0415
+
+            def _again():
+                with urllib.request.urlopen(req, timeout=25) as res:
+                    return res.status, json.loads(res.read() or b"{}")
+
+            try:
+                return wait_and_retry(exc, _again)
+            except urllib.error.HTTPError as exc2:
+                return exc2.code, json.loads(exc2.read() or b"{}")
         return exc.code, json.loads(exc.read() or b"{}")
 
 
 def _sign_in(confirm: bool) -> str | None:
+    """A live session for the ATT or UNATT state, minted once per run (H-24).
+
+    Six handshakes per run against a 10/min/IP budget made consecutive runs
+    collide; the suite only ever needs one identity of each kind.
+    """
+    from tests.fixtures.live_api import mint_once  # noqa: PLC0415
+
+    return mint_once(f"eligibility:{confirm}", lambda: _mint_session(confirm))
+
+
+def _mint_session(confirm: bool) -> str | None:
     from eth_account import Account
     from eth_account.messages import encode_defunct
 

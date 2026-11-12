@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Shield, ShieldCheck, Award, Zap, Flame, Sparkles, Copy, Check, Cpu, Radio, Sliders, Trophy, Edit2, X, Loader2 } from 'lucide-react';
+import { Shield, ShieldCheck, Award, Zap, Flame, Sparkles, Copy, Check, Cpu, Radio, Sliders, Trophy, Edit2, X, Loader2, AlertTriangle } from 'lucide-react';
 import { AppHeader } from '../components/AppHeader';
 import { PendingPayoutCard } from '../components/PendingPayoutCard';
 import { ResponsibleGamingCard } from '../components/ResponsibleGamingCard';
@@ -17,6 +17,7 @@ import { cn } from '../lib/utils';
 import { useLanguage } from '../i18n/LanguageContext';
 import { clickableDivProps } from '../lib/a11y';
 import { TranslationKey } from '../i18n/translations';
+import { formatNumber } from '../lib/localeFormat';
 
 interface ProfilePageProps {
   onNavigate: (path: string) => void;
@@ -31,6 +32,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
     bestReactionMs,
     avgReactionMs,
     updatePlayerTag,
+    refreshProgression,
   } = usePulsarStore();
 
   const [copiedAddr, setCopiedAddr] = useState(false);
@@ -44,6 +46,21 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
 
   const winRate =
     stats.totalMatches > 0 ? Math.round((stats.wins / stats.totalMatches) * 100) : 0;
+
+  // Audit M-14: a ranked profile whose settlement the ledger could not confirm
+  // has numbers that only LOOK like stats. Show "—" and offer a re-check instead
+  // of a local estimate that can disagree with the payout ledger.
+  const progressionUnknown = stats.progressionSource === 'unknown';
+  const [checkingProgression, setCheckingProgression] = useState(false);
+  const handleRecheckProgression = async () => {
+    setCheckingProgression(true);
+    try {
+      await refreshProgression();
+    } finally {
+      setCheckingProgression(false);
+    }
+  };
+  const verified = (value: React.ReactNode) => (progressionUnknown ? '—' : value);
 
   const currentTier = getAvatarTier(stats.level);
   const tierInfo = XPSystem.getTier(stats.level);
@@ -256,7 +273,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                         {depositMsg}
                       </span>
                     ) : (
-                      <span className="text-[9px] text-zinc-500 block mt-0.5">3-20 characters • Letters, numbers & (_)</span>
+                      <span className="text-[9px] text-zinc-500 block mt-0.5">{t('tagRule')}</span>
                     )}
                   </div>
                 ) : (
@@ -338,7 +355,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                 <div className="text-[10.5px] text-zinc-400 font-mono shrink-0">
                   {t('levelLabel')}{' '}
                   <span className="text-white font-medium inline-block" dir="ltr">
-                    {stats.level}
+                    {verified(stats.level)}
                   </span>
                 </div>
               </div>
@@ -371,7 +388,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
 
               <div className="flex items-center gap-1.5 shrink-0">
                 <span className="text-[10.5px] font-mono text-zinc-300" dir="ltr">
-                  {inLevel.toLocaleString()} / {span.toLocaleString()}{' '}
+                  {formatNumber(inLevel)} / {formatNumber(span)}{' '}
                   <span className="text-zinc-500">XP</span>
                 </span>
 
@@ -397,6 +414,28 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
           </div>
         </motion.div>
 
+        {/* Audit M-14: unverified progression is stated, never faked. */}
+        {progressionUnknown && (
+          <div
+            role="status"
+            className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200"
+          >
+            <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+            <div className="flex-1 space-y-1">
+              <p className="leading-snug">{t('progressionUnverified')}</p>
+              <button
+                type="button"
+                onClick={handleRecheckProgression}
+                disabled={checkingProgression}
+                className="inline-flex items-center gap-1 rounded-md border border-amber-400/40 px-2 py-0.5 font-semibold text-amber-100 hover:bg-amber-400/10 disabled:opacity-60"
+              >
+                {checkingProgression && <Loader2 className="w-3 h-3 animate-spin" />}
+                {checkingProgression ? t('progressionChecking') : t('progressionRetry')}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* 4-Stat Mathematical Performance Grid */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <div className="linear-card p-2.5 text-center rounded-xl">
@@ -404,9 +443,9 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
               <Trophy className="w-2.5 h-2.5 text-amber-400" />
               <span>{t('totalMatches')}</span>
             </div>
-            <div className="text-base font-bold text-white font-mono" dir="ltr">{stats.totalMatches}</div>
+            <div className="text-base font-bold text-white font-mono" dir="ltr">{verified(stats.totalMatches)}</div>
             <div className="text-[9px] text-zinc-500 font-mono" dir="ltr">
-              {stats.wins}W - {stats.losses}L
+              {verified(`${stats.wins}W - ${stats.losses}L`)}
             </div>
           </div>
 
@@ -415,9 +454,9 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
               <Flame className="w-2.5 h-2.5 text-rose-400" />
               <span>{t('winRate')}</span>
             </div>
-            <div className="text-base font-bold text-white font-mono" dir="ltr">{winRate}%</div>
+            <div className="text-base font-bold text-white font-mono" dir="ltr">{verified(`${winRate}%`)}</div>
             <div className="text-[9px] text-emerald-400 font-mono">
-              <span dir="ltr">{stats.wins}</span> {t('wins')}
+              <span dir="ltr">{verified(stats.wins)}</span> {t('wins')}
             </div>
           </div>
 
@@ -437,8 +476,8 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
               <Award className="w-2.5 h-2.5 text-purple-400" />
               <span>{t('xpMiningProgress')}</span>
             </div>
-            <div className="text-base font-bold text-purple-300 font-mono" dir="ltr">{stats.xp}</div>
-            <div className="text-[9px] text-purple-400/80 font-mono">{t('miningActive')}</div>
+            <div className="text-base font-bold text-purple-300 font-mono" dir="ltr">{verified(stats.xp)}</div>
+            <div className="text-[9px] text-purple-400/80 font-mono">{verified(t('miningActive'))}</div>
           </div>
         </div>
 
@@ -502,7 +541,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                     </div>
                   </div>
 
-                  <div className="text-right shrink-0 font-mono">
+                  <div className="text-end shrink-0 font-mono">
                     <span className="text-[10.5px] text-zinc-400 font-medium">
                       {t('levelLabel')}{' '}
                       <span dir="ltr" className="inline-block">
@@ -537,7 +576,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                 .slice(0, 4)
                 .map((m: any, idx: number) => {
                   const isWin = m.result === 'win';
-                  const opp = m.opponentName || m.opponent || 'Duelist';
+                  const opp = m.opponentName || m.opponent || t('duelist');
                   const fee = Number(m.entryFee ?? m.stake ?? 1);
                   const prize = Number(
                     m.prize || prizeForStake(fee),
@@ -581,7 +620,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onNavigate }) => {
                         </div>
                       </div>
 
-                      <div className="text-right shrink-0 font-mono">
+                      <div className="text-end shrink-0 font-mono">
                         <div
                           className={cn(
                             'text-xs font-bold',

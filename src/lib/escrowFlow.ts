@@ -191,16 +191,55 @@ export async function getAllowance(owner: string): Promise<string> {
   return formatUnits(raw, await getTokenDecimals());
 }
 
-/** ERC-20 approve for the escrow to pull `stakeUsdt`. Returns real tx hash. */
+/**
+ * ERC-20 approve for the escrow to pull `stakeUsdt`. Returns the real tx hash, or
+ * `''` when the allowance already covers the stake.
+ *
+ * Audit M-07 (2026-10-22): this used to prompt the wallet unconditionally. A
+ * retried flow (reload, a second tab, a re-tap after a failed round trip) asked
+ * the player to approve again — harmless on-chain (approve is idempotent when the
+ * value is unchanged) but it is a money prompt they did not need, and on a slow
+ * phone a double prompt is exactly where a confused user taps "reject" on the
+ * second one and thinks their earlier signature was rejected.
+ *
+ * The allowance IS the idempotency state: if the escrow can already pull the
+ * stake, there is nothing to approve. A server-side key cannot express that,
+ * because the allowance lives on-chain.
+ */
 export async function approveUsdt(stakeUsdt: number): Promise<string> {
   await ensureCorrectChain(); // H5: never sign an approve on the wrong chain
   const provider = requireInjected();
   const signer = await provider.getSigner();
-  const token = new Contract(TOKENS.USDT, ERC20_ABI, signer);
   const amount = parseUnits(String(stakeUsdt), await getTokenDecimals());
+
+  try {
+    const owner = await signer.getAddress();
+    const tokenRead = new Contract(TOKENS.USDT, ERC20_ABI, provider);
+    const current: bigint = await tokenRead.allowance(owner, requireEscrowAddress());
+    if (current >= amount) return '';
+  } catch {
+    // An unreadable allowance is not a reason to skip the approval.
+  }
+
+  const token = new Contract(TOKENS.USDT, ERC20_ABI, signer);
   const tx = await token.approve(requireEscrowAddress(), amount, { gasPrice: await safeGasPrice() });
   await tx.wait();
   return tx.hash as string;
+}
+
+/**
+ * Audit M-07 — "someone already did this" is not a failure.
+ *
+ * `createDuel` reverts with "Match already exists" and `joinDuel` with "Match not
+ * available" / "Match is not active" when the SAME duel was already deposited —
+ * which happens when a second tab, a reload, or a double tap reaches the deposit
+ * phase twice. The deposit is done in that case, so the caller re-reads the duel
+ * state and continues instead of showing the player an error over money that did
+ * land.
+ */
+export function isDuplicateDepositError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /match already exists|match not available|match is not active/i.test(message);
 }
 
 /** Player 1 locks their stake into a new duel. Returns real tx hash. */

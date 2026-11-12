@@ -61,6 +61,11 @@ vi.mock('./pages/LegalPage', () => ({ LegalPage: () => null }));
 vi.mock('./components/BottomNav', () => ({ BottomNav: () => null }));
 vi.mock('./components/EligibilityGate', () => ({ EligibilityGate: () => null }));
 vi.mock('./components/IdentityLockBanner', () => ({ IdentityLockBanner: () => null }));
+// The app shell now renders banners that read translations (audit M-18/M-24);
+// this test renders App without the provider, so mock the hook it calls.
+vi.mock('./i18n/LanguageContext', () => ({
+  useLanguage: () => ({ t: (key: string) => key, currentLanguage: 'en', setLanguage: vi.fn() }),
+}));
 
 import App from './App';
 

@@ -50,6 +50,19 @@ PY="python3"
 if [[ -x "$ROOT/.venv/bin/python" ]]; then PY="$ROOT/.venv/bin/python"; fi
 
 PASS=0; FAIL=0; SKIP=0
+
+# Audit L-04: this script used `bun run` for four gates. On a machine without
+# bun, `verify` died at the typecheck with `bun: not found` — the whole gate
+# looked red for a missing launcher, not for a defect. npm is a supported path
+# (the scripts in package.json are portable), so use whichever is installed.
+if command -v bun >/dev/null 2>&1; then
+  RUN="bun run"
+elif command -v npm >/dev/null 2>&1; then
+  RUN="npm run"
+else
+  echo "neither bun nor npm is installed — cannot run the JS gates" >&2
+  exit 2
+fi
 declare -a FAILED_NAMES=()
 
 hr() { printf '─%.0s' {1..72}; echo; }
@@ -69,6 +82,66 @@ run_gate() { # run_gate <name> <command...>
   fi
 }
 
+run_gate_skippable() { # run_gate_skippable <name> <command...>
+  # A gate whose suite can legitimately report "I exercised some scenarios and
+  # skipped others because the environment is missing a service".
+  #
+  # Audit 2026-10-24: the chaos suite folded those into its failure list, so a
+  # machine without a JRE produced four red lines that meant "Java is not
+  # installed" — and the summary read as if the server were broken. The suite now
+  # separates them; this wrapper turns its machine-readable line into a SKIP with
+  # a reason. It is deliberately NOT a pass: a skipped scenario is still
+  # unverified, and `--strict` still fails the run.
+  local name="$1"; shift
+  local log
+  log="$(mktemp)"
+  hr
+  echo "▶ $name"
+  hr
+  if "$@" >"$log" 2>&1; then
+    cat "$log"
+    if grep -q '^SKIPPED (environment)' "$log"; then
+      echo "⏭  SKIP  $name — scenarios NOT exercised (environment):"
+      sed -n '/^SKIPPED (environment)/,$p' "$log" | sed 's/^/     /'
+      SKIP=$((SKIP + 1))
+      if [[ "$STRICT" == "1" ]]; then
+        echo "❌ FAIL  $name (--strict: a skipped scenario is a failure)"
+        FAIL=$((FAIL + 1))
+        FAILED_NAMES+=("$name (skipped under --strict)")
+      fi
+    else
+      echo "✅ PASS  $name"
+      PASS=$((PASS + 1))
+    fi
+  else
+    cat "$log"
+    echo "❌ FAIL  $name"
+    FAIL=$((FAIL + 1))
+    FAILED_NAMES+=("$name")
+  fi
+  rm -f "$log"
+}
+
+# --- precondition helpers ----------------------------------------------------
+#
+# Audit 2026-10-25 (found by building the audit package and reading its own
+# evidence file): four gates drove a LIVE stack — anvil, a deployed escrow, the
+# Firestore emulator, uvicorn — and on a machine without them they did not SKIP.
+# They FAILED, one of them with a 40-line urllib traceback, and `chaos` printed
+# "the API is not up" and then exited non-zero. The summary said "4 failed",
+# which reads as "the server is broken" and was the exact misdiagnosis this
+# script was rewritten to stop. Each gate now asks first and SKIPs with the
+# reason and the remedy.
+API_HEALTH_URL="${PULSAR_API_HEALTH_URL:-http://127.0.0.1:${PULSAR_API_PORT:-8000}/api/health}"
+
+api_reachable() {
+  curl -fsS --max-time 3 "$API_HEALTH_URL" >/dev/null 2>&1
+}
+
+foundry_available() {
+  command -v forge >/dev/null 2>&1 && command -v anvil >/dev/null 2>&1
+}
+
 skip_gate() { # skip_gate <name> <reason>
   hr
   echo "▶ $1"
@@ -82,11 +155,11 @@ skip_gate() { # skip_gate <name> <reason>
 }
 
 # --- 1. TypeScript typecheck --------------------------------------------------
-run_gate "typecheck (tsc --noEmit)" bun run lint
+run_gate "typecheck (tsc --noEmit)" $RUN lint
 
 # --- 2. Frontend unit tests (vitest) — plan item 0.9 --------------------------
 if [[ -f "$ROOT/vitest.config.ts" ]]; then
-  run_gate "frontend unit tests (vitest)" bun run test:unit
+  run_gate "frontend unit tests (vitest)" $RUN test:unit
 else
   skip_gate "frontend unit tests (vitest)" "vitest not wired up yet (plan item 0.9)"
 fi
@@ -99,44 +172,67 @@ else
 fi
 
 if "$PY" -m mypy --version >/dev/null 2>&1 && [[ -f "$ROOT/mypy.ini" ]]; then
-  run_gate "python types (mypy)" "$PY" -m mypy api
+  # No path argument: `mypy` reads `files = api, scripts` from mypy.ini. Passing
+  # `api` here (as this line used to) overrides the config and silently narrows
+  # the gate — which is how `scripts/` kept 13 type errors, two of them real.
+  run_gate "python types (mypy, api + scripts)" "$PY" -m mypy
 else
   skip_gate "python types (mypy)" "mypy not configured yet (plan item 0.4)"
 fi
 
 # --- 4. Server tests (pytest) — plan item 0.3 ---------------------------------
 if [[ -f "$ROOT/pytest.ini" ]] && "$PY" -m pytest --version >/dev/null 2>&1; then
-  # Integration tests need the Firestore emulator. Auto-detect a running one so
-  # `bun run verify` exercises the real Firestore path instead of skipping it.
+  # --- 4a. HERMETIC coverage gate (audit M-15, 2026-10-22) -------------------
   #
-  # The env is passed to THIS gate only, never exported: the legacy suites below
-  # assume the in-memory store, and a global FIRESTORE_EMULATOR_HOST makes
-  # `store.create_store()` connect to the emulator, which changes their
-  # behaviour (and made the HTTP E2E suite fail when this was exported).
-  # The coverage ratchet must be DETERMINISTIC, and the Firestore integration
-  # tests are what cover the Firestore code paths. Start the emulator if it is
-  # not already up, exactly like the chain gate does for anvil — otherwise the
-  # measured number wobbles by several points depending on whether those tests
-  # could run, and a ratchet that wobbles produces false failures.
+  # This runs FIRST and always: no emulator, no anvil, no network. The floor in
+  # `.coveragerc-hermetic` was measured on this configuration, so the number
+  # cannot move just because a service happens to be running (the old single
+  # gate reported 74% without the emulator and 79% with it — same code).
+  #
+  # FIRESTORE_EMULATOR_HOST is unset explicitly: some modules decide to skip
+  # their tests by reading it at import time, so an inherited value would change
+  # what runs and therefore what is measured.
+  if "$PY" -m coverage --version >/dev/null 2>&1; then
+    HERMETIC_ARGS=(-q -m "not emulator and not chain")
+    if [[ -n "${FIRESTORE_EMULATOR_HOST:-}" ]]; then
+      env -u FIRESTORE_EMULATOR_HOST "$PY" -m coverage erase --rcfile=.coveragerc-hermetic
+      run_gate "server tests (pytest, hermetic coverage)" \
+        env -u FIRESTORE_EMULATOR_HOST "$PY" -m coverage run --rcfile=.coveragerc-hermetic \
+        --source=api -m pytest "${HERMETIC_ARGS[@]}"
+    else
+      "$PY" -m coverage erase --rcfile=.coveragerc-hermetic
+      run_gate "server tests (pytest, hermetic coverage)" \
+        "$PY" -m coverage run --rcfile=.coveragerc-hermetic --source=api -m pytest "${HERMETIC_ARGS[@]}"
+    fi
+    run_gate "coverage ratchet, hermetic (fail_under in .coveragerc-hermetic)" \
+      "$PY" -m coverage report --rcfile=.coveragerc-hermetic --skip-covered
+    COVERAGE_ACTIVE=0   # the full session below starts a fresh data file
+  else
+    run_gate "server tests (pytest)" "$PY" -m pytest -q
+    COVERAGE_ACTIVE=0
+  fi
+
+  # --- 4b. COMPLETE coverage gate (emulator + anvil) -------------------------
+  #
+  # The higher number, and a separate gate whose NAME says what it needs. It is
+  # skipped — loudly — when the services are absent, because it cannot be
+  # measured there; the hermetic gate above is what must always be green.
   if ! curl -sf -o /dev/null "http://127.0.0.1:8081/" 2>/dev/null; then
-    echo "starting a background Firestore emulator for the coverage gate…"
+    echo "starting a background Firestore emulator for the complete coverage gate…"
     bash "$ROOT/scripts/start_emulator.sh" --bg >/dev/null 2>&1 || true
   fi
 
-  PYTEST_ENV=()
-  if [[ -z "${FIRESTORE_EMULATOR_HOST:-}" ]] && curl -sf -o /dev/null "http://127.0.0.1:8081/" 2>/dev/null; then
+  if curl -sf -o /dev/null "http://127.0.0.1:8081/" 2>/dev/null; then
     PYTEST_ENV=(env FIRESTORE_EMULATOR_HOST=127.0.0.1:8081 "GCLOUD_PROJECT=${GCLOUD_PROJECT:-demo-pulsar}")
-  fi
-  # Plan item 0.12: coverage is a ratchet. It is measured across the WHOLE
-  # server suite — pytest AND the legacy scripts — because measuring only pytest
-  # under-reported by ~20 points (49% vs 69%): the legacy suites are what cover
-  # api/store.py and api/auth.py until item 0.3 migrates them.
-  if "$PY" -m coverage --version >/dev/null 2>&1; then
-    "$PY" -m coverage erase
-    run_gate "server tests (pytest)" "${PYTEST_ENV[@]}" "$PY" -m coverage run --source=api -m pytest -q
-    COVERAGE_ACTIVE=1
+    if "$PY" -m coverage --version >/dev/null 2>&1; then
+      "$PY" -m coverage erase
+      run_gate "server tests + emulator (complete coverage)" \
+        "${PYTEST_ENV[@]}" "$PY" -m coverage run --source=api -m pytest -q
+      COVERAGE_ACTIVE=1
+    fi
   else
-    run_gate "server tests (pytest)" "${PYTEST_ENV[@]}" "$PY" -m pytest -q
+    skip_gate "complete coverage gate (emulator + anvil)" \
+      "no Firestore emulator on 127.0.0.1:8081 — the hermetic gate above is the one that must hold"
     COVERAGE_ACTIVE=0
   fi
 else
@@ -220,7 +316,7 @@ fi
 
 # --- 7. Contract compile gate (solc, no Foundry needed) -----------------------
 if [[ -f "$ROOT/contracts/test/compile_check.js" ]]; then
-  run_gate "contract compile gate (solc 0.8.20)" bun run test:contract
+  run_gate "contract compile gate (solc 0.8.20)" $RUN test:contract
 fi
 
 # --- 8. E2E browser tests (playwright) — plan item 0.10 -----------------------
@@ -250,8 +346,21 @@ if [[ -f "$ROOT/playwright.config.ts" ]]; then
 # could pass while executing nothing — the same false-green class the server
 # pytest job already guards against with a minimum-count check. Capture the
 # output and require that tests actually ran.
+# `start_e2e_stack.sh` defaults to the FIRESTORE store and REFUSES to start
+# when nothing answers on 8081 — correctly, because a silent fallback to memory
+# is how the durability path stopped being tested. But this script already knows
+# whether an emulator exists (the coverage gate above asked), and when it does
+# not, failing the browser gate with "only 0 E2E tests ran" reports an
+# environment decision as a product failure. Ask for memory mode explicitly, and
+# say so, which is the outcome the stack's own banner describes.
+if curl -sf -o /dev/null "http://127.0.0.1:8081/" 2>/dev/null; then
+  E2E_ENV=""
+else
+  E2E_ENV="PULSAR_E2E_STORE=memory"
+  echo "note: no Firestore emulator — the E2E stack runs in memory mode (durability NOT exercised)"
+fi
 run_gate "browser E2E (playwright, min 20 tests)" bash -c \
-  "cd '$ROOT' && bun run test:e2e 2>&1 | tee /tmp/pulsar-e2e.log; \
+  "cd '$ROOT' && $E2E_ENV $RUN test:e2e 2>&1 | tee /tmp/pulsar-e2e.log; \
    passed=\$(grep -oE '[0-9]+ passed' /tmp/pulsar-e2e.log | tail -1 | grep -oE '[0-9]+' || echo 0); \
    if [ \"\$passed\" -lt 20 ]; then \
      echo \"only \$passed E2E tests ran (expected >= 20) — skips are not coverage\"; \
@@ -303,6 +412,10 @@ fi
 # ran. It moves the chain clock forward and anvil cannot rewind it, so it runs
 # here, on its own, and the chain is restarted afterwards.
 if [[ -f "$ROOT/tests/integration/test_refund_after_timeout.py" ]]; then
+  if ! foundry_available; then
+    skip_gate "refund after timeout (time travel)" \
+      "anvil/forge are not installed — install Foundry, then scripts/start_anvil.sh --bg"
+  else
   run_gate "refund after timeout (time travel)" bash -c \
     "cd '$ROOT' && PULSAR_TEST_TIME_TRAVEL=1 PULSAR_FAIL_ON_SKIP=1 \
      FIRESTORE_EMULATOR_HOST=127.0.0.1:${PULSAR_FIRESTORE_PORT:-8081} GCLOUD_PROJECT=demo-pulsar \
@@ -324,6 +437,7 @@ if [[ -f "$ROOT/tests/integration/test_refund_after_timeout.py" ]]; then
   bash "$ROOT/scripts/start_e2e_stack.sh" --stop >/dev/null 2>&1 || true
   sleep 1
   bash "$ROOT/scripts/start_e2e_stack.sh" >/dev/null 2>&1 || true
+  fi
 fi
 
 # --- 8c2. Alerting — plan item 11.2 ------------------------------------------
@@ -333,8 +447,13 @@ fi
 # fires on a healthy server is worse than none, because it trains people to
 # ignore it.
 if [[ -f "$ROOT/scripts/check_alerts.py" ]]; then
-  run_gate "alerting (healthy server must be quiet)" bash -c \
-    "cd '$ROOT' && '$PY' scripts/check_alerts.py --quiet"
+  if ! api_reachable; then
+    skip_gate "alerting (healthy server must be quiet)" \
+      "the API is not up at ${API_HEALTH_URL} — run scripts/start_e2e_stack.sh first"
+  else
+    run_gate "alerting (healthy server must be quiet)" bash -c \
+      "cd '$ROOT' && '$PY' scripts/check_alerts.py --quiet"
+  fi
 else
   skip_gate "alerting (healthy server must be quiet)" "scripts/check_alerts.py is missing"
 fi
@@ -346,8 +465,13 @@ fi
 # breaks the RPC and asserts every signal the runbook names reads what the
 # runbook says it will.
 if [[ -f "$ROOT/scripts/runbook_drill.py" ]]; then
-  run_gate "runbook drill (the document matches the server)" bash -c \
-    "cd '$ROOT' && '$PY' scripts/runbook_drill.py"
+  if ! api_reachable; then
+    skip_gate "runbook drill (the document matches the server)" \
+      "the API is not up at ${API_HEALTH_URL} — run scripts/start_e2e_stack.sh first"
+  else
+    run_gate "runbook drill (the document matches the server)" bash -c \
+      "cd '$ROOT' && '$PY' scripts/runbook_drill.py"
+  fi
 else
   skip_gate "runbook drill (the document matches the server)" "scripts/runbook_drill.py is missing"
 fi
@@ -363,7 +487,7 @@ if [[ -f "$ROOT/scripts/chaos_suite.py" ]]; then
   bash "$ROOT/scripts/start_e2e_stack.sh" --stop >/dev/null 2>&1 || true
   sleep 2
   bash "$ROOT/scripts/start_e2e_stack.sh" >/dev/null 2>&1 || true
-  run_gate "chaos suite (rpc/firestore/replica/delay/soak)" bash -c \
+  run_gate_skippable "chaos suite (rpc/firestore/replica/delay/soak)" bash -c \
     "cd '$ROOT' && FIRESTORE_EMULATOR_HOST=127.0.0.1:${PULSAR_FIRESTORE_PORT:-8081} \
      GCLOUD_PROJECT=demo-pulsar '$PY' scripts/chaos_suite.py"
 else

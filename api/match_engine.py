@@ -126,6 +126,40 @@ MAX_RATING_BAND = 800.0  # ...but never past this: a queue that never matches
                          # worse than the wait
 
 
+def settlement_deadline_or_none(match: Any) -> int | None:
+    """The refund horizon, or None when the match does not carry one.
+
+    Audit H-25 (2026-10-23): the previous implementation was
+
+        created = float(getattr(match, "created_at", 0.0))
+        activated = float(getattr(match, "activated_at", 0.0) or 0.0)
+        return int(max(created, activated) + MATCH_TIMEOUT_SECONDS)
+
+    A match WITHOUT the timestamps — a Firestore document written by an older
+    schema, a replay record rebuilt from a ledger row, any object that is not a
+    `Match` — therefore produced `0 + 1800` = **1800**, i.e. 1970-01-01. Both
+    callers then did the worst possible thing with that number:
+
+      * `oracle.sign_settlement` clamped the proof deadline to 1800, then refused
+        to sign with "the on-chain MATCH_TIMEOUT has elapsed" — a message that
+        blames the contract for a missing field, so the winner can never claim;
+      * the re-sign sweep in `main.py` compared `now >= 1800`, concluded the duel
+        was "past the on-chain horizon, only refund applies", and skipped it
+        forever.
+
+    A missing field must not be indistinguishable from an ancient one. This
+    returns None for "unknown", so each caller can choose: the oracle signs
+    without clamping (a 10-minute proof is still bounded), and the sweep attempts
+    the re-sign instead of silently giving up on a winner.
+    """
+    created = float(getattr(match, "created_at", 0.0) or 0.0)
+    activated = float(getattr(match, "activated_at", 0.0) or 0.0)
+    origin = max(created, activated)
+    if origin <= 0:
+        return None
+    return int(origin + MATCH_TIMEOUT_SECONDS)
+
+
 def settlement_deadline(match: Any) -> int:
     """Return the contract's refund horizon for this match.
 
@@ -138,10 +172,16 @@ def settlement_deadline(match: Any) -> int:
     (Before H20 the contract anchored on `createdAt` alone, which is why this
     used to read `created_at` unconditionally.)
     """
-    created = float(getattr(match, "created_at", 0.0))
-    activated = float(getattr(match, "activated_at", 0.0) or 0.0)
-    origin = max(created, activated)
-    return int(origin + MATCH_TIMEOUT_SECONDS)
+    horizon = settlement_deadline_or_none(match)
+    if horizon is None:
+        # Loud on purpose: this used to return 1800, which every caller read as
+        # "expired". See `settlement_deadline_or_none` for what that cost.
+        raise ValueError(
+            "settlement_deadline: the match carries no createdAt/activatedAt, so its "
+            "refund horizon is unknown. Use settlement_deadline_or_none() when "
+            "'unknown' is a legitimate answer."
+        )
+    return horizon
 
 # Secret used to MAC result proofs.
 # Audit #6 C4: this was a per-process `secrets.token_bytes(32)`, so with N

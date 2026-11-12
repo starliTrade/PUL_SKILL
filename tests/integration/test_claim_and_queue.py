@@ -49,7 +49,7 @@ def test_queueing_at_a_different_stake_is_refused_not_silently_ignored(client, m
     # Authenticate as that player.
     monkeypatch.setattr(server, "_auth", lambda _r: "0x" + "11" * 20)
 
-    r = client.post("/api/queue", json={"stake": 5.0})
+    r = client.post("/api/queue", json={"stake": 5.0, "rttMs": 40})
 
     assert r.status_code == 409, (
         f"queueing at 5 USDT while a 1 USDT match is live answered {r.status_code} "
@@ -72,7 +72,7 @@ def test_queueing_at_the_same_stake_still_replays(client, monkeypatch):
     monkeypatch.setattr(server.store, "player_live_match", lambda _a: live)
     monkeypatch.setattr(server, "_auth", lambda _r: "0x" + "11" * 20)
 
-    r = client.post("/api/queue", json={"stake": 1.0})
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40})
 
     assert r.status_code == 200
 

@@ -6,8 +6,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
-os.environ.setdefault("ORACLE_SIGNING_SECRET", "probe-a6-secret")
-os.environ.setdefault("ORACLE_PRIVATE_KEY", "0x" + "11" * 32)
+# Audit H-13 (2026-10-22): `setdefault` let a pre-existing environment value win,
+# while the C4 assertion compares against this file's literal. Running the probe
+# with ORACLE_SIGNING_SECRET already exported therefore FAILED a check that the
+# code passes — a probe that reports on the shell instead of the code.
+os.environ["ORACLE_SIGNING_SECRET"] = "probe-a6-secret"
+os.environ["ORACLE_PRIVATE_KEY"] = "0x" + "11" * 32
 
 import match_engine as me  # noqa: E402
 import onchain  # noqa: E402
@@ -70,7 +74,13 @@ os.environ.setdefault("PULSAR_ENV", "dev")
 
 import main as server  # noqa: E402
 
-check("claim endpoint registered", any(r.path == "/api/match/{match_id}/claim" for r in server.app.routes))
+# `app.routes` is typed `list[BaseRoute]` and only `APIRoute` carries `.path`;
+# `getattr` is the honest way to ask "does any route expose this path" without
+# asserting a subtype the list does not guarantee.
+check(
+    "claim endpoint registered",
+    any(getattr(r, "path", None) == "/api/match/{match_id}/claim" for r in server.app.routes),
+)
 check("record_settlement wired into settle path", "economy.record_settlement" in open("api/main.py").read())
 check("RL_VERIFY_MAX defined", server.RL_VERIFY_MAX >= 20)
 check("RL_ROUND_MAX defined", server.RL_ROUND_MAX >= 40)

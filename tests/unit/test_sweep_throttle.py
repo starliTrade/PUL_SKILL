@@ -72,7 +72,7 @@ def test_polls_inside_the_window_do_not_re_sweep(client, monkeypatch):
     server._reset_sweep_clock()
 
     for _ in range(5):
-        r = client.post("/api/queue", json={"stake": 1.0}, headers=headers)
+        r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers=headers)
         assert r.status_code == 200, r.text
 
     assert calls["n"] == 1, (
@@ -95,9 +95,9 @@ def test_sweep_runs_again_after_the_window(client, monkeypatch, clock):
     monkeypatch.setattr(server.store, "sweep_expired", counted)
     server._reset_sweep_clock()
 
-    client.post("/api/queue", json={"stake": 1.0}, headers=headers)
+    client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers=headers)
     clock.advance(server.SWEEP_MIN_INTERVAL_SECONDS + 1)
-    client.post("/api/queue", json={"stake": 1.0}, headers=headers)
+    client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers=headers)
 
     assert calls["n"] == 2, "the sweep stopped running after the throttle window"
 
@@ -113,7 +113,7 @@ def test_sweep_failures_are_counted_not_swallowed(client, monkeypatch):
     server._reset_sweep_clock()
     before = server.sweep_health()["failures"]["sweep_expired"]
 
-    r = client.post("/api/queue", json={"stake": 1.0}, headers=headers)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers=headers)
     assert r.status_code == 200, "a sweep failure must never break matchmaking"
 
     after = server.sweep_health()["failures"]["sweep_expired"]

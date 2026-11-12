@@ -33,6 +33,58 @@ from eth_account import Account  # noqa: E402
 import match_engine as engine  # noqa: E402
 
 
+# --- backend ------------------------------------------------------------------
+@pytest.fixture
+def memory_backends(monkeypatch):
+    """Pin this test to the in-process backends, whatever the environment says.
+
+    The suite is written in memory mode — `pytest` with no emulator, which is
+    what every developer runs and the configuration the coverage floor was
+    measured in. CI exports `FIRESTORE_EMULATOR_HOST` for the WHOLE session
+    because the `emulator`-marked tests need it, and that silently switched the
+    backend under every test that never said which one it wanted.
+
+    The first CI run with the emulator up made that concrete: five tests failed,
+    none of them because the product broke. `test_privacy` cleared the memory
+    mirror while its sibling module still read Firestore; `test_queue_velocity`
+    read a counter an earlier test in the same emulator session had written;
+    `test_health_store_signal` asserted "memory backend in tests" in a process
+    whose store was Firestore. A test that does not name its backend is a test
+    whose meaning is whatever the environment happens to be.
+
+    Requesting this fixture is the way to say it. The `emulator` marker is the
+    way to say the opposite.
+    """
+    import abuse
+    import auditlog
+    import eligibility
+    import integrity
+    import limits
+    import main as server
+    import privacy
+    import profiles
+
+    import store as store_module
+
+    for module in (abuse, eligibility, limits):
+        monkeypatch.setattr(module, "_firestore_client", lambda: None)
+    for module in (auditlog, integrity, privacy, profiles):
+        monkeypatch.setattr(module, "_client", lambda: None)
+    # `main.store` is the DurableMatchStore INSTANCE built at import time, and it
+    # was built from the environment; the attribute is what the limiter and the
+    # health probe actually read.
+    monkeypatch.setattr(store_module, "durable_db", lambda: None)
+    # The store INSTANCE was constructed from the environment at import time. Its
+    # three backends are read through different attributes — the limiter reads
+    # `_fs_store`, the deep probe reads `_firestore` and `durable` (a property over
+    # `backend_name`). Pinning one and not the others is the half-pinned bug this
+    # fixture exists to end.
+    monkeypatch.setattr(server.store, "_fs_store", None, raising=False)
+    monkeypatch.setattr(server.store, "_firestore", None, raising=False)
+    monkeypatch.setattr(server.store, "backend_name", "memory", raising=False)
+    yield
+
+
 # --- identities ---------------------------------------------------------------
 @pytest.fixture
 def player():

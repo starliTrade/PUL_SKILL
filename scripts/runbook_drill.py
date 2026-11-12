@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -25,6 +26,9 @@ import urllib.request
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 API = os.environ.get("PULSAR_DRILL_API", "http://127.0.0.1:8000")
 ANVIL_PORT = os.environ.get("PULSAR_ANVIL_PORT", "8545")
+
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from foundry_bin import foundry_path_env  # noqa: E402
 
 _results: list[tuple[bool, str]] = []
 
@@ -125,7 +129,7 @@ def stop_anvil() -> None:
 
 
 def start_anvil() -> None:
-    env = {**os.environ, "PATH": os.environ.get("PATH", "") + ":/root/workspace/.foundry/bin"}
+    env = {**os.environ, "PATH": foundry_path_env()}
     subprocess.run(["bash", os.path.join(ROOT, "scripts", "start_anvil.sh"), "--bg"],
                    cwd=ROOT, env=env, capture_output=True, check=False)
 

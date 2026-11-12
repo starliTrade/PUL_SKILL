@@ -254,3 +254,39 @@ def test_the_forfeit_sentinel_does_not_corrupt_the_average():
         "reaction stat drifts toward zero"
     )
     assert out["bestReactionMs"] == 210.0
+
+
+# --- Audit H-15 (2026-10-22): voids must not dilute the reaction average -----
+def test_a_void_does_not_change_the_reaction_average():
+    """A void contributes no reaction sample, so it must not be a denominator.
+
+    The average used `totalMatches`, which counts voids and forfeits, so every
+    abandoned match dragged the player's average toward zero.
+    """
+    player = "0x" + "aa" * 20
+    out = economy._progression_fields(
+        player,
+        {"avgReactionMs": 250.0, "totalMatches": 10, "reactionSamples": 4,
+         "bestReactionMs": 210.0},
+        "",  # a void: no winner
+        1.0,
+        [],
+    )
+    assert out["avgReactionMs"] == 250.0
+    assert out["reactionSamples"] == 4
+
+
+def test_a_void_after_many_matches_still_keeps_the_average_exact():
+    player = "0x" + "aa" * 20
+    # 4 real samples at 250ms, then a 5th match with a real 200ms sample.
+    out = economy._progression_fields(
+        player,
+        {"avgReactionMs": 250.0, "totalMatches": 40, "reactionSamples": 4,
+         "bestReactionMs": 210.0},
+        player,
+        1.0,
+        [200.0],
+    )
+    # (250*4 + 200) / 5 = 240 — NOT (250*40 + 200)/41 = 248.8, and not 125.
+    assert out["avgReactionMs"] == 240
+    assert out["reactionSamples"] == 5

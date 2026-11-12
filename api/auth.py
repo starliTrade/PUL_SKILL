@@ -317,10 +317,18 @@ def _remember_used(nonce: str) -> None:
                 _used_nonces.discard(evicted)
 
 
-def revoke_session(jti: str) -> None:
-    """Audit #8 F-06: burn a session token by its jti (logout / compromise)."""
+def revoke_session(jti: str) -> bool:
+    """Burn a session token by its jti (logout / compromise).
+
+    Audit H-09 (2026-10-22): this returned None and swallowed every exception,
+    so a logout that failed to write to Firestore reported success while the
+    token stayed valid for the rest of its 2h TTL. For the one call a user makes
+    when they believe a device is compromised, a silent failure is the worst
+    possible outcome: return whether the revocation is DURABLE, and let the
+    endpoint refuse to answer "ok" when it is not.
+    """
     if not jti:
-        return
+        return False
     db = _durable_backend()
     if db is not None:
         try:
@@ -336,15 +344,27 @@ def revoke_session(jti: str) -> None:
                     "expiresAt": int(timebase.now()) + SESSION_TTL_SECONDS + 24 * 60 * 60,
                 }
             )
+            return True
         except Exception:
-            pass  # already revoked
-        return
+            # The document already exists = already revoked (idempotent), which
+            # IS a durable success. Distinguish it from a real write failure by
+            # reading the document back.
+            try:
+                return bool(
+                    db.collection("auth_revocations")
+                    .document(hashlib.sha256(jti.encode("utf-8")).hexdigest())
+                    .get()
+                    .exists
+                )
+            except Exception:
+                return False
     # Audit M17: same threadpool hazard as `_remember_used`.
     with _AUTH_LOCK:
         _revoked_jtis.add(jti)
         _revoked_jtis_order.append(jti)
         while len(_revoked_jtis_order) > _REVOKED_JTI_MAX:
             _revoked_jtis.discard(_revoked_jtis_order.pop(0))
+    return True
 
 
 def _jti_is_revoked(jti: str) -> bool:

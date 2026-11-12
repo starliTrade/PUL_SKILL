@@ -11,6 +11,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The deep contract campaign is too slow for a PR (~21 min); it runs here.
+  schedule:
+    - cron: '0 3 * * *'   # 03:00 UTC nightly
+  workflow_dispatch:
 
 concurrency:
   # A superseded run on the same ref is cancelled: the newest commit is the one
@@ -42,6 +46,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          # `tests/unit/test_remediation_todo_consistency.py` checks that every
+          # commit hash cited in the audit document exists. The default depth-1
+          # checkout holds exactly one commit, so all 41 citations "did not
+          # exist" and the job failed on a documentation test inside a server
+          # job. History is part of this job's fixture.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -97,10 +108,52 @@ jobs:
         env:
           FIRESTORE_EMULATOR_HOST: 127.0.0.1:8081
           GCLOUD_PROJECT: demo-pulsar
+        # Why the output is teed and the failures are echoed as annotations
+        # (2026-10-25): a failing pytest run here produces a log of several
+        # thousand lines, and the log is the ONLY place the failing test names
+        # appear — GitHub shows a red X with "exit code 1" and nothing else. This
+        # step now re-emits the failing ids as check annotations, which the API
+        # returns as structured data, so a failure can be attributed without
+        # downloading a 10 000-line blob (which is also rate-limited).
         run: |
-          set -euo pipefail
+          set -uo pipefail
           python3 -m coverage erase
-          python3 -m coverage run --source=api -m pytest -q
+          python3 -m coverage run --source=api -m pytest -q 2>&1 | tee /tmp/pytest.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            matched="$(grep -E '^(FAILED|ERROR) ' /tmp/pytest.log | head -n 6 || true)"
+            if [ -n "$matched" ]; then
+              printf '%s\n' "$matched" | while IFS= read -r line; do
+                echo "::error::${line:0:900}"
+              done
+            else
+              # No `FAILED`/`ERROR` line means pytest never produced a summary
+              # (an INTERNALERROR, an import crash, `coverage` refusing to start).
+              # Then the tail IS the evidence, and emitting nothing is how the
+              # first attempt at this step managed to add zero information.
+              echo "::error::pytest exited $status without a FAILED/ERROR summary — last lines:"
+              tail -n 8 /tmp/pytest.log | while IFS= read -r line; do
+                [ -n "$line" ] && echo "::error::${line:0:900}"
+              done
+            fi
+          fi
+          exit "$status"
+      - name: The failing test names, in the job summary (the log is not readable)
+        # 2026-10-26: annotations emitted with `::error::` from the step above do
+        # NOT reach the check-run API here (verified: the only failure annotation
+        # is GitHub's generic "Process completed with exit code 1"). The job
+        # summary DOES — `output.summary` on the check run — so the evidence goes
+        # there instead. This exists because the plain log is served from a blob
+        # host that returns EOF to anything that is not a browser session, which
+        # makes a red build impossible to diagnose.
+        if: failure()
+        run: |
+          {
+            echo "### pytest — failure evidence"
+            echo '```'
+            tail -n 60 /tmp/pytest.log 2>/dev/null || echo "(no /tmp/pytest.log written)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Protocol smoke tests (SIWE, commit-reveal, settlement, oracle, store roundtrip)
         # No emulator env here: `scripts/verify.sh` runs the legacy suites in
         # MEMORY mode (only the pytest gate gets FIRESTORE_EMULATOR_HOST), and
@@ -130,7 +183,10 @@ jobs:
         env:
           FIRESTORE_EMULATOR_HOST: 127.0.0.1:8081
           GCLOUD_PROJECT: demo-pulsar
-        run: python3 scripts/test_firestore_integration.py
+          # Its own namespace: this suite asserts on an EMPTY queue, and the
+          # server tests above leave players in the default one.
+          FIRESTORE_PROJECT_ID: pulsar-itest
+        run: python3 scripts/test_firestore_integration.py 2>&1 | tee /tmp/firestore-integration.log; exit "${PIPESTATUS[0]}"
 
   contracts:
     runs-on: ubuntu-latest
@@ -180,9 +236,12 @@ jobs:
           out="$(forge test --json 2>/dev/null || true)"
           ran="$(printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(len(v.get("test_results",{})) for v in d.values()))')"
           echo "contract tests executed: $ran"
-          # Audit 2026-10-13: the floor was 21 while the suite has ~81 tests, so a
-          # 60-test regression still passed. Keep it near the real count.
-          test "$ran" -ge 75
+          # Audit 2026-10-13: the floor was 21 while the suite had ~81 tests, so a
+          # 60-test regression still passed. Audit M-23 (2026-10-23): the suite is
+          # now 104 tests / 9 suites, measured locally with the same profile this
+          # job uses (FOUNDRY_PROFILE=ci), so the floor moves to 100. Keep it
+          # within a handful of the real count, never a percentage of it.
+          test "$ran" -ge 100
       # Plan item 0.8: the settlement digest / decoder / Solidity contract are a
       # three-way agreement that unit tests cannot verify. Run the real money
       # path against a local EVM.
@@ -197,6 +256,96 @@ jobs:
         run: python3 -m pytest -q -m chain
       - name: Contract compile gate (solc 0.8.20, paris + shanghai)
         run: bun run test:contract
+
+  # --- The deep campaign, which ran NOWHERE -----------------------------------
+  #
+  # Audit 2026-10-24: `contracts/foundry.toml` has carried a `[profile.nightly]`
+  # since CT14 (`fuzz.runs = 10000`, `invariant.runs = 1024 depth = 500`), and
+  # no workflow, script or CI job ever selected it. The deepest configuration in
+  # the repository was a number in a file. It takes ~21 minutes on 2 vCPUs
+  # (measured), which is why it is not a PR gate — and why "it exists" was never
+  # the same as "it runs".
+  #
+  # Scheduled + manual, on the same pinned toolchain and the same pinned test
+  # dependencies as the `contracts` job. A red run here is a real finding: the
+  # default profile only explores 256 fuzz runs and 64x100 invariant calls.
+  #
+  # MEASURED (2-vCPU sandbox, cold compile, 2026-10-24): 1089.6 s of campaign
+  # (7 properties x 1024 runs x 500 calls = 3.58 M calls, 0 reverts) inside a
+  # 1760 s end-to-end command — ~29 minutes including the compile. The timeout is
+  # 90 because a nightly that dies at the limit has to be re-run by hand, while
+  # extra headroom costs nothing: the job only runs once a day.
+  nightly-contracts:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.5
+      - name: Install Solidity test dependencies (forge-std + OpenZeppelin)
+        run: |
+          set -euo pipefail
+          cd contracts
+          test -d lib/forge-std || git clone --depth 1 --branch v1.9.7 \
+            https://github.com/foundry-rs/forge-std.git lib/forge-std
+          test -d lib/openzeppelin-contracts || git clone --depth 1 --branch v5.7.0 \
+            https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts
+          test -f lib/forge-std/src/Test.sol
+          test -f lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol
+      - name: forge test --profile nightly (fuzz 10k, invariant 1024x500)
+        # ONE run, machine-readable, summarised by the next step.
+        #
+        # The first draft ran `forge test -vvv` here and then `forge test --json`
+        # in the guard — on this profile that is the whole ~30-minute campaign
+        # twice. A guard that doubles the cost of the thing it guards is how a
+        # nightly job gets disabled.
+        env:
+          FOUNDRY_PROFILE: nightly
+        run: |
+          set -euo pipefail
+          cd contracts
+          forge test -vvv --json > /tmp/forge-nightly.json
+      - name: Assert the deep campaign actually ran, with the deep budgets
+        # `always()`: when `forge test` fails it exits non-zero and the log holds
+        # only the JSON, so this step is what names the failing tests. It cannot
+        # mask the failure — the job has already failed by then.
+        if: always()
+        # The same guard the `contracts` job needed (CI-1): a green forge run
+        # that executed the DEFAULT budgets would look identical to this one.
+        # Read the profile back, then summarise the run that just happened.
+        #
+        # Written with `python3 -c`/a script on purpose: a heredoc inside a YAML
+        # block scalar needs its terminator unindented, and an indented one is
+        # silently just input — the gate would "pass" by never running.
+        run: |
+          set -euo pipefail
+          cd contracts
+          python3 -c "import tomllib;c=tomllib.load(open('foundry.toml','rb'))['profile']['nightly'];f=c['fuzz']['runs'];i=c['invariant'];assert f==10000,'fuzz budget is %d' % f;assert i['runs']==1024 and i['depth']==500,i;print('nightly budgets: fuzz=%d invariant=%dx%d' % (f,i['runs'],i['depth']))"
+          python3 - <<'PYEOF'
+          import json, sys
+          data = json.load(open("/tmp/forge-nightly.json"))
+          ran = passed = failed = 0
+          for suite, body in data.items():
+              for name, result in body.get("test_results", {}).items():
+                  ran += 1
+                  status = result.get("status")
+                  if status == "Success":
+                      passed += 1
+                  else:
+                      failed += 1
+                      print(f"FAILED {suite}::{name}: {result.get('reason')}")
+          print(f"deep campaign: {ran} tests, {passed} passed, {failed} failed")
+          if ran < 100:
+              sys.exit(f"expected >= 100 tests in the deep campaign, ran {ran}")
+          if failed:
+              sys.exit(f"{failed} failed")
+          PYEOF
 
   # --- The gates CI was NOT running -------------------------------------------
   #
@@ -216,23 +365,75 @@ jobs:
           python-version: '3.12'
       - uses: oven-sh/setup-bun@v2
       - name: Install server deps
+        # 2026-10-25: this step read `requirements.txt` from the repository ROOT,
+        # which does not exist — the requirements live in `api/`. It failed in
+        # eight seconds on every run, and because the step is not `|| true` the
+        # whole job died there: the frontend deps, Foundry, Playwright, anvil and
+        # `bash scripts/verify.sh` NEVER RAN. That is the same defect this job
+        # was created to fix ("CI runs the same gates a human runs"), one layer
+        # up: a job that never reaches its gate still shows a red X, and a red X
+        # that nobody can attribute is exactly as useless as a green one.
         run: |
+          set -euo pipefail
           python3 -m venv .venv
-          .venv/bin/pip install --quiet -r requirements.txt
-          .venv/bin/pip install --quiet -r requirements-dev.txt || true
+          .venv/bin/pip install --quiet -r api/requirements-dev.txt
+          python3 -c "import sqlite3; print('sqlite3', sqlite3.sqlite_version)"
       - name: Install frontend deps
         run: bun install --frozen-lockfile
       - name: Install Foundry (anvil + forge)
         uses: foundry-rs/foundry-toolchain@v1
       - name: Install Playwright browsers
         run: bunx playwright install --with-deps chromium
+      - name: Install Solidity test dependencies (forge-std + OpenZeppelin)
+        # 2026-10-25: this job deployed the escrow without them. `forge create`
+        # needs OpenZeppelin (PulsarEscrow.sol imports its ERC20/IERC20) and
+        # forge-std for the test sources, and the repo deliberately does not
+        # vendor `lib/` — so `scripts/start_anvil.sh` failed to compile and the
+        # run stopped one step before `bash scripts/verify.sh`. Same pinned
+        # versions as the contracts job; bump them together.
+        run: |
+          set -euo pipefail
+          cd contracts
+          test -d lib/forge-std || git clone --depth 1 --branch v1.9.7 \
+            https://github.com/foundry-rs/forge-std.git lib/forge-std
+          test -d lib/openzeppelin-contracts || git clone --depth 1 --branch v5.7.0 \
+            https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts
+          test -f lib/forge-std/src/Test.sol
+          test -f lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol
       - name: Deploy the escrow to a local anvil
         run: bash scripts/start_anvil.sh --bg
       - name: The full gate
         # verify.sh starts the emulator, the API and the frontend itself. It is
         # the same script a human runs, deliberately: a separate CI-only path is
         # how the two drifted apart in the first place.
-        run: bash scripts/verify.sh
+        #
+        # The output is teed so the summary — in particular verify.sh's own
+        # "failed gates:" list — can be re-emitted as annotations below. Without
+        # that, a red verify-gates check says only "exit code 1", and the answer
+        # ("which of the 22 gates?") is in a log nobody can page through.
+        run: |
+          set -o pipefail
+          bash scripts/verify.sh 2>&1 | tee /tmp/verify-run.log
+          status=${PIPESTATUS[0]}
+          exit "$status"
+      - name: Which gate failed, in the job summary (the log is not readable)
+        # verify.sh prints its own "failed gates:" list, and it is the only place
+        # the answer lives. The log blob is not fetchable outside a browser
+        # session, so the list goes into the job summary, which the check-run API
+        # returns as `output.summary`.
+        if: failure()
+        run: |
+          {
+            echo "### verify.sh — failure evidence"
+            echo '```'
+            sed -n '/VERIFY SUMMARY/,$p' /tmp/verify-run.log 2>/dev/null | head -n 40 \
+              || echo "(verify.sh produced no summary)"
+            echo '```'
+            echo "### last 40 lines"
+            echo '```'
+            tail -n 40 /tmp/verify-run.log 2>/dev/null || echo "(no /tmp/verify-run.log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the verify log on failure
         if: failure()
         uses: actions/upload-artifact@v4

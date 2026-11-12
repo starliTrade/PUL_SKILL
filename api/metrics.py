@@ -52,6 +52,13 @@ _store_contention = 0
 _matches_settled = 0
 _signatures_attempted = 0
 _signatures_failed = 0
+# Audit L-08: when the route cap is hit, requests were DROPPED silently, so the
+# sum of every per-route count quietly stopped matching the traffic. A metrics
+# layer whose totals are wrong is worse than one that admits a bound: count the
+# drops and expose them, so "1,412 requests, 300 dropped" is readable instead of
+# a number that looks complete and is not.
+_routes_dropped = 0
+_requests_observed = 0
 
 
 def _route_key(method: str, path: str) -> str:
@@ -66,13 +73,17 @@ def _route_key(method: str, path: str) -> str:
 
 def observe_request(method: str, path: str, elapsed_ms: float) -> None:
     """Record one request. Called from middleware; must never raise."""
+    global _routes_dropped, _requests_observed
     key = _route_key(method, path)
     try:
         with _lock:
+            _requests_observed += 1
             entry = _endpoints.get(key)
             if entry is None:
                 if len(_endpoints) >= METRICS_MAX_ROUTES:
-                    return  # bounded: drop rather than grow
+                    # Bounded on purpose, COUNTED on purpose (audit L-08).
+                    _routes_dropped += 1
+                    return
                 entry = {
                     "count": 0,
                     "totalMs": 0.0,
@@ -91,8 +102,20 @@ def observe_request(method: str, path: str, elapsed_ms: float) -> None:
 
 
 def note_firestore_read(count: int = 1) -> None:
+    """Count reads. Incremented under `_lock` like every other counter here.
+
+    This one used to be a bare `_firestore_reads += count` while `snapshot()`
+    read it inside the lock: `+=` on a module global is a read-modify-write, so
+    two threads could read the same value and one increment would vanish. The
+    lost counts land exactly on the number the "<20 reads per match" target is
+    measured with, and under-counting is the direction that hides a regression.
+    The bound-and-attribution tests in `tests/unit/test_metrics_attribution.py`
+    pin the lock (structurally, and labelled as such — a data race cannot be
+    asserted deterministically).
+    """
     global _firestore_reads
-    _firestore_reads += count
+    with _lock:
+        _firestore_reads += count
 
 
 def reset_endpoint_counts() -> None:
@@ -179,8 +202,19 @@ def snapshot() -> dict[str, Any]:
         settled = _matches_settled
         attempted = _signatures_attempted
         failed = _signatures_failed
+        dropped = _routes_dropped
+        observed = _requests_observed
 
     return {
+        # Audit L-08: scope and completeness, stated in the payload. A scrape
+        # that silently covers only part of the traffic is how an incident looks
+        # like "we had no traffic".
+        "scope": "per-process — N replicas each report their own slice",
+        "requestsObserved": observed,
+        "routesDropped": dropped,
+        "routesTracked": len(endpoints),
+        "routesCap": METRICS_MAX_ROUTES,
+        "complete": dropped == 0,
         "endpoints": endpoints,
         "firestore": {
             "reads": reads,
@@ -225,3 +259,6 @@ def reset() -> None:
     _matches_settled = 0
     _signatures_attempted = 0
     _signatures_failed = 0
+    global _routes_dropped, _requests_observed
+    _routes_dropped = 0
+    _requests_observed = 0

@@ -90,10 +90,10 @@ def test_settle_endpoint_still_answers_409_when_settlement_is_refused(client):
     _, headers_a = _session(client, alice)
     _, headers_b = _session(client, bob)
 
-    r = client.post("/api/queue", json={"stake": 1.0}, headers=headers_a)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers=headers_a)
     assert r.status_code == 200, r.text
     match_id = r.json()["matchId"]
-    r = client.post("/api/queue", json={"stake": 1.0}, headers=headers_b)
+    r = client.post("/api/queue", json={"stake": 1.0, "rttMs": 40}, headers=headers_b)
     assert r.json()["matchId"] == match_id
 
     # No rounds played and the grace window has not passed → settle refuses.
