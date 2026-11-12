@@ -220,10 +220,19 @@ r = client.post(f"/api/match/{match_id}/settle", json={}, headers=auth_headers(t
 check("Premature settle refused while opponent silent (409)", r.status_code == 409)
 
 # Bob now plays honestly; the settle that COMPLETES the match succeeds and
-# every future call replays the same oracle signature.
+# every future call replays the same oracle signature. A best-of-three can
+# end after two rounds (2-0 majority) — the engine auto-settles on completion,
+# so later rounds may correctly return "Match is not active".
+bob_rounds = 0
 for idx, ms in ((0, 300.0), (1, 300.0), (2, 300.0)):
+    mv = client.get(f"/api/match/{match_id}", headers=auth_headers(token_b)).json()
+    if mv.get("status") != "active":
+        break
     res = play_round(token_b, idx, ms, honest_wait=True)
     check(f"Round {idx} accepted for Bob", res.get("accepted") is True)
+    if res.get("accepted"):
+        bob_rounds += 1
+check("Bob played at least 2 rounds (Bo3 majority)", bob_rounds >= 2)
 
 # --- 5. Settlement + oracle signature over HTTP ---------------------------------
 r = client.post(f"/api/match/{match_id}/settle", json={}, headers=auth_headers(token_a))
